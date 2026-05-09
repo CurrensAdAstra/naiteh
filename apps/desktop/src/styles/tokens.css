@@ -1,0 +1,42 @@
+/* VS Code Light Modern theme tokens — see architecture.md §5.2 */
+:root {
+  /* Surfaces */
+  --color-bg-app:           #ffffff;
+  --color-bg-activitybar:   #f8f8f8;
+  --color-bg-listpanel:     #f3f3f3;
+  --color-bg-editor:        #ffffff;
+  --color-bg-statusbar:     #f8f8f8;
+
+  /* Borders */
+  --color-border:           #e5e5e5;
+  --color-border-strong:    #d4d4d4;
+
+  /* Text */
+  --color-text-primary:     #3b3b3b;
+  --color-text-secondary:   #616161;
+  --color-text-muted:       #8c8c8c;
+  --color-text-inverse:     #ffffff;
+
+  /* Accents */
+  --color-accent:           #005fb8;
+  --color-accent-hover:     #0078d4;
+  --color-selection:        #cce4f7;
+
+  /* Activity Bar */
+  --color-activitybar-icon:        #424242;
+  --color-activitybar-icon-active: #005fb8;
+  --color-activitybar-active-bar:  #005fb8;
+
+  /* States */
+  --color-hover:            #ededed;
+  --color-active:           #e0e0e0;
+  --color-danger:           #c72e0f;
+  --color-success:          #1f883d;
+
+  /* Typography */
+  --font-ui:    -apple-system, BlinkMacSystemFont, "Segoe UI",
+                "Noto Sans KR", sans-serif;
+  --font-mono:  "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", monospace;
+  --font-size-ui: 13px;
+  --font-size-editor: 14px;
+}

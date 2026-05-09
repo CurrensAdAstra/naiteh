@@ -1,0 +1,14 @@
+.resizer {
+  height: 100%;
+  width: 100%;
+  cursor: col-resize;
+  background: var(--color-border);
+  transition: background 0.12s ease;
+}
+
+.resizer:hover,
+.resizer:focus-visible,
+.dragging {
+  background: var(--color-accent);
+  outline: none;
+}

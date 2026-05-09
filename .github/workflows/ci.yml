@@ -1,0 +1,174 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  PNPM_VERSION: 10
+  NODE_VERSION: 20
+
+jobs:
+  guards:
+    name: Guards
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: architecture.md must not change in PRs
+        if: github.event_name == 'pull_request'
+        run: |
+          if git diff --name-only origin/${{ github.base_ref }}...HEAD \
+             | grep -qx 'architecture.md'; then
+            echo "::error::architecture.md is the source of truth and must not be modified in implementation PRs."
+            exit 1
+          fi
+
+      - name: No hex colors outside tokens.css
+        shell: bash
+        run: |
+          set -e
+          violations=$(grep -rEn '#[0-9a-fA-F]{3}([0-9a-fA-F]{3})?\b' \
+            apps/desktop/src \
+            --include='*.ts' --include='*.tsx' \
+            --include='*.css' --include='*.scss' \
+            --exclude='tokens.css' || true)
+          if [ -n "$violations" ]; then
+            echo "::error::Hex color literals must live only in tokens.css (see architecture.md §5.2)."
+            echo "$violations"
+            exit 1
+          fi
+
+      - name: No hardcoded font-family declarations
+        shell: bash
+        run: |
+          set -e
+          # font-family is allowed only when it references a --font-* token via var().
+          violations=$(grep -rEn 'font-family\s*:' \
+            apps/desktop/src \
+            --include='*.ts' --include='*.tsx' \
+            --include='*.css' --include='*.scss' \
+            --exclude='tokens.css' \
+            | grep -v 'var(--font-' || true)
+          if [ -n "$violations" ]; then
+            echo "::error::font-family must reference a --font-* token (see architecture.md §5.2)."
+            echo "$violations"
+            exit 1
+          fi
+
+      - name: All FS writes must go through services/fs.rs
+        shell: bash
+        run: |
+          set -e
+          violations=$(grep -rEn 'std::fs::write|fs::write\b|tokio::fs::write' \
+            apps/desktop/src-tauri/src \
+            --include='*.rs' \
+            --exclude-dir=services || true)
+          if [ -n "$violations" ]; then
+            echo "::error::All writes must go through services/fs.rs::atomic_write (see architecture.md §9)."
+            echo "$violations"
+            exit 1
+          fi
+
+      - name: No package-lock.json / yarn.lock (pnpm only)
+        run: |
+          if [ -f package-lock.json ] || [ -f yarn.lock ]; then
+            echo "::error::Repository is pnpm-only. Remove package-lock.json / yarn.lock."
+            exit 1
+          fi
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Lint
+        run: pnpm -C apps/desktop lint
+      - name: Typecheck
+        run: pnpm -C apps/desktop typecheck
+      - name: Unit tests (Vitest)
+        run: pnpm -C apps/desktop test
+      - name: Vite production build
+        run: pnpm -C apps/desktop build
+
+  rust:
+    name: Rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Tauri v2 system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+      - name: cargo fmt --check
+        run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --all -- --check
+      - name: cargo clippy (deny warnings)
+        run: |
+          cargo clippy \
+            --manifest-path apps/desktop/src-tauri/Cargo.toml \
+            --all-targets --all-features \
+            -- -D warnings
+      - name: cargo test
+        run: |
+          cargo test \
+            --manifest-path apps/desktop/src-tauri/Cargo.toml \
+            --all --all-features
+
+  build:
+    name: Build (${{ matrix.os }})
+    needs: [guards, frontend, rust]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Tauri v2 system deps (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri
+          key: build-${{ matrix.os }}
+      - run: pnpm install --frozen-lockfile
+      - name: Tauri debug build
+        run: pnpm -C apps/desktop tauri build --debug

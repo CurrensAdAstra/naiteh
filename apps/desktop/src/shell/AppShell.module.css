@@ -1,0 +1,38 @@
+.shell {
+  display: grid;
+  height: 100%;
+  width: 100%;
+  background: var(--color-bg-app);
+  color: var(--color-text-primary);
+  grid-template-rows: 1fr 22px;
+  grid-template-columns: 48px var(--list-panel-width, 280px) 5px 1fr;
+  grid-template-areas:
+    "activity list resizer editor"
+    "status   status status   status";
+}
+
+.activity {
+  grid-area: activity;
+  min-width: 0;
+}
+
+.list {
+  grid-area: list;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.resizer {
+  grid-area: resizer;
+  min-width: 0;
+}
+
+.editor {
+  grid-area: editor;
+  min-width: 0;
+}
+
+.status {
+  grid-area: status;
+  min-width: 0;
+}

@@ -1,0 +1,139 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--color-bg-listpanel);
+  border-right: 1px solid var(--color-border);
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.sectionHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.sectionTitle {
+  margin: 0;
+  font-size: var(--font-size-ui);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.newButton {
+  font-size: var(--font-size-ui);
+  color: var(--color-accent);
+}
+
+.newButton:hover {
+  color: var(--color-accent-hover);
+}
+
+.body {
+  flex: 1;
+  overflow: auto;
+  color: var(--color-text-muted);
+  font-size: var(--font-size-ui);
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border);
+  cursor: pointer;
+}
+
+.item:hover {
+  background: var(--color-hover);
+}
+
+.itemHeader {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.itemTitle {
+  flex: 1;
+  color: var(--color-text-primary);
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.itemMtime {
+  flex-shrink: 0;
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.itemSnippet {
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.kindBadge {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  background: var(--color-active);
+  color: var(--color-text-secondary);
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.pinned {
+  flex-shrink: 0;
+  color: var(--color-accent);
+  font-size: 11px;
+}
+
+.empty {
+  padding: 12px;
+  color: var(--color-text-muted);
+}
+
+.error {
+  padding: 12px;
+  color: var(--color-danger);
+}
+
+.divider {
+  height: 4px;
+  background: var(--color-border);
+  cursor: row-resize;
+  transition: background 0.12s ease;
+}
+
+.divider:hover,
+.divider:focus-visible,
+.dragging {
+  background: var(--color-accent);
+  outline: none;
+}
