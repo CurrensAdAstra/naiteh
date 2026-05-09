@@ -6,6 +6,8 @@ node_modules/
 dist/
 build/
 *.tsbuildinfo
+apps/desktop/vite.config.{js,d.ts}
+apps/desktop/vitest.config.{js,d.ts}
 
 # Rust / Tauri
 target/
