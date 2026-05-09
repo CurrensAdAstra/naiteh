@@ -25,7 +25,138 @@
 .body {
   flex: 1;
   overflow: auto;
-  padding: 12px;
-  color: var(--color-text-muted);
+  padding: 16px;
   font-size: var(--font-size-ui);
+  color: var(--color-text-primary);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.statusCard {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 6px;
+  background: var(--color-bg-app);
+}
+
+.statusRow {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.label {
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.value {
+  font-weight: 500;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  word-break: break-all;
+  text-align: right;
+}
+
+.valueDirty {
+  color: var(--color-accent);
+}
+
+.valueClean {
+  color: var(--color-success);
+}
+
+.notInitialized {
+  color: var(--color-text-muted);
+}
+
+.actionGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.actionGroupRow {
+  display: flex;
+  gap: 8px;
+}
+
+.button {
+  padding: 6px 14px;
+  border-radius: 4px;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-bg-app);
+  color: var(--color-text-primary);
+  font-size: var(--font-size-ui);
+  cursor: pointer;
+}
+
+.button:hover:not(:disabled) {
+  background: var(--color-hover);
+}
+
+.button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.primary {
+  background: var(--color-accent);
+  color: var(--color-text-inverse);
+  border-color: var(--color-accent);
+}
+
+.primary:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
+}
+
+.remoteForm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.remoteInput {
+  width: 100%;
+  padding: 6px 8px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 4px;
+  background: var(--color-bg-app);
+  color: var(--color-text-primary);
+  font-size: var(--font-size-ui);
+  font-family: var(--font-mono);
+}
+
+.remoteInput:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+.error {
+  padding: 8px 12px;
+  border: 1px solid var(--color-danger);
+  border-radius: 4px;
+  background: var(--color-bg-app);
+  color: var(--color-danger);
+  font-size: 12px;
+}
+
+.helpText {
+  color: var(--color-text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.busy {
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-style: italic;
 }

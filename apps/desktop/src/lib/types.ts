@@ -72,6 +72,15 @@ export interface SearchHit {
   excerpt: string;
 }
 
+export interface SyncStatus {
+  remoteUrl: string | null;
+  branch: string;
+  ahead: number;
+  behind: number;
+  dirty: boolean;
+  lastSync: number | null;
+}
+
 export type AppError =
   | { kind: "Io"; message: string }
   | { kind: "NotFound"; message: string }

@@ -78,6 +78,18 @@ pub struct SearchHit {
     pub excerpt: String,
 }
 
+/// architecture.md §6.6
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncStatus {
+    pub remote_url: Option<String>,
+    pub branch: String,
+    pub ahead: u32,
+    pub behind: u32,
+    pub dirty: bool,
+    pub last_sync: Option<i64>,
+}
+
 /// architecture.md §6.3 — used by both journal "Recent Activity" and the
 /// calendar timeline. Variants stay in PascalCase so `kind` reads as
 /// `"JournalEntry"` / `"Note"` on the wire; fields are camelCased per

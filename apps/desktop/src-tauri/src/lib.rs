@@ -30,6 +30,12 @@ pub fn run() {
             commands::tags::tags_list,
             commands::tags::tags_notes,
             commands::search::search_text,
+            commands::sync::sync_status,
+            commands::sync::sync_init,
+            commands::sync::sync_set_remote,
+            commands::sync::sync_pull,
+            commands::sync::sync_push,
+            commands::sync::sync_now,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
