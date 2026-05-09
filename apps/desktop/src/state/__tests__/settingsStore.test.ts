@@ -21,6 +21,11 @@ function config(): AppConfig {
     editor: { fontSize: 18, lineWrapping: false },
     calendar: { subView: "timeline" },
     journal: { splitRatio: 0.5 },
+    ai: {
+      apiKey: null,
+      model: "gpt-4o-mini",
+      baseUrl: "https://api.openai.com/v1",
+    },
   };
 }
 

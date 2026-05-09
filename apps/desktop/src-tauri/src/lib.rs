@@ -38,6 +38,8 @@ pub fn run() {
             commands::sync::sync_now,
             commands::settings::app_config_get,
             commands::settings::app_config_set_editor,
+            commands::settings::app_config_set_ai,
+            commands::ai::ai_improve,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

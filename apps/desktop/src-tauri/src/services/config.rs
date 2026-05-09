@@ -26,6 +26,15 @@ pub struct AppConfig {
     pub editor: EditorConfig,
     pub calendar: CalendarConfig,
     pub journal: JournalConfig,
+    pub ai: AiConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AiConfig {
+    pub api_key: Option<String>,
+    pub model: String,
+    pub base_url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -56,6 +65,17 @@ impl Default for AppConfig {
             editor: EditorConfig::default(),
             calendar: CalendarConfig::default(),
             journal: JournalConfig::default(),
+            ai: AiConfig::default(),
+        }
+    }
+}
+
+impl Default for AiConfig {
+    fn default() -> Self {
+        Self {
+            api_key: None,
+            model: "gpt-4o-mini".to_string(),
+            base_url: "https://api.openai.com/v1".to_string(),
         }
     }
 }
@@ -179,6 +199,11 @@ mod tests {
                 sub_view: "month".into(),
             },
             journal: JournalConfig { split_ratio: 0.3 },
+            ai: AiConfig {
+                api_key: Some("sk-test".into()),
+                model: "gpt-4o-mini".into(),
+                base_url: "https://api.openai.com/v1".into(),
+            },
         };
         save(dir.path(), &cfg).unwrap();
         let back = load(dir.path()).unwrap();

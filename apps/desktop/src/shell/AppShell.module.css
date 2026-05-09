@@ -5,10 +5,15 @@
   background: var(--color-bg-app);
   color: var(--color-text-primary);
   grid-template-rows: 1fr 22px;
-  grid-template-columns: 48px var(--list-panel-width, 280px) 5px 1fr;
+  grid-template-columns:
+    48px
+    var(--list-panel-width, 280px)
+    5px
+    1fr
+    var(--ai-panel-width, 0px);
   grid-template-areas:
-    "activity list resizer editor"
-    "status   status status   status";
+    "activity list resizer editor    ai"
+    "status   status status status   status";
 }
 
 .activity {
@@ -30,6 +35,12 @@
 .editor {
   grid-area: editor;
   min-width: 0;
+}
+
+.ai {
+  grid-area: ai;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .status {

@@ -1,5 +1,6 @@
 import type { CSSProperties } from "react";
 
+import { AiPanel } from "../features/ai/AiPanel";
 import { useUIStore } from "../state/uiStore";
 import { ActivityBar } from "./ActivityBar";
 import { EditorPanel } from "./EditorPanel";
@@ -8,16 +9,20 @@ import { PanelRouter } from "./PanelRouter";
 import { StatusBar } from "./StatusBar";
 import styles from "./AppShell.module.css";
 
+const AI_PANEL_WIDTH_PX = 360;
+
 export function AppShell() {
   const viewMode = useUIStore((s) => s.viewMode);
   const listPanelWidth = useUIStore((s) => s.listPanelWidth);
+  const aiPanelOpen = useUIStore((s) => s.aiPanelOpen);
 
-  const widthVar: CSSProperties = {
+  const shellStyle: CSSProperties = {
     ["--list-panel-width" as string]: `${listPanelWidth}px`,
+    ["--ai-panel-width" as string]: aiPanelOpen ? `${AI_PANEL_WIDTH_PX}px` : "0px",
   };
 
   return (
-    <div className={styles.shell} style={widthVar} data-testid="app-shell">
+    <div className={styles.shell} style={shellStyle} data-testid="app-shell">
       <div className={styles.activity}>
         <ActivityBar />
       </div>
@@ -30,6 +35,11 @@ export function AppShell() {
       <div className={styles.editor}>
         <EditorPanel />
       </div>
+      {aiPanelOpen && (
+        <div className={styles.ai}>
+          <AiPanel />
+        </div>
+      )}
       <div className={styles.status}>
         <StatusBar />
       </div>

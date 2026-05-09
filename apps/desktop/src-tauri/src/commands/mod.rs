@@ -1,6 +1,7 @@
 // IPC command modules — see architecture.md §7.
 // Implementations land in subsequent tasks.
 
+pub mod ai;
 pub mod journal;
 pub mod notes;
 pub mod search;

@@ -27,15 +27,19 @@ interface UIState {
   viewMode: ViewMode;
   listPanelWidth: number;
   journalSplitRatio: number;
+  aiPanelOpen: boolean;
   setViewMode: (mode: ViewMode) => void;
   setListPanelWidth: (px: number) => void;
   setJournalSplitRatio: (ratio: number) => void;
+  setAiPanelOpen: (open: boolean) => void;
+  toggleAiPanel: () => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
   viewMode: "journal",
   listPanelWidth: LIST_PANEL_DEFAULT,
   journalSplitRatio: JOURNAL_SPLIT_DEFAULT,
+  aiPanelOpen: false,
   setViewMode: (mode) => set({ viewMode: mode }),
   setListPanelWidth: (px) =>
     set({ listPanelWidth: clamp(px, LIST_PANEL_MIN, LIST_PANEL_MAX) }),
@@ -43,4 +47,6 @@ export const useUIStore = create<UIState>((set) => ({
     set({
       journalSplitRatio: clamp(ratio, JOURNAL_SPLIT_MIN, JOURNAL_SPLIT_MAX),
     }),
+  setAiPanelOpen: (open) => set({ aiPanelOpen: open }),
+  toggleAiPanel: () => set((s) => ({ aiPanelOpen: !s.aiPanelOpen })),
 }));

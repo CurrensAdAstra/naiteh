@@ -1,0 +1,231 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--color-bg-listpanel);
+  border-left: 1px solid var(--color-border);
+  font-size: var(--font-size-ui);
+  color: var(--color-text-primary);
+  min-width: 0;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.title {
+  margin: 0;
+  font-size: var(--font-size-ui);
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.closeButton {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  color: var(--color-text-secondary);
+}
+
+.closeButton:hover {
+  background: var(--color-hover);
+  color: var(--color-text-primary);
+}
+
+.body {
+  flex: 1;
+  overflow: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.notice {
+  padding: 8px 10px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-bg-app);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.error {
+  padding: 8px 10px;
+  border: 1px solid var(--color-danger);
+  border-radius: 4px;
+  color: var(--color-danger);
+  font-size: 12px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.label {
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.scopeRow {
+  display: flex;
+  gap: 6px;
+}
+
+.scopePill {
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-bg-app);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.scopePill:hover:not(.scopePillActive) {
+  background: var(--color-hover);
+}
+
+.scopePillActive {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-text-inverse);
+}
+
+.presetGroup {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.preset {
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-bg-app);
+  color: var(--color-text-primary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.preset:hover {
+  background: var(--color-hover);
+}
+
+.textarea {
+  width: 100%;
+  min-height: 60px;
+  resize: vertical;
+  padding: 8px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 4px;
+  background: var(--color-bg-app);
+  color: var(--color-text-primary);
+  font-size: var(--font-size-ui);
+  font-family: var(--font-ui);
+}
+
+.textarea:focus {
+  outline: none;
+  border-color: var(--color-accent);
+}
+
+.runButton {
+  padding: 8px 14px;
+  border-radius: 4px;
+  border: 1px solid var(--color-accent);
+  background: var(--color-accent);
+  color: var(--color-text-inverse);
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.runButton:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+  border-color: var(--color-accent-hover);
+}
+
+.runButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.result {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-bg-app);
+  padding: 8px;
+}
+
+.resultText {
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--color-text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  max-height: 240px;
+  overflow: auto;
+}
+
+.resultActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.applyButton {
+  padding: 5px 12px;
+  border-radius: 4px;
+  border: 1px solid var(--color-success);
+  background: var(--color-success);
+  color: var(--color-text-inverse);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.applyButton:hover {
+  filter: brightness(0.95);
+}
+
+.secondaryButton {
+  padding: 5px 12px;
+  border-radius: 4px;
+  border: 1px solid var(--color-border-strong);
+  background: var(--color-bg-app);
+  color: var(--color-text-primary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.secondaryButton:hover {
+  background: var(--color-hover);
+}
+
+.helpText {
+  color: var(--color-text-muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.busy {
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-style: italic;
+}

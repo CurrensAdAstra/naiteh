@@ -94,6 +94,12 @@ export interface JournalConfig {
   splitRatio: number;
 }
 
+export interface AiConfig {
+  apiKey: string | null;
+  model: string;
+  baseUrl: string;
+}
+
 export interface AppConfig {
   activeVault: string | null;
   knownVaults: string[];
@@ -101,6 +107,7 @@ export interface AppConfig {
   editor: EditorConfig;
   calendar: CalendarConfig;
   journal: JournalConfig;
+  ai: AiConfig;
 }
 
 export const EDITOR_FONT_MIN = 8;

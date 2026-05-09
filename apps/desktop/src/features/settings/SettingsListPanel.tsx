@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
-import { appConfigSetEditor } from "../../lib/api/settings";
+import { appConfigSetAi, appConfigSetEditor } from "../../lib/api/settings";
 import {
   vaultInit,
   vaultListKnown,
@@ -34,7 +34,19 @@ export function SettingsListPanel() {
 
   const [knownVaults, setKnownVaults] = useState<VaultInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<null | "switch" | "pick" | "editor">(null);
+  const [busy, setBusy] = useState<
+    null | "switch" | "pick" | "editor" | "ai"
+  >(null);
+
+  // AI section local form state, synced from authoritative config below.
+  const [aiKeyDraft, setAiKeyDraft] = useState("");
+  const [aiModelDraft, setAiModelDraft] = useState("");
+  const aiKeyFromConfig = config?.ai.apiKey ?? null;
+  const aiModelFromConfig = config?.ai.model ?? null;
+  useEffect(() => {
+    if (aiKeyFromConfig !== null) setAiKeyDraft(aiKeyFromConfig);
+    if (aiModelFromConfig !== null) setAiModelDraft(aiModelFromConfig);
+  }, [aiKeyFromConfig, aiModelFromConfig]);
 
   const refreshKnown = useCallback(async () => {
     try {
@@ -131,6 +143,43 @@ export function SettingsListPanel() {
   function onLineWrappingChange(e: React.ChangeEvent<HTMLInputElement>) {
     void handleEditorChange(editorConfig.fontSize, e.target.checked);
   }
+
+  async function handleSaveAi() {
+    setBusy("ai");
+    setError(null);
+    try {
+      const next = await appConfigSetAi(
+        aiKeyDraft.trim() === "" ? null : aiKeyDraft,
+        aiModelDraft,
+        null,
+      );
+      setSettings(next);
+    } catch (e) {
+      setError(formatAppError(e));
+      await refreshSettings();
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleClearAiKey() {
+    setBusy("ai");
+    setError(null);
+    try {
+      const next = await appConfigSetAi(null, aiModelDraft, null);
+      setSettings(next);
+      setAiKeyDraft("");
+    } catch (e) {
+      setError(formatAppError(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  const aiKeyConfigured =
+    config !== null &&
+    config.ai.apiKey !== null &&
+    config.ai.apiKey.trim() !== "";
 
   return (
     <div className={styles.panel} data-testid="list-panel-settings">
@@ -236,6 +285,70 @@ export function SettingsListPanel() {
             Defaults to {EDITOR_FONT_DEFAULT}px with line wrapping on.
             {config === null && " Loading current values…"}
           </p>
+        </section>
+
+        <section className={styles.section} data-testid="settings-ai">
+          <h3 className={styles.sectionTitle}>AI Assist</h3>
+          <p className={styles.helpText}>
+            naiteh stays local-first. AI Assist is the one feature that
+            sends note text to a third-party provider — only when you
+            explicitly trigger it, using the API key you store here.
+            Default endpoint is OpenAI&rsquo;s Chat Completions API.
+          </p>
+          <div className={styles.fieldRow}>
+            <label className={styles.fieldLabel} htmlFor="ai-key-input">
+              API key
+            </label>
+            <input
+              id="ai-key-input"
+              type="password"
+              className={styles.numberInput}
+              style={{ width: "180px", textAlign: "left" }}
+              placeholder={aiKeyConfigured ? "••••••••" : "sk-…"}
+              value={aiKeyDraft}
+              onChange={(e) => setAiKeyDraft(e.target.value)}
+              disabled={busy === "ai"}
+              autoComplete="off"
+              data-testid="ai-key-input"
+            />
+          </div>
+          <div className={styles.fieldRow}>
+            <label className={styles.fieldLabel} htmlFor="ai-model-input">
+              Model
+            </label>
+            <input
+              id="ai-model-input"
+              type="text"
+              className={styles.numberInput}
+              style={{ width: "180px", textAlign: "left" }}
+              value={aiModelDraft}
+              onChange={(e) => setAiModelDraft(e.target.value)}
+              disabled={busy === "ai"}
+              data-testid="ai-model-input"
+            />
+          </div>
+          <div className={styles.actionGroup}>
+            <button
+              type="button"
+              className={styles.button}
+              onClick={() => void handleSaveAi()}
+              disabled={busy === "ai" || aiModelDraft.trim() === ""}
+              data-testid="ai-save"
+            >
+              {busy === "ai" ? "Saving…" : "Save AI settings"}
+            </button>
+            {aiKeyConfigured && (
+              <button
+                type="button"
+                className={styles.button}
+                onClick={() => void handleClearAiKey()}
+                disabled={busy === "ai"}
+                data-testid="ai-clear-key"
+              >
+                Clear API key
+              </button>
+            )}
+          </div>
         </section>
       </div>
     </div>

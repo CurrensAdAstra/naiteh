@@ -1,6 +1,7 @@
 import { markdown } from "@codemirror/lang-markdown";
 import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import { EditorView, basicSetup } from "codemirror";
+import { Sparkles } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, type CSSProperties } from "react";
 
 import { journalSave } from "../lib/api/journal";
@@ -12,6 +13,7 @@ import {
   type OpenSource,
 } from "../state/editorStore";
 import { selectEditorConfig, useSettingsStore } from "../state/settingsStore";
+import { useUIStore } from "../state/uiStore";
 import styles from "./EditorPanel.module.css";
 
 const AUTOSAVE_DELAY_MS = 800;
@@ -28,6 +30,7 @@ export function EditorPanel() {
   const open = useEditorStore((s) => s.open);
   const setContent = useEditorStore((s) => s.setContent);
   const markSaved = useEditorStore((s) => s.markSaved);
+  const setView = useEditorStore((s) => s.setView);
   const editorConfig = useSettingsStore(selectEditorConfig);
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -76,12 +79,14 @@ export function EditorPanel() {
     });
     const view = new EditorView({ state, parent: container });
     viewRef.current = view;
+    setView(view);
     return () => {
       view.destroy();
       viewRef.current = null;
       wrapCompartmentRef.current = null;
+      setView(null);
     };
-  }, [editorKey, setContent]);
+  }, [editorKey, setContent, setView]);
 
   // Live-apply the line-wrapping preference to the existing view.
   useEffect(() => {
@@ -146,6 +151,7 @@ export function EditorPanel() {
             <span className={styles.path} title={headerLabel}>
               {headerLabel}
             </span>
+            <AiToggleButton />
             <span
               className={dirty ? styles.statusDirty : styles.statusSaved}
               data-testid="editor-status"
@@ -161,5 +167,23 @@ export function EditorPanel() {
         </>
       )}
     </div>
+  );
+}
+
+function AiToggleButton() {
+  const open = useUIStore((s) => s.aiPanelOpen);
+  const toggle = useUIStore((s) => s.toggleAiPanel);
+  return (
+    <button
+      type="button"
+      className={`${styles.aiToggle} ${open ? styles.aiToggleOn : ""}`}
+      aria-pressed={open}
+      aria-label="Toggle AI Assist panel"
+      title="AI Assist"
+      onClick={toggle}
+      data-testid="editor-ai-toggle"
+    >
+      <Sparkles size={14} aria-hidden="true" />
+    </button>
   );
 }
