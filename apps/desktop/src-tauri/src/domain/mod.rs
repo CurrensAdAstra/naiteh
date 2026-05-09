@@ -4,4 +4,6 @@ pub mod error;
 pub mod types;
 
 pub use error::AppError;
-pub use types::{NoteMeta, TimelineItem, VaultInfo};
+pub use types::{
+    DayMeta, JournalOpenResult, JournalSaveResult, NoteMeta, TimelineDay, TimelineItem, VaultInfo,
+};

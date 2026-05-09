@@ -19,7 +19,11 @@ export function NotesListPanel() {
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const openNote = useEditorStore((s) => s.openNote);
-  const openRelPath = useEditorStore((s) => s.open?.relPath ?? null);
+  const openRelPath = useEditorStore((s) =>
+    s.open !== null && s.open.source.kind === "note"
+      ? s.open.source.relPath
+      : null,
+  );
 
   const refresh = useCallback(async () => {
     try {

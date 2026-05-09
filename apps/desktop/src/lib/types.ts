@@ -35,6 +35,31 @@ export type TimelineItem =
       pinned: boolean;
     };
 
+export interface TimelineDay {
+  date: string;
+  items: TimelineItem[];
+}
+
+export interface DayMeta {
+  date: string;
+  hasEntry: boolean;
+  path: string | null;
+  mtime: number | null;
+  title: string | null;
+  snippet: string | null;
+}
+
+export interface JournalOpenResult {
+  path: string;
+  content: string;
+  exists: boolean;
+}
+
+export interface JournalSaveResult {
+  path: string;
+  mtime: number;
+}
+
 export type AppError =
   | { kind: "Io"; message: string }
   | { kind: "NotFound"; message: string }

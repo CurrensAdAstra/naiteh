@@ -4,11 +4,14 @@
 //! and delegates to a `*_impl` taking the vault root explicitly so it can be
 //! unit-tested against a tempdir.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use chrono::Local;
+use chrono::{DateTime, Local, NaiveDate};
 
-use crate::domain::{AppError, NoteMeta, TimelineItem};
+use crate::domain::{
+    AppError, DayMeta, JournalOpenResult, JournalSaveResult, NoteMeta, TimelineDay, TimelineItem,
+};
 use crate::services::config;
 use crate::services::fs as fsx;
 use crate::services::notes;
@@ -92,6 +95,250 @@ fn activity_recent_impl(vault_root: &Path, limit: u32) -> Result<Vec<TimelineIte
     items.sort_by_key(|i| std::cmp::Reverse(i.mtime()));
     items.truncate(limit as usize);
     Ok(items)
+}
+
+// ── journal_open ─────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn journal_open(date: String) -> Result<JournalOpenResult, AppError> {
+    let vault_root = config::current_vault_root()?;
+    journal_open_impl(&vault_root, &date)
+}
+
+fn journal_open_impl(vault_root: &Path, date: &str) -> Result<JournalOpenResult, AppError> {
+    validate_date(date)?;
+    let path = journal_path_for(vault_root, date);
+    let path_str = path.to_string_lossy().to_string();
+    match std::fs::read_to_string(&path) {
+        Ok(content) => Ok(JournalOpenResult {
+            path: path_str,
+            content,
+            exists: true,
+        }),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(JournalOpenResult {
+            path: path_str,
+            content: String::new(),
+            exists: false,
+        }),
+        Err(e) => Err(AppError::Io(e.to_string())),
+    }
+}
+
+// ── journal_save ─────────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn journal_save(date: String, content: String) -> Result<JournalSaveResult, AppError> {
+    let vault_root = config::current_vault_root()?;
+    journal_save_impl(&vault_root, &date, &content)
+}
+
+fn journal_save_impl(
+    vault_root: &Path,
+    date: &str,
+    content: &str,
+) -> Result<JournalSaveResult, AppError> {
+    validate_date(date)?;
+    let path = journal_path_for(vault_root, date);
+    fsx::atomic_write(&path, content.as_bytes())?;
+    let mtime = notes::mtime_secs(&path);
+    Ok(JournalSaveResult {
+        path: path.to_string_lossy().to_string(),
+        mtime,
+    })
+}
+
+// ── journal_month_meta ───────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn journal_month_meta(year: u16, month: u8) -> Result<Vec<DayMeta>, AppError> {
+    let vault_root = config::current_vault_root()?;
+    journal_month_meta_impl(&vault_root, year, month)
+}
+
+fn journal_month_meta_impl(
+    vault_root: &Path,
+    year: u16,
+    month: u8,
+) -> Result<Vec<DayMeta>, AppError> {
+    if !(1..=12).contains(&month) {
+        return Err(AppError::InvalidPath(format!("invalid month: {month}")));
+    }
+    let dir = vault_root
+        .join("journal")
+        .join(format!("{year:04}"))
+        .join(format!("{month:02}"));
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for entry in std::fs::read_dir(&dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("md") {
+            continue;
+        }
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        if validate_date(&stem).is_err() {
+            continue;
+        }
+        let mtime = notes::mtime_secs(&path);
+        let content = std::fs::read_to_string(&path).unwrap_or_default();
+        let (fm, body) = notes::parse_front_matter(&content);
+        let title = fm.title.or_else(|| notes::first_h1(body));
+        let snippet = (!body.trim().is_empty()).then(|| notes::make_snippet(body));
+        out.push(DayMeta {
+            date: stem,
+            has_entry: true,
+            path: Some(path.to_string_lossy().to_string()),
+            mtime: Some(mtime),
+            title,
+            snippet,
+        });
+    }
+    out.sort_by(|a, b| a.date.cmp(&b.date));
+    Ok(out)
+}
+
+// ── timeline_range ───────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn timeline_range(from: String, to: String) -> Result<Vec<TimelineDay>, AppError> {
+    let vault_root = config::current_vault_root()?;
+    timeline_range_impl(&vault_root, &from, &to)
+}
+
+fn timeline_range_impl(
+    vault_root: &Path,
+    from: &str,
+    to: &str,
+) -> Result<Vec<TimelineDay>, AppError> {
+    let from_d = parse_date(from)?;
+    let to_d = parse_date(to)?;
+    if from_d > to_d {
+        return Err(AppError::InvalidPath(format!("from > to: {from} > {to}")));
+    }
+
+    let mut journal_by_date: HashMap<String, TimelineItem> = HashMap::new();
+    for path in notes::collect_md_files(&vault_root.join("journal"))? {
+        let stem = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        if validate_date(&stem).is_err() {
+            continue;
+        }
+        journal_by_date.insert(stem, build_journal_item(&path));
+    }
+
+    let mut notes_by_date: HashMap<String, Vec<TimelineItem>> = HashMap::new();
+    for path in notes::collect_md_files(&vault_root.join("notes"))? {
+        let item = build_note_item(vault_root, &path);
+        let date = mtime_to_local_date(item.mtime());
+        notes_by_date.entry(date).or_default().push(item);
+    }
+
+    let mut days = Vec::new();
+    let mut cursor = from_d;
+    loop {
+        let date_str = cursor.format("%Y-%m-%d").to_string();
+        let mut items: Vec<TimelineItem> = Vec::new();
+        if let Some(je) = journal_by_date.remove(&date_str) {
+            items.push(je);
+        }
+        if let Some(mut day_notes) = notes_by_date.remove(&date_str) {
+            day_notes.sort_by_key(|i| std::cmp::Reverse(i.mtime()));
+            items.extend(day_notes);
+        }
+        days.push(TimelineDay {
+            date: date_str,
+            items,
+        });
+        if cursor == to_d {
+            break;
+        }
+        cursor = cursor
+            .succ_opt()
+            .ok_or_else(|| AppError::InvalidPath("date overflow".into()))?;
+    }
+    days.reverse();
+    Ok(days)
+}
+
+// ── timeline_pinned ──────────────────────────────────────────────────────
+
+#[tauri::command]
+pub fn timeline_pinned() -> Result<Vec<TimelineItem>, AppError> {
+    let vault_root = config::current_vault_root()?;
+    timeline_pinned_impl(&vault_root)
+}
+
+fn timeline_pinned_impl(vault_root: &Path) -> Result<Vec<TimelineItem>, AppError> {
+    let mut items: Vec<TimelineItem> = Vec::new();
+    for path in notes::collect_md_files(&vault_root.join("notes"))? {
+        let content = std::fs::read_to_string(&path).unwrap_or_default();
+        let (fm, _) = notes::parse_front_matter(&content);
+        if !fm.pinned {
+            continue;
+        }
+        items.push(build_note_item(vault_root, &path));
+    }
+    for path in notes::collect_md_files(&vault_root.join("journal"))? {
+        let content = std::fs::read_to_string(&path).unwrap_or_default();
+        let (fm, _) = notes::parse_front_matter(&content);
+        if !fm.pinned {
+            continue;
+        }
+        items.push(build_journal_item(&path));
+    }
+    items.sort_by_key(|i| std::cmp::Reverse(i.mtime()));
+    Ok(items)
+}
+
+// ── helpers ──────────────────────────────────────────────────────────────
+
+/// Strict `YYYY-MM-DD` validation — requires the canonical 10-character
+/// shape on top of `NaiveDate`'s parser, which would otherwise accept e.g.
+/// "26-05-09" as year 26.
+fn validate_date(date: &str) -> Result<(), AppError> {
+    parse_date(date).map(|_| ())
+}
+
+fn parse_date(date: &str) -> Result<NaiveDate, AppError> {
+    let bytes = date.as_bytes();
+    let well_shaped = bytes.len() == 10
+        && bytes[4] == b'-'
+        && bytes[7] == b'-'
+        && bytes[..4].iter().all(|c| c.is_ascii_digit())
+        && bytes[5..7].iter().all(|c| c.is_ascii_digit())
+        && bytes[8..10].iter().all(|c| c.is_ascii_digit());
+    if !well_shaped {
+        return Err(AppError::InvalidPath(format!(
+            "invalid date '{date}' (expected YYYY-MM-DD)"
+        )));
+    }
+    NaiveDate::parse_from_str(date, "%Y-%m-%d")
+        .map_err(|e| AppError::InvalidPath(format!("invalid date '{date}': {e}")))
+}
+
+fn journal_path_for(vault_root: &Path, date: &str) -> PathBuf {
+    let year = &date[0..4];
+    let month = &date[5..7];
+    vault_root
+        .join("journal")
+        .join(year)
+        .join(month)
+        .join(format!("{date}.md"))
+}
+
+fn mtime_to_local_date(secs: i64) -> String {
+    DateTime::from_timestamp(secs, 0)
+        .map(|d| d.with_timezone(&Local).format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| "1970-01-01".to_string())
 }
 
 fn build_journal_item(abs_path: &Path) -> TimelineItem {
@@ -297,5 +544,221 @@ mod tests {
         let json = serde_json::to_string(&item).unwrap();
         assert!(json.contains("\"kind\":\"Note\""));
         assert!(json.contains("\"relPath\":\"notes/x.md\""));
+    }
+
+    // ── journal_open ──────────────────────────────────────────────────────
+
+    #[test]
+    fn journal_open_returns_exists_false_when_file_is_missing() {
+        let vault = tempfile::tempdir().unwrap();
+        let result = journal_open_impl(vault.path(), "2026-05-09").unwrap();
+        assert!(!result.exists);
+        assert_eq!(result.content, "");
+        assert!(result.path.ends_with("journal/2026/05/2026-05-09.md"));
+    }
+
+    #[test]
+    fn journal_open_does_not_create_file() {
+        let vault = tempfile::tempdir().unwrap();
+        let _ = journal_open_impl(vault.path(), "2026-05-09").unwrap();
+        assert!(!vault.path().join("journal/2026/05/2026-05-09.md").exists());
+    }
+
+    #[test]
+    fn journal_open_returns_existing_content() {
+        let vault = tempfile::tempdir().unwrap();
+        let path = vault.path().join("journal/2026/05/2026-05-09.md");
+        fsx::atomic_write(&path, b"hello").unwrap();
+        let result = journal_open_impl(vault.path(), "2026-05-09").unwrap();
+        assert!(result.exists);
+        assert_eq!(result.content, "hello");
+    }
+
+    #[test]
+    fn journal_open_rejects_invalid_dates() {
+        let vault = tempfile::tempdir().unwrap();
+        for bad in ["2026-13-01", "26-05-09", "not-a-date", ""] {
+            let err = journal_open_impl(vault.path(), bad).unwrap_err();
+            assert!(matches!(err, AppError::InvalidPath(_)), "got {err:?}");
+        }
+    }
+
+    // ── journal_save ──────────────────────────────────────────────────────
+
+    #[test]
+    fn journal_save_creates_directory_tree_and_file() {
+        let vault = tempfile::tempdir().unwrap();
+        let result = journal_save_impl(vault.path(), "2026-05-09", "first version").unwrap();
+        let path = vault.path().join("journal/2026/05/2026-05-09.md");
+        assert!(path.is_file());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "first version");
+        assert!(result.path.ends_with("2026-05-09.md"));
+        assert!(result.mtime > 0);
+    }
+
+    #[test]
+    fn journal_save_overwrites_existing_file() {
+        let vault = tempfile::tempdir().unwrap();
+        journal_save_impl(vault.path(), "2026-05-09", "v1").unwrap();
+        journal_save_impl(vault.path(), "2026-05-09", "v2").unwrap();
+        let read = journal_open_impl(vault.path(), "2026-05-09").unwrap();
+        assert_eq!(read.content, "v2");
+    }
+
+    // ── journal_month_meta ────────────────────────────────────────────────
+
+    #[test]
+    fn journal_month_meta_lists_only_valid_dates_in_month() {
+        let vault = tempfile::tempdir().unwrap();
+        fsx::atomic_write(
+            &vault.path().join("journal/2026/05/2026-05-01.md"),
+            b"# May 1",
+        )
+        .unwrap();
+        fsx::atomic_write(
+            &vault.path().join("journal/2026/05/2026-05-09.md"),
+            b"---\ntitle: \"Friday\"\n---\nbody text",
+        )
+        .unwrap();
+        // Garbage filename should be skipped.
+        fsx::atomic_write(&vault.path().join("journal/2026/05/notes.md"), b"x").unwrap();
+        // Different month should not appear.
+        fsx::atomic_write(&vault.path().join("journal/2026/06/2026-06-01.md"), b"x").unwrap();
+
+        let metas = journal_month_meta_impl(vault.path(), 2026, 5).unwrap();
+        assert_eq!(metas.len(), 2);
+        assert_eq!(metas[0].date, "2026-05-01");
+        assert_eq!(metas[0].title.as_deref(), Some("May 1"));
+        assert_eq!(metas[1].date, "2026-05-09");
+        assert_eq!(metas[1].title.as_deref(), Some("Friday"));
+        assert!(metas[1].snippet.is_some());
+    }
+
+    #[test]
+    fn journal_month_meta_returns_empty_for_missing_month() {
+        let vault = tempfile::tempdir().unwrap();
+        let metas = journal_month_meta_impl(vault.path(), 2026, 5).unwrap();
+        assert!(metas.is_empty());
+    }
+
+    #[test]
+    fn journal_month_meta_rejects_invalid_month() {
+        let vault = tempfile::tempdir().unwrap();
+        let err = journal_month_meta_impl(vault.path(), 2026, 13).unwrap_err();
+        assert!(matches!(err, AppError::InvalidPath(_)));
+    }
+
+    // ── timeline_range ────────────────────────────────────────────────────
+
+    #[test]
+    fn timeline_range_returns_one_day_per_date_in_range_newest_first() {
+        let vault = tempfile::tempdir().unwrap();
+        let days = timeline_range_impl(vault.path(), "2026-05-01", "2026-05-03").unwrap();
+        assert_eq!(days.len(), 3);
+        assert_eq!(days[0].date, "2026-05-03");
+        assert_eq!(days[1].date, "2026-05-02");
+        assert_eq!(days[2].date, "2026-05-01");
+        for d in &days {
+            assert!(d.items.is_empty());
+        }
+    }
+
+    #[test]
+    fn timeline_range_attaches_journal_entry_for_its_date() {
+        let vault = tempfile::tempdir().unwrap();
+        fsx::atomic_write(
+            &vault.path().join("journal/2026/05/2026-05-02.md"),
+            b"# Tue",
+        )
+        .unwrap();
+        let days = timeline_range_impl(vault.path(), "2026-05-01", "2026-05-03").unwrap();
+        let tue = days.iter().find(|d| d.date == "2026-05-02").unwrap();
+        assert_eq!(tue.items.len(), 1);
+        match &tue.items[0] {
+            TimelineItem::JournalEntry { date, title, .. } => {
+                assert_eq!(date, "2026-05-02");
+                assert_eq!(title, "Tue");
+            }
+            other => panic!("expected journal entry, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn timeline_range_groups_notes_by_local_mtime_date() {
+        let vault = tempfile::tempdir().unwrap();
+        // Use SystemTime to land "today" so we can predict the date.
+        let today = Local::now().format("%Y-%m-%d").to_string();
+        let now = SystemTime::now();
+        touch(
+            &vault.path().join("notes/work/standup.md"),
+            b"---\ntitle: \"Standup\"\n---\nbody",
+            now,
+        );
+        let days = timeline_range_impl(vault.path(), &today, &today).unwrap();
+        assert_eq!(days.len(), 1);
+        assert_eq!(days[0].items.len(), 1);
+        match &days[0].items[0] {
+            TimelineItem::Note { rel_path, .. } => {
+                assert_eq!(rel_path, "notes/work/standup.md");
+            }
+            other => panic!("expected note, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn timeline_range_rejects_inverted_range() {
+        let vault = tempfile::tempdir().unwrap();
+        let err = timeline_range_impl(vault.path(), "2026-05-10", "2026-05-01").unwrap_err();
+        assert!(matches!(err, AppError::InvalidPath(_)));
+    }
+
+    // ── timeline_pinned ───────────────────────────────────────────────────
+
+    #[test]
+    fn timeline_pinned_returns_only_pinned_items_newest_first() {
+        let vault = tempfile::tempdir().unwrap();
+        let now = SystemTime::now();
+        touch(
+            &vault.path().join("notes/work/standup.md"),
+            b"---\ntitle: \"Standup\"\npinned: true\n---\nbody",
+            now - Duration::from_secs(60),
+        );
+        touch(
+            &vault.path().join("notes/personal/idea.md"),
+            b"---\ntitle: \"Idea\"\n---\nbody",
+            now - Duration::from_secs(20),
+        );
+        touch(
+            &vault.path().join("journal/2026/05/2026-05-09.md"),
+            b"---\ntitle: \"Day\"\npinned: true\n---\nbody",
+            now,
+        );
+        let pinned = timeline_pinned_impl(vault.path()).unwrap();
+        assert_eq!(pinned.len(), 2);
+        match &pinned[0] {
+            TimelineItem::JournalEntry { title, .. } => assert_eq!(title, "Day"),
+            other => panic!("expected pinned journal first, got {other:?}"),
+        }
+        match &pinned[1] {
+            TimelineItem::Note {
+                title, pinned: p, ..
+            } => {
+                assert_eq!(title, "Standup");
+                assert!(*p);
+            }
+            other => panic!("expected pinned note second, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn timeline_pinned_returns_empty_when_nothing_is_pinned() {
+        let vault = tempfile::tempdir().unwrap();
+        fsx::atomic_write(
+            &vault.path().join("notes/work/x.md"),
+            b"---\ntitle: \"Work\"\n---\nbody",
+        )
+        .unwrap();
+        let pinned = timeline_pinned_impl(vault.path()).unwrap();
+        assert!(pinned.is_empty());
     }
 }

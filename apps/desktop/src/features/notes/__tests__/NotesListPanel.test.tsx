@@ -69,7 +69,12 @@ describe("NotesListPanel", () => {
     const fileButton = await screen.findByTestId("notes-file-notes/loose.md");
     await user.click(fileButton);
     await waitFor(() => {
-      expect(useEditorStore.getState().open?.relPath).toBe("notes/loose.md");
+      const open = useEditorStore.getState().open;
+      expect(open).not.toBeNull();
+      expect(open!.source).toEqual({
+        kind: "note",
+        relPath: "notes/loose.md",
+      });
     });
     expect(useEditorStore.getState().open?.content).toBe("hello body");
   });
@@ -110,11 +115,15 @@ describe("NotesListPanel", () => {
   it("highlights the currently open note", async () => {
     mockedList.mockResolvedValue([note("notes/loose.md", "Loose")]);
     useEditorStore.setState({
-      open: { relPath: "notes/loose.md", content: "x", savedContent: "x" },
+      open: {
+        source: { kind: "note", relPath: "notes/loose.md" },
+        key: "note:notes/loose.md",
+        content: "x",
+        savedContent: "x",
+      },
     });
     render(<NotesListPanel />);
     const row = await screen.findByTestId("notes-file-notes/loose.md");
-    // active class is the second token in className
     expect(row.className).toMatch(/rowActive/);
   });
 

@@ -9,6 +9,44 @@ pub struct VaultInfo {
     pub initialized: bool,
 }
 
+/// architecture.md §6.1
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DayMeta {
+    pub date: String,
+    pub has_entry: bool,
+    pub path: Option<String>,
+    pub mtime: Option<i64>,
+    pub title: Option<String>,
+    pub snippet: Option<String>,
+}
+
+/// architecture.md §6.1
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JournalOpenResult {
+    pub path: String,
+    pub content: String,
+    pub exists: bool,
+}
+
+/// architecture.md §6.1
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct JournalSaveResult {
+    pub path: String,
+    pub mtime: i64,
+}
+
+/// architecture.md §6.3 — one entry per date in a `timeline_range` query,
+/// even when the date has no items.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineDay {
+    pub date: String,
+    pub items: Vec<TimelineItem>,
+}
+
 /// architecture.md §6.2
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

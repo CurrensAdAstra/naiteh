@@ -22,13 +22,41 @@ vi.mock("@codemirror/state", () => ({
 vi.mock("../../lib/api/notes", () => ({
   notesWrite: vi.fn().mockResolvedValue({}),
 }));
+vi.mock("../../lib/api/journal", () => ({
+  journalSave: vi.fn().mockResolvedValue({}),
+}));
 
+import { journalSave } from "../../lib/api/journal";
 import { notesWrite } from "../../lib/api/notes";
 const mockedWrite = vi.mocked(notesWrite);
+const mockedJournalSave = vi.mocked(journalSave);
+
+function noteOpen(relPath: string, content: string, saved: string) {
+  return {
+    source: { kind: "note" as const, relPath },
+    key: `note:${relPath}`,
+    content,
+    savedContent: saved,
+  };
+}
+
+function journalOpen(date: string, content: string, saved: string) {
+  return {
+    source: {
+      kind: "journal" as const,
+      date,
+      relPath: `journal/${date.slice(0, 4)}/${date.slice(5, 7)}/${date}.md`,
+    },
+    key: `journal:${date}`,
+    content,
+    savedContent: saved,
+  };
+}
 
 describe("EditorPanel", () => {
   beforeEach(() => {
     mockedWrite.mockClear();
+    mockedJournalSave.mockClear();
     useEditorStore.setState({ open: null });
   });
 
@@ -39,25 +67,21 @@ describe("EditorPanel", () => {
 
   it("renders the toolbar with rel path when a note is open", () => {
     useEditorStore.setState({
-      open: {
-        relPath: "notes/work/standup.md",
-        content: "hello",
-        savedContent: "hello",
-      },
+      open: noteOpen("notes/work/standup.md", "hello", "hello"),
     });
     render(<EditorPanel />);
     expect(screen.getByText("notes/work/standup.md")).toBeInTheDocument();
     expect(screen.getByTestId("editor-status")).toHaveTextContent(/saved/i);
   });
 
+  it("renders a journal-flavored toolbar when a journal entry is open", () => {
+    useEditorStore.setState({ open: journalOpen("2026-05-09", "x", "x") });
+    render(<EditorPanel />);
+    expect(screen.getByText(/journal · 2026-05-09/i)).toBeInTheDocument();
+  });
+
   it("flips to the dirty status when content drifts from disk", () => {
-    useEditorStore.setState({
-      open: {
-        relPath: "notes/x.md",
-        content: "a",
-        savedContent: "a",
-      },
-    });
+    useEditorStore.setState({ open: noteOpen("notes/x.md", "a", "a") });
     render(<EditorPanel />);
     act(() => {
       useEditorStore.getState().setContent("a-modified");
@@ -66,15 +90,9 @@ describe("EditorPanel", () => {
   });
 
   it(
-    "autosaves after the debounce window and marks the note saved",
+    "autosaves a note via notesWrite after the debounce window",
     async () => {
-      useEditorStore.setState({
-        open: {
-          relPath: "notes/x.md",
-          content: "a",
-          savedContent: "a",
-        },
-      });
+      useEditorStore.setState({ open: noteOpen("notes/x.md", "a", "a") });
       render(<EditorPanel />);
       act(() => {
         useEditorStore.getState().setContent("dirty");
@@ -88,18 +106,35 @@ describe("EditorPanel", () => {
       await waitFor(() => {
         expect(useEditorStore.getState().open?.savedContent).toBe("dirty");
       });
+      expect(mockedJournalSave).not.toHaveBeenCalled();
     },
     2000,
   );
 
-  it("Cmd+S triggers an immediate save", async () => {
-    useEditorStore.setState({
-      open: {
-        relPath: "notes/x.md",
-        content: "fresh",
-        savedContent: "old",
-      },
-    });
+  it(
+    "autosaves a journal entry via journalSave after the debounce window",
+    async () => {
+      useEditorStore.setState({ open: journalOpen("2026-05-09", "a", "a") });
+      render(<EditorPanel />);
+      act(() => {
+        useEditorStore.getState().setContent("dirty");
+      });
+      await waitFor(
+        () => {
+          expect(mockedJournalSave).toHaveBeenCalledWith(
+            "2026-05-09",
+            "dirty",
+          );
+        },
+        { timeout: 1500 },
+      );
+      expect(mockedWrite).not.toHaveBeenCalled();
+    },
+    2000,
+  );
+
+  it("Cmd+S triggers an immediate save dispatched by source kind", async () => {
+    useEditorStore.setState({ open: noteOpen("notes/x.md", "fresh", "old") });
     render(<EditorPanel />);
     window.dispatchEvent(
       new KeyboardEvent("keydown", { key: "s", metaKey: true }),

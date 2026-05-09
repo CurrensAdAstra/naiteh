@@ -11,10 +11,24 @@ describe("editorStore", () => {
     useEditorStore.getState().openNote("notes/x.md", "hello");
     const open = useEditorStore.getState().open;
     expect(open).not.toBeNull();
-    expect(open!.relPath).toBe("notes/x.md");
+    expect(open!.source).toEqual({ kind: "note", relPath: "notes/x.md" });
+    expect(open!.key).toBe("note:notes/x.md");
     expect(open!.content).toBe("hello");
     expect(open!.savedContent).toBe("hello");
     expect(isDirty(open!)).toBe(false);
+  });
+
+  it("openJournal stores the date and rel path", () => {
+    useEditorStore
+      .getState()
+      .openJournal("2026-05-09", "journal/2026/05/2026-05-09.md", "");
+    const open = useEditorStore.getState().open;
+    expect(open!.source).toEqual({
+      kind: "journal",
+      date: "2026-05-09",
+      relPath: "journal/2026/05/2026-05-09.md",
+    });
+    expect(open!.key).toBe("journal:2026-05-09");
   });
 
   it("setContent diverges content from savedContent", () => {
