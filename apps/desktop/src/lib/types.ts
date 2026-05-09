@@ -60,6 +60,11 @@ export interface JournalSaveResult {
   mtime: number;
 }
 
+export interface TagCount {
+  tag: string;
+  count: number;
+}
+
 export type AppError =
   | { kind: "Io"; message: string }
   | { kind: "NotFound"; message: string }

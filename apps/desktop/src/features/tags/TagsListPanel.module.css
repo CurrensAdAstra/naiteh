@@ -24,8 +24,117 @@
 
 .body {
   flex: 1;
-  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  font-size: var(--font-size-ui);
+}
+
+.empty,
+.error {
   padding: 12px;
   color: var(--color-text-muted);
-  font-size: var(--font-size-ui);
+}
+
+.error {
+  color: var(--color-danger);
+}
+
+.section {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.sectionHeader {
+  padding: 6px 12px;
+  border-top: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-bg-listpanel);
+  color: var(--color-text-secondary);
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.tagsList {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  max-height: 50%;
+  overflow: auto;
+}
+
+.notesList {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+  flex: 1;
+  overflow: auto;
+}
+
+.tagRow {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 4px 12px;
+  text-align: left;
+  color: var(--color-text-primary);
+}
+
+.tagRow:hover {
+  background: var(--color-hover);
+}
+
+.tagRowActive {
+  background: var(--color-active);
+}
+
+.tagName {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tagCount {
+  flex-shrink: 0;
+  margin-left: 8px;
+  color: var(--color-text-muted);
+  font-size: 11px;
+}
+
+.noteRow {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  padding: 6px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--color-border);
+  color: var(--color-text-primary);
+}
+
+.noteRow:hover {
+  background: var(--color-hover);
+}
+
+.noteRowActive {
+  background: var(--color-active);
+}
+
+.noteTitle {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.noteRelPath {
+  margin-top: 2px;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
