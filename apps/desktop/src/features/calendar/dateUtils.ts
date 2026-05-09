@@ -41,7 +41,7 @@ export function rangeAround(
   return { from: formatLocalDate(from), to: formatLocalDate(to) };
 }
 
-function parseLocalDate(s: string): Date | null {
+export function parseLocalDate(s: string): Date | null {
   if (s.length !== 10 || s[4] !== "-" || s[7] !== "-") return null;
   const y = Number(s.slice(0, 4));
   const m = Number(s.slice(5, 7));
@@ -50,6 +50,74 @@ function parseLocalDate(s: string): Date | null {
     return null;
   }
   return new Date(y, m - 1, d);
+}
+
+export function startOfMonth(d: Date): Date {
+  return new Date(d.getFullYear(), d.getMonth(), 1);
+}
+
+export function endOfMonth(d: Date): Date {
+  return new Date(d.getFullYear(), d.getMonth() + 1, 0);
+}
+
+export function addMonths(d: Date, delta: number): Date {
+  return new Date(d.getFullYear(), d.getMonth() + delta, 1);
+}
+
+/** "May 2026" — 4-digit year, full English month name. */
+export function monthLabel(d: Date): string {
+  const months = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+  ];
+  return `${months[d.getMonth()]} ${d.getFullYear()}`;
+}
+
+export interface GridCell {
+  date: string;
+  inMonth: boolean;
+}
+
+/**
+ * Build a 6-row × 7-col grid (always 42 cells) for the month containing
+ * `month`, padded with the trailing days of the previous month at the start
+ * and the leading days of the next month at the end. Weeks are Sunday-first.
+ */
+export function buildGridCells(month: Date): GridCell[] {
+  const first = startOfMonth(month);
+  const last = endOfMonth(month);
+  const startWeekday = first.getDay(); // 0 = Sun
+  const cells: GridCell[] = [];
+
+  for (let i = startWeekday - 1; i >= 0; i--) {
+    const d = new Date(first);
+    d.setDate(d.getDate() - (i + 1));
+    cells.push({ date: formatLocalDate(d), inMonth: false });
+  }
+  for (let day = 1; day <= last.getDate(); day++) {
+    const d = new Date(month.getFullYear(), month.getMonth(), day);
+    cells.push({ date: formatLocalDate(d), inMonth: true });
+  }
+  while (cells.length < 42) {
+    const tail = cells[cells.length - 1];
+    if (tail === undefined) break;
+    const tailDate = parseLocalDate(tail.date);
+    if (tailDate === null) break;
+    const next = new Date(tailDate);
+    next.setDate(next.getDate() + 1);
+    cells.push({ date: formatLocalDate(next), inMonth: false });
+  }
+  return cells;
 }
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];

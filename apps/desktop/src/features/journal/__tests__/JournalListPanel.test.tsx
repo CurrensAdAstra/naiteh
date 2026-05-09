@@ -3,19 +3,32 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { NoteMeta, TimelineItem } from "../../../lib/types";
+import { useEditorStore } from "../../../state/editorStore";
 import { JournalListPanel } from "../JournalListPanel";
 
 vi.mock("../../../lib/api/journal", () => ({
   quickCreate: vi.fn(),
   quickList: vi.fn(),
   activityRecent: vi.fn(),
+  journalOpen: vi.fn(),
+}));
+vi.mock("../../../lib/api/notes", () => ({
+  notesRead: vi.fn(),
 }));
 
-import { activityRecent, quickCreate, quickList } from "../../../lib/api/journal";
+import {
+  activityRecent,
+  journalOpen,
+  quickCreate,
+  quickList,
+} from "../../../lib/api/journal";
+import { notesRead } from "../../../lib/api/notes";
 
 const mockedQuickList = vi.mocked(quickList);
 const mockedQuickCreate = vi.mocked(quickCreate);
 const mockedActivityRecent = vi.mocked(activityRecent);
+const mockedNotesRead = vi.mocked(notesRead);
+const mockedJournalOpen = vi.mocked(journalOpen);
 
 const noteFixture: NoteMeta = {
   path: "/v/notes/_inbox/2026-05-09T10-00-00.md",
@@ -50,6 +63,9 @@ describe("JournalListPanel", () => {
     mockedQuickList.mockReset();
     mockedQuickCreate.mockReset();
     mockedActivityRecent.mockReset();
+    mockedNotesRead.mockReset();
+    mockedJournalOpen.mockReset();
+    useEditorStore.setState({ open: null });
   });
 
   it("renders empty states when both lists are empty", async () => {
@@ -87,24 +103,89 @@ describe("JournalListPanel", () => {
     expect(within(activitySection).getByLabelText("pinned")).toBeInTheDocument();
   });
 
-  it('calls quick_create then refreshes when "+ New quick note" is clicked', async () => {
+  it('quick_create immediately opens the new note in the editor', async () => {
     mockedQuickList.mockResolvedValue([]);
     mockedActivityRecent.mockResolvedValue([]);
     mockedQuickCreate.mockResolvedValue(noteFixture);
+    mockedNotesRead.mockResolvedValue("");
     const user = userEvent.setup();
     render(<JournalListPanel />);
     await screen.findByText(/no quick notes yet/i);
 
-    // After create, refresh should pull the new note.
+    // After create, refresh pulls the new note.
     mockedQuickList.mockResolvedValue([noteFixture]);
-    mockedActivityRecent.mockResolvedValue([]);
 
     await user.click(screen.getByRole("button", { name: /new quick note/i }));
     await waitFor(() => expect(mockedQuickCreate).toHaveBeenCalledTimes(1));
     await within(screen.getByTestId("journal-quick-capture")).findByText(
       noteFixture.title,
     );
-    expect(mockedQuickList).toHaveBeenCalledTimes(2);
+    await waitFor(() => {
+      expect(mockedNotesRead).toHaveBeenCalledWith(noteFixture.relPath);
+      expect(useEditorStore.getState().open?.source).toEqual({
+        kind: "note",
+        relPath: noteFixture.relPath,
+      });
+    });
+  });
+
+  it("clicking a Quick Capture entry opens it via notesRead", async () => {
+    mockedQuickList.mockResolvedValue([noteFixture]);
+    mockedActivityRecent.mockResolvedValue([]);
+    mockedNotesRead.mockResolvedValue("note body");
+    const user = userEvent.setup();
+    render(<JournalListPanel />);
+    const button = await screen.findByTestId(
+      `quick-note-${noteFixture.relPath}`,
+    );
+    await user.click(button);
+    await waitFor(() => {
+      expect(mockedNotesRead).toHaveBeenCalledWith(noteFixture.relPath);
+      expect(useEditorStore.getState().open?.source).toEqual({
+        kind: "note",
+        relPath: noteFixture.relPath,
+      });
+    });
+  });
+
+  it("clicking a Recent Activity journal entry dispatches journalOpen", async () => {
+    mockedQuickList.mockResolvedValue([]);
+    mockedActivityRecent.mockResolvedValue([journalEntryFixture]);
+    mockedJournalOpen.mockResolvedValue({
+      path: "ignored",
+      content: "day body",
+      exists: true,
+    });
+    const user = userEvent.setup();
+    render(<JournalListPanel />);
+    const button = await screen.findByTestId(
+      `activity-journal:${journalEntryFixture.date}`,
+    );
+    await user.click(button);
+    await waitFor(() => {
+      expect(mockedJournalOpen).toHaveBeenCalledWith(journalEntryFixture.date);
+      expect(useEditorStore.getState().open?.source).toEqual({
+        kind: "journal",
+        date: journalEntryFixture.date,
+        relPath: `journal/2026/05/${journalEntryFixture.date}.md`,
+      });
+    });
+    expect(mockedNotesRead).not.toHaveBeenCalled();
+  });
+
+  it("clicking a Recent Activity note dispatches notesRead", async () => {
+    mockedQuickList.mockResolvedValue([]);
+    mockedActivityRecent.mockResolvedValue([noteItemFixture]);
+    mockedNotesRead.mockResolvedValue("standup body");
+    const user = userEvent.setup();
+    render(<JournalListPanel />);
+    const button = await screen.findByTestId(
+      `activity-note:${noteItemFixture.relPath}`,
+    );
+    await user.click(button);
+    await waitFor(() => {
+      expect(mockedNotesRead).toHaveBeenCalledWith(noteItemFixture.relPath);
+    });
   });
 
   it("surfaces backend errors", async () => {

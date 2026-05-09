@@ -1,10 +1,15 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  addMonths,
+  buildGridCells,
+  endOfMonth,
   formatDayHeader,
   formatLocalDate,
   journalRelPathFor,
+  monthLabel,
   rangeAround,
+  startOfMonth,
   todayLocal,
 } from "../dateUtils";
 
@@ -38,5 +43,44 @@ describe("dateUtils", () => {
     expect(journalRelPathFor("2026-05-09")).toBe(
       "journal/2026/05/2026-05-09.md",
     );
+  });
+
+  it("startOfMonth / endOfMonth return month boundaries", () => {
+    const d = new Date(2026, 4, 17);
+    expect(formatLocalDate(startOfMonth(d))).toBe("2026-05-01");
+    expect(formatLocalDate(endOfMonth(d))).toBe("2026-05-31");
+  });
+
+  it("addMonths shifts by N months and clamps to day 1", () => {
+    expect(formatLocalDate(addMonths(new Date(2026, 4, 17), 1))).toBe(
+      "2026-06-01",
+    );
+    expect(formatLocalDate(addMonths(new Date(2026, 0, 31), -1))).toBe(
+      "2025-12-01",
+    );
+  });
+
+  it("monthLabel uses the full month name + 4-digit year", () => {
+    expect(monthLabel(new Date(2026, 4, 1))).toBe("May 2026");
+    expect(monthLabel(new Date(2026, 11, 31))).toBe("December 2026");
+  });
+
+  it("buildGridCells produces 42 cells starting on Sunday", () => {
+    const cells = buildGridCells(new Date(2026, 4, 1));
+    expect(cells).toHaveLength(42);
+    // 2026-05-01 is a Friday, so the grid starts at the previous Sunday
+    // (2026-04-26).
+    expect(cells[0]?.date).toBe("2026-04-26");
+    expect(cells[0]?.inMonth).toBe(false);
+    const may1 = cells.find((c) => c.date === "2026-05-01");
+    expect(may1?.inMonth).toBe(true);
+  });
+
+  it("buildGridCells flags days outside the current month", () => {
+    const cells = buildGridCells(new Date(2026, 4, 15));
+    const inMonth = cells.filter((c) => c.inMonth);
+    expect(inMonth).toHaveLength(31);
+    expect(inMonth[0]?.date).toBe("2026-05-01");
+    expect(inMonth[inMonth.length - 1]?.date).toBe("2026-05-31");
   });
 });

@@ -8,6 +8,7 @@ import {
 } from "react";
 
 import { activityRecent, quickCreate, quickList } from "../../lib/api/journal";
+import { openByRelPath } from "../../lib/openByRelPath";
 import { formatAppError } from "../../lib/types";
 import type { NoteMeta, TimelineItem } from "../../lib/types";
 import {
@@ -15,6 +16,7 @@ import {
   JOURNAL_SPLIT_MIN,
   useUIStore,
 } from "../../state/uiStore";
+import { useEditorStore } from "../../state/editorStore";
 import { formatRelative } from "./formatRelative";
 import styles from "./JournalListPanel.module.css";
 
@@ -25,6 +27,14 @@ interface DragStart {
 }
 
 const LIST_LIMIT = 50;
+
+function timelineItemRelPath(item: TimelineItem): string {
+  if (item.kind === "JournalEntry") {
+    const date = item.date;
+    return `journal/${date.slice(0, 4)}/${date.slice(5, 7)}/${date}.md`;
+  }
+  return item.relPath;
+}
 
 export function JournalListPanel() {
   const ratio = useUIStore((s) => s.journalSplitRatio);
@@ -37,6 +47,7 @@ export function JournalListPanel() {
   const [activity, setActivity] = useState<TimelineItem[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const openRelPath = useEditorStore((s) => s.open?.source.relPath ?? null);
 
   const refresh = useCallback(async () => {
     try {
@@ -56,11 +67,20 @@ export function JournalListPanel() {
     void refresh();
   }, [refresh]);
 
+  const handleOpenRelPath = useCallback(async (relPath: string) => {
+    try {
+      await openByRelPath(relPath);
+    } catch (e) {
+      setError(formatAppError(e));
+    }
+  }, []);
+
   async function handleNewQuickNote() {
     setCreating(true);
     try {
-      await quickCreate();
+      const meta = await quickCreate();
       await refresh();
+      await handleOpenRelPath(meta.relPath);
     } catch (e) {
       setError(formatAppError(e));
     } finally {
@@ -125,16 +145,26 @@ export function JournalListPanel() {
           )}
           {quickNotes.length > 0 && (
             <ul className={styles.list}>
-              {quickNotes.map((note) => (
-                <li key={note.path} className={styles.item}>
-                  <div className={styles.itemHeader}>
-                    <span className={styles.itemTitle}>{note.title}</span>
-                    <span className={styles.itemMtime}>
-                      {formatRelative(note.mtime)}
-                    </span>
-                  </div>
-                </li>
-              ))}
+              {quickNotes.map((note) => {
+                const isActive = note.relPath === openRelPath;
+                return (
+                  <li key={note.path}>
+                    <button
+                      type="button"
+                      className={`${styles.item} ${isActive ? styles.itemActive : ""}`}
+                      onClick={() => void handleOpenRelPath(note.relPath)}
+                      data-testid={`quick-note-${note.relPath}`}
+                    >
+                      <span className={styles.itemHeader}>
+                        <span className={styles.itemTitle}>{note.title}</span>
+                        <span className={styles.itemMtime}>
+                          {formatRelative(note.mtime)}
+                        </span>
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>
@@ -164,34 +194,47 @@ export function JournalListPanel() {
           )}
           {activity.length > 0 && (
             <ul className={styles.list}>
-              {activity.map((item) => (
-                <li key={timelineKey(item)} className={styles.item}>
-                  <div className={styles.itemHeader}>
-                    <span
-                      className={styles.kindBadge}
-                      title={item.kind === "JournalEntry" ? "Journal" : "Note"}
+              {activity.map((item) => {
+                const relPath = timelineItemRelPath(item);
+                const isActive = relPath === openRelPath;
+                return (
+                  <li key={timelineKey(item)}>
+                    <button
+                      type="button"
+                      className={`${styles.item} ${isActive ? styles.itemActive : ""}`}
+                      onClick={() => void handleOpenRelPath(relPath)}
+                      data-testid={`activity-${timelineKey(item)}`}
                     >
-                      {item.kind === "JournalEntry" ? "J" : "N"}
-                    </span>
-                    <span className={styles.itemTitle}>{item.title}</span>
-                    {item.kind === "Note" && item.pinned && (
-                      <span
-                        className={styles.pinned}
-                        aria-label="pinned"
-                        title="pinned"
-                      >
-                        ★
+                      <span className={styles.itemHeader}>
+                        <span
+                          className={styles.kindBadge}
+                          title={item.kind === "JournalEntry" ? "Journal" : "Note"}
+                        >
+                          {item.kind === "JournalEntry" ? "J" : "N"}
+                        </span>
+                        <span className={styles.itemTitle}>{item.title}</span>
+                        {item.kind === "Note" && item.pinned && (
+                          <span
+                            className={styles.pinned}
+                            aria-label="pinned"
+                            title="pinned"
+                          >
+                            ★
+                          </span>
+                        )}
+                        <span className={styles.itemMtime}>
+                          {formatRelative(item.mtime)}
+                        </span>
                       </span>
-                    )}
-                    <span className={styles.itemMtime}>
-                      {formatRelative(item.mtime)}
-                    </span>
-                  </div>
-                  {item.snippet !== "" && (
-                    <span className={styles.itemSnippet}>{item.snippet}</span>
-                  )}
-                </li>
-              ))}
+                      {item.snippet !== "" && (
+                        <span className={styles.itemSnippet}>
+                          {item.snippet}
+                        </span>
+                      )}
+                    </button>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>
@@ -202,6 +245,6 @@ export function JournalListPanel() {
 
 function timelineKey(item: TimelineItem): string {
   return item.kind === "JournalEntry"
-    ? `journal:${item.path}`
+    ? `journal:${item.date}`
     : `note:${item.relPath}`;
 }
