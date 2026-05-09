@@ -68,6 +68,16 @@ pub struct TagCount {
     pub count: u32,
 }
 
+/// architecture.md §6.5
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchHit {
+    pub rel_path: String,
+    pub title: String,
+    pub line: u32,
+    pub excerpt: String,
+}
+
 /// architecture.md §6.3 — used by both journal "Recent Activity" and the
 /// calendar timeline. Variants stay in PascalCase so `kind` reads as
 /// `"JournalEntry"` / `"Note"` on the wire; fields are camelCased per

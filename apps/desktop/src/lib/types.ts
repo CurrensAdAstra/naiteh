@@ -65,6 +65,13 @@ export interface TagCount {
   count: number;
 }
 
+export interface SearchHit {
+  relPath: string;
+  title: string;
+  line: number;
+  excerpt: string;
+}
+
 export type AppError =
   | { kind: "Io"; message: string }
   | { kind: "NotFound"; message: string }

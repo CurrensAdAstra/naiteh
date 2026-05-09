@@ -5,6 +5,6 @@ pub mod types;
 
 pub use error::AppError;
 pub use types::{
-    DayMeta, JournalOpenResult, JournalSaveResult, NoteMeta, TagCount, TimelineDay, TimelineItem,
-    VaultInfo,
+    DayMeta, JournalOpenResult, JournalSaveResult, NoteMeta, SearchHit, TagCount, TimelineDay,
+    TimelineItem, VaultInfo,
 };
