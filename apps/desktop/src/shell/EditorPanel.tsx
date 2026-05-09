@@ -1,7 +1,7 @@
 import { markdown } from "@codemirror/lang-markdown";
-import { EditorState } from "@codemirror/state";
+import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import { EditorView, basicSetup } from "codemirror";
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, type CSSProperties } from "react";
 
 import { journalSave } from "../lib/api/journal";
 import { notesWrite } from "../lib/api/notes";
@@ -11,6 +11,7 @@ import {
   useEditorStore,
   type OpenSource,
 } from "../state/editorStore";
+import { selectEditorConfig, useSettingsStore } from "../state/settingsStore";
 import styles from "./EditorPanel.module.css";
 
 const AUTOSAVE_DELAY_MS = 800;
@@ -27,8 +28,10 @@ export function EditorPanel() {
   const open = useEditorStore((s) => s.open);
   const setContent = useEditorStore((s) => s.setContent);
   const markSaved = useEditorStore((s) => s.markSaved);
+  const editorConfig = useSettingsStore(selectEditorConfig);
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
+  const wrapCompartmentRef = useRef<Compartment | null>(null);
 
   const editorKey = open?.key ?? null;
   const dirty = open !== null && isDirty(open);
@@ -52,12 +55,18 @@ export function EditorPanel() {
     const container = containerRef.current;
     if (container === null || editorKey === null) return;
     const initial = useEditorStore.getState().open?.savedContent ?? "";
+    const wrapCompartment = new Compartment();
+    wrapCompartmentRef.current = wrapCompartment;
+    const initialWrap: Extension =
+      useSettingsStore.getState().config?.editor.lineWrapping ?? true
+        ? EditorView.lineWrapping
+        : [];
     const state = EditorState.create({
       doc: initial,
       extensions: [
         basicSetup,
         markdown(),
-        EditorView.lineWrapping,
+        wrapCompartment.of(initialWrap),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
             setContent(update.state.doc.toString());
@@ -70,8 +79,21 @@ export function EditorPanel() {
     return () => {
       view.destroy();
       viewRef.current = null;
+      wrapCompartmentRef.current = null;
     };
   }, [editorKey, setContent]);
+
+  // Live-apply the line-wrapping preference to the existing view.
+  useEffect(() => {
+    const view = viewRef.current;
+    const compartment = wrapCompartmentRef.current;
+    if (view === null || compartment === null) return;
+    view.dispatch({
+      effects: compartment.reconfigure(
+        editorConfig.lineWrapping ? EditorView.lineWrapping : [],
+      ),
+    });
+  }, [editorConfig.lineWrapping]);
 
   // Debounced autosave when the editor content drifts from disk.
   useEffect(() => {
@@ -105,6 +127,15 @@ export function EditorPanel() {
         ? `Journal · ${open.source.date}`
         : open.source.relPath;
 
+  // Override the editor token with the user's chosen font size (CSS var
+  // is consumed inside EditorPanel.module.css's `.editor :global(.cm-…)`).
+  const editorStyle = useMemo<CSSProperties>(
+    () => ({
+      ["--font-size-editor" as string]: `${editorConfig.fontSize}px`,
+    }),
+    [editorConfig.fontSize],
+  );
+
   return (
     <div className={styles.panel} data-testid="editor-panel">
       {open === null ? (
@@ -122,7 +153,11 @@ export function EditorPanel() {
               {dirty ? "● Unsaved" : "Saved"}
             </span>
           </div>
-          <div ref={containerRef} className={styles.editor} />
+          <div
+            ref={containerRef}
+            className={styles.editor}
+            style={editorStyle}
+          />
         </>
       )}
     </div>

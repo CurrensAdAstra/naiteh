@@ -9,6 +9,7 @@ import { EditorPanel } from "../EditorPanel";
 vi.mock("codemirror", () => {
   class MockEditorView {
     destroy = vi.fn();
+    dispatch = vi.fn();
     static lineWrapping = { extension: null };
     static updateListener = { of: () => null };
   }
@@ -17,6 +18,14 @@ vi.mock("codemirror", () => {
 vi.mock("@codemirror/lang-markdown", () => ({ markdown: () => null }));
 vi.mock("@codemirror/state", () => ({
   EditorState: { create: () => ({}) },
+  Compartment: class {
+    of() {
+      return null;
+    }
+    reconfigure() {
+      return null;
+    }
+  },
 }));
 
 vi.mock("../../lib/api/notes", () => ({

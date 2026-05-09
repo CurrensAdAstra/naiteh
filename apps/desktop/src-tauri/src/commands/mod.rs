@@ -4,6 +4,7 @@
 pub mod journal;
 pub mod notes;
 pub mod search;
+pub mod settings;
 pub mod sync;
 pub mod tags;
 pub mod vault;

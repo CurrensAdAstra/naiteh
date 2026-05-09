@@ -81,6 +81,32 @@ export interface SyncStatus {
   lastSync: number | null;
 }
 
+export interface EditorConfig {
+  fontSize: number;
+  lineWrapping: boolean;
+}
+
+export interface CalendarConfig {
+  subView: string;
+}
+
+export interface JournalConfig {
+  splitRatio: number;
+}
+
+export interface AppConfig {
+  activeVault: string | null;
+  knownVaults: string[];
+  theme: string;
+  editor: EditorConfig;
+  calendar: CalendarConfig;
+  journal: JournalConfig;
+}
+
+export const EDITOR_FONT_MIN = 8;
+export const EDITOR_FONT_MAX = 32;
+export const EDITOR_FONT_DEFAULT = 14;
+
 export type AppError =
   | { kind: "Io"; message: string }
   | { kind: "NotFound"; message: string }

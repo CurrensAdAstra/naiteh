@@ -36,6 +36,8 @@ pub fn run() {
             commands::sync::sync_pull,
             commands::sync::sync_push,
             commands::sync::sync_now,
+            commands::settings::app_config_get,
+            commands::settings::app_config_set_editor,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
