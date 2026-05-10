@@ -21,4 +21,23 @@ export default defineConfig(async () => ({
       ignored: ["**/src-tauri/**"],
     },
   },
+  build: {
+    // CodeMirror is the heaviest dep by far — keep it in its own chunk so
+    // the startup bundle (used before any editor mounts) stays lean.
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          codemirror: [
+            "codemirror",
+            "@codemirror/commands",
+            "@codemirror/lang-markdown",
+            "@codemirror/language",
+            "@codemirror/state",
+            "@codemirror/view",
+          ],
+          react: ["react", "react-dom"],
+        },
+      },
+    },
+  },
 }));
