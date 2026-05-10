@@ -278,10 +278,140 @@ pub fn pull_ff_only(vault_root: &Path) -> Result<(), AppError> {
             .map_err(map_git_err)?;
         return Ok(());
     }
-    // Anything else (normal three-way merge) is rejected as a v1 conflict.
-    Err(AppError::Conflict(
-        "remote diverged from local; fast-forward only is supported in v1".into(),
-    ))
+    // architecture.md §9: a real three-way merge. Try it; if any path
+    // conflicts, write the *theirs* version of each conflicted file to
+    // `<file>.conflict-<timestamp>.md` next to the original and leave HEAD
+    // alone so the user can resolve manually. naiteh does not auto-merge
+    // in v1.
+    perform_three_way_merge(&repo, vault_root, &fetch_commit, &branch)
+}
+
+fn perform_three_way_merge(
+    repo: &Repository,
+    vault_root: &Path,
+    fetch_commit: &AnnotatedCommit<'_>,
+    branch: &str,
+) -> Result<(), AppError> {
+    let head_commit = repo
+        .head()
+        .and_then(|r| r.peel_to_commit())
+        .map_err(map_git_err)?;
+    let theirs_commit = repo.find_commit(fetch_commit.id()).map_err(map_git_err)?;
+    let base_oid = repo
+        .merge_base(head_commit.id(), theirs_commit.id())
+        .map_err(map_git_err)?;
+    let base_commit = repo.find_commit(base_oid).map_err(map_git_err)?;
+
+    let head_tree = head_commit.tree().map_err(map_git_err)?;
+    let theirs_tree = theirs_commit.tree().map_err(map_git_err)?;
+    let base_tree = base_commit.tree().map_err(map_git_err)?;
+
+    let mut merged_index = repo
+        .merge_trees(&base_tree, &head_tree, &theirs_tree, None)
+        .map_err(map_git_err)?;
+
+    if merged_index.has_conflicts() {
+        let written = capture_their_versions(repo, vault_root, &theirs_tree, &mut merged_index)?;
+        return Err(AppError::Conflict(format!(
+            "remote diverged on {} file{}; their versions saved as *.conflict-<timestamp>.md — \
+             resolve manually and try sync again",
+            written,
+            if written == 1 { "" } else { "s" }
+        )));
+    }
+
+    // Clean three-way merge: write the merged tree, create the merge commit,
+    // fast-forward the local branch, check out the result.
+    let merged_tree_oid = merged_index.write_tree_to(repo).map_err(map_git_err)?;
+    let merged_tree = repo.find_tree(merged_tree_oid).map_err(map_git_err)?;
+    let sig = signature_for(repo)?;
+    let new_commit_oid = repo
+        .commit(
+            None,
+            &sig,
+            &sig,
+            "naiteh: sync merge",
+            &merged_tree,
+            &[&head_commit, &theirs_commit],
+        )
+        .map_err(map_git_err)?;
+
+    let refname = format!("refs/heads/{branch}");
+    let mut head_ref = repo.find_reference(&refname).map_err(map_git_err)?;
+    head_ref
+        .set_target(new_commit_oid, "naiteh: merge commit")
+        .map_err(map_git_err)?;
+    repo.set_head(&refname).map_err(map_git_err)?;
+    repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+        .map_err(map_git_err)?;
+    Ok(())
+}
+
+/// For every entry in `merged_index` that has the conflict bit set,
+/// extract the corresponding "theirs" blob from `theirs_tree` and write
+/// it next to the original as `<stem>.conflict-<timestamp>[-N].<ext>`.
+/// Returns the number of conflict files written.
+fn capture_their_versions(
+    repo: &Repository,
+    vault_root: &Path,
+    theirs_tree: &git2::Tree<'_>,
+    merged_index: &mut git2::Index,
+) -> Result<usize, AppError> {
+    let timestamp = chrono::Local::now().format("%Y-%m-%dT%H-%M-%S").to_string();
+    let mut written = 0usize;
+    let conflicts = merged_index
+        .conflicts()
+        .map_err(map_git_err)?
+        .filter_map(Result::ok)
+        .collect::<Vec<_>>();
+
+    for entry in conflicts {
+        // Pull the path + content from the *theirs* index entry — that's
+        // the remote version we want to surface.
+        let Some(theirs) = entry.their else { continue };
+        let path = match std::str::from_utf8(&theirs.path) {
+            Ok(s) => s.to_string(),
+            Err(_) => continue,
+        };
+        let blob_oid = match theirs_tree
+            .get_path(Path::new(&path))
+            .and_then(|e| e.to_object(repo))
+        {
+            Ok(obj) => obj.id(),
+            Err(_) => theirs.id,
+        };
+        let blob = match repo.find_blob(blob_oid) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+
+        let target = conflict_path(vault_root, &path, &timestamp);
+        if let Some(parent) = target.parent() {
+            crate::services::fs::ensure_dir(parent)?;
+        }
+        crate::services::fs::atomic_write(&target, blob.content())?;
+        written += 1;
+    }
+    Ok(written)
+}
+
+/// Build `<stem>.conflict-<ts>.<ext>` next to the original path, falling
+/// back to appending the suffix when there is no extension.
+fn conflict_path(vault_root: &Path, rel_path: &str, timestamp: &str) -> std::path::PathBuf {
+    let original = vault_root.join(rel_path);
+    let stem = original
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let ext = original
+        .extension()
+        .map(|s| s.to_string_lossy().into_owned());
+    let parent = original.parent().unwrap_or(vault_root);
+    let new_name = match ext {
+        Some(e) => format!("{stem}.conflict-{timestamp}.{e}"),
+        None => format!("{stem}.conflict-{timestamp}"),
+    };
+    parent.join(new_name)
 }
 
 fn fetch_options() -> FetchOptions<'static> {
@@ -460,5 +590,144 @@ mod tests {
         assert!(json.contains("\"remoteUrl\":\"https://example.com/repo.git\""));
         assert!(json.contains("\"lastSync\":42"));
         assert!(json.contains("\"dirty\":true"));
+    }
+
+    // ── pull / conflict capture ───────────────────────────────────────────
+
+    /// Set up two vaults sharing a `file://` remote so we can exercise
+    /// pull paths without touching the network. Returns (`local`, `remote_other`).
+    /// Both have an initial commit on `main` containing `notes/x.md = "v0"`,
+    /// and `local`'s `origin` points at `remote`.
+    fn diverged_pair() -> (tempfile::TempDir, tempfile::TempDir, tempfile::TempDir) {
+        let remote_bare = tempdir().unwrap();
+        let mut bare_opts = git2::RepositoryInitOptions::new();
+        bare_opts.bare(true).initial_head(DEFAULT_BRANCH);
+        Repository::init_opts(remote_bare.path(), &bare_opts).unwrap();
+
+        // Seed via a working clone, then push.
+        let seed = tempdir().unwrap();
+        fsx::atomic_write(&seed.path().join("notes/x.md"), b"v0\n").unwrap();
+        init(seed.path()).unwrap();
+        set_remote(
+            seed.path(),
+            &format!("file://{}", remote_bare.path().display()),
+        )
+        .unwrap();
+        push(seed.path()).unwrap();
+
+        // Local clone of the remote.
+        let local = tempdir().unwrap();
+        Repository::clone(
+            &format!("file://{}", remote_bare.path().display()),
+            local.path(),
+        )
+        .unwrap();
+        // Make sure ensure_gitignore-style state is fine.
+        let _ = init(local.path());
+
+        (local, remote_bare, seed)
+    }
+
+    fn commit_change(repo_root: &Path, rel: &str, content: &[u8], msg: &str) {
+        fsx::atomic_write(&repo_root.join(rel), content).unwrap();
+        let repo = Repository::open(repo_root).unwrap();
+        commit_all(&repo, msg).unwrap();
+    }
+
+    #[test]
+    fn pull_fast_forwards_when_local_is_strictly_behind() {
+        let (local, _remote, seed) = diverged_pair();
+        // Remote-side commit ahead of the local clone.
+        commit_change(seed.path(), "notes/x.md", b"v1\n", "remote v1");
+        push(seed.path()).unwrap();
+
+        pull_ff_only(local.path()).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(local.path().join("notes/x.md")).unwrap(),
+            "v1\n",
+        );
+    }
+
+    #[test]
+    fn pull_completes_three_way_merge_when_changes_dont_collide() {
+        let (local, _remote, seed) = diverged_pair();
+        // Local edits a file; remote edits a *different* file. Both get
+        // committed, then we sync.
+        commit_change(
+            local.path(),
+            "notes/local-only.md",
+            b"local\n",
+            "local edit",
+        );
+        commit_change(
+            seed.path(),
+            "notes/remote-only.md",
+            b"remote\n",
+            "remote edit",
+        );
+        push(seed.path()).unwrap();
+
+        pull_ff_only(local.path()).unwrap();
+        assert!(local.path().join("notes/local-only.md").exists());
+        assert!(local.path().join("notes/remote-only.md").exists());
+        let local_repo = Repository::open(local.path()).unwrap();
+        let head_ref = local_repo.head().unwrap();
+        let head = head_ref.peel_to_commit().unwrap();
+        assert_eq!(head.parent_count(), 2, "expected a merge commit");
+    }
+
+    #[test]
+    fn pull_captures_their_version_on_conflicting_edit() {
+        let (local, _remote, seed) = diverged_pair();
+        // Both sides change the SAME file in incompatible ways.
+        commit_change(local.path(), "notes/x.md", b"local v1\n", "local edit");
+        commit_change(seed.path(), "notes/x.md", b"remote v1\n", "remote edit");
+        push(seed.path()).unwrap();
+
+        let err = pull_ff_only(local.path()).unwrap_err();
+        match &err {
+            AppError::Conflict(msg) => {
+                assert!(
+                    msg.contains("conflict-"),
+                    "conflict message should mention the dual-file capture: {msg}"
+                );
+            }
+            other => panic!("expected Conflict, got {other:?}"),
+        }
+
+        // Local copy untouched (HEAD didn't move).
+        assert_eq!(
+            std::fs::read_to_string(local.path().join("notes/x.md")).unwrap(),
+            "local v1\n",
+        );
+        // Their version landed on disk next to it.
+        let conflicts: Vec<_> = std::fs::read_dir(local.path().join("notes"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.file_name().to_string_lossy().contains("x.conflict-"))
+            .collect();
+        assert_eq!(conflicts.len(), 1, "exactly one conflict capture file");
+        let captured = std::fs::read_to_string(conflicts[0].path()).unwrap();
+        assert_eq!(captured, "remote v1\n");
+    }
+
+    #[test]
+    fn conflict_path_keeps_extension_and_directory() {
+        let v = tempdir().unwrap();
+        let p = conflict_path(v.path(), "notes/work/standup.md", "2026-05-09T10-00-00");
+        assert_eq!(
+            p.strip_prefix(v.path()).unwrap().to_string_lossy(),
+            "notes/work/standup.conflict-2026-05-09T10-00-00.md"
+        );
+    }
+
+    #[test]
+    fn conflict_path_handles_extension_less_files() {
+        let v = tempdir().unwrap();
+        let p = conflict_path(v.path(), "notes/README", "ts");
+        assert_eq!(
+            p.strip_prefix(v.path()).unwrap().to_string_lossy(),
+            "notes/README.conflict-ts"
+        );
     }
 }
