@@ -74,6 +74,62 @@
   background: var(--color-active);
 }
 
+.fileRowWrap {
+  position: relative;
+  display: flex;
+  align-items: stretch;
+}
+
+.fileRowWrap:hover .fileActions,
+.fileRowWrap:focus-within .fileActions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.fileRow {
+  flex: 1;
+  padding-right: 56px;
+}
+
+.fileActions {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  gap: 2px;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.iconButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 3px;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-app);
+  border: 1px solid var(--color-border);
+}
+
+.iconButton:hover {
+  background: var(--color-hover);
+  color: var(--color-text-primary);
+}
+
+.iconButtonDanger:hover {
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}
+
+.iconButton:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
 .caret {
   display: inline-flex;
   width: 12px;

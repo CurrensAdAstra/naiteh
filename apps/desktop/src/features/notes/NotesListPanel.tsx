@@ -1,10 +1,19 @@
-import { ChevronDown, ChevronRight, FileText, Folder } from "lucide-react";
+import {
+  ChevronDown,
+  ChevronRight,
+  FileText,
+  Folder,
+  Pencil,
+  Trash2,
+} from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 import {
   notesCreate,
+  notesDelete,
   notesList,
   notesRead,
+  notesRename,
 } from "../../lib/api/notes";
 import { formatAppError } from "../../lib/types";
 import type { NoteMeta } from "../../lib/types";
@@ -14,11 +23,17 @@ import styles from "./NotesListPanel.module.css";
 
 const INDENT_PX = 12;
 
+interface ContextActions {
+  rename: (note: NoteMeta) => void;
+  remove: (note: NoteMeta) => void;
+}
+
 export function NotesListPanel() {
   const [notes, setNotes] = useState<NoteMeta[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const openNote = useEditorStore((s) => s.openNote);
+  const closeNote = useEditorStore((s) => s.closeNote);
   const openRelPath = useEditorStore((s) =>
     s.open !== null && s.open.source.kind === "note"
       ? s.open.source.relPath
@@ -66,6 +81,50 @@ export function NotesListPanel() {
     }
   }
 
+  const handleRename = useCallback(
+    async (note: NoteMeta) => {
+      const currentName = note.relPath.split("/").pop() ?? "note.md";
+      const next = window.prompt("Rename note (filename):", currentName);
+      if (next === null) return;
+      const trimmed = next.trim();
+      if (trimmed === "" || trimmed === currentName) return;
+      const ensured = trimmed.endsWith(".md") ? trimmed : `${trimmed}.md`;
+      // Stay in the same folder.
+      const segments = note.relPath.split("/");
+      segments[segments.length - 1] = ensured;
+      const targetRelPath = segments.join("/");
+      try {
+        const updated = await notesRename(note.relPath, targetRelPath);
+        await refresh();
+        if (openRelPath === note.relPath) {
+          // The currently open note moved — re-open it from the new path.
+          const content = await notesRead(updated.relPath);
+          openNote(updated.relPath, content);
+        }
+      } catch (e) {
+        setError(formatAppError(e));
+      }
+    },
+    [openNote, openRelPath, refresh],
+  );
+
+  const handleDelete = useCallback(
+    async (note: NoteMeta) => {
+      const ok = window.confirm(
+        `Delete "${note.title}"?\n\nFile: ${note.relPath}\nThis cannot be undone from naiteh.`,
+      );
+      if (!ok) return;
+      try {
+        await notesDelete(note.relPath);
+        if (openRelPath === note.relPath) closeNote();
+        await refresh();
+      } catch (e) {
+        setError(formatAppError(e));
+      }
+    },
+    [closeNote, openRelPath, refresh],
+  );
+
   const tree = buildTree(notes);
   const isEmpty = tree.children.length === 0 && tree.files.length === 0;
 
@@ -96,6 +155,10 @@ export function NotesListPanel() {
             renderRoot={false}
             activePath={openRelPath}
             onOpen={(n) => void handleOpen(n)}
+            actions={{
+              rename: (n) => void handleRename(n),
+              remove: (n) => void handleDelete(n),
+            }}
           />
         )}
       </div>
@@ -109,9 +172,17 @@ interface FolderRowsProps {
   renderRoot: boolean;
   activePath: string | null;
   onOpen: (note: NoteMeta) => void;
+  actions: ContextActions;
 }
 
-function FolderRows({ node, depth, renderRoot, activePath, onOpen }: FolderRowsProps) {
+function FolderRows({
+  node,
+  depth,
+  renderRoot,
+  activePath,
+  onOpen,
+  actions,
+}: FolderRowsProps) {
   const [expanded, setExpanded] = useState(true);
 
   const childContent = (
@@ -124,28 +195,64 @@ function FolderRows({ node, depth, renderRoot, activePath, onOpen }: FolderRowsP
           renderRoot
           activePath={activePath}
           onOpen={onOpen}
+          actions={actions}
         />
       ))}
       {node.files.map((file) => {
         const isActive = file.relPath === activePath;
         return (
-          <button
-            key={file.path}
-            type="button"
-            className={`${styles.row} ${isActive ? styles.rowActive : ""}`}
-            style={{ paddingLeft: (depth + 1) * INDENT_PX }}
-            onClick={() => onOpen(file)}
-            data-testid={`notes-file-${file.relPath}`}
-          >
-            <span className={styles.caret} aria-hidden="true" />
-            <FileText size={14} className={styles.icon} aria-hidden="true" />
-            <span className={styles.label}>{file.title}</span>
-            {file.pinned && (
-              <span className={styles.pinned} aria-label="pinned" title="pinned">
-                ★
-              </span>
-            )}
-          </button>
+          <div key={file.path} className={styles.fileRowWrap}>
+            <button
+              type="button"
+              className={`${styles.row} ${styles.fileRow} ${
+                isActive ? styles.rowActive : ""
+              }`}
+              style={{ paddingLeft: (depth + 1) * INDENT_PX }}
+              onClick={() => onOpen(file)}
+              data-testid={`notes-file-${file.relPath}`}
+            >
+              <span className={styles.caret} aria-hidden="true" />
+              <FileText size={14} className={styles.icon} aria-hidden="true" />
+              <span className={styles.label}>{file.title}</span>
+              {file.pinned && (
+                <span
+                  className={styles.pinned}
+                  aria-label="pinned"
+                  title="pinned"
+                >
+                  ★
+                </span>
+              )}
+            </button>
+            <div className={styles.fileActions}>
+              <button
+                type="button"
+                className={styles.iconButton}
+                aria-label={`Rename ${file.title}`}
+                title="Rename"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  actions.rename(file);
+                }}
+                data-testid={`notes-rename-${file.relPath}`}
+              >
+                <Pencil size={12} aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className={`${styles.iconButton} ${styles.iconButtonDanger}`}
+                aria-label={`Delete ${file.title}`}
+                title="Delete"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  actions.remove(file);
+                }}
+                data-testid={`notes-delete-${file.relPath}`}
+              >
+                <Trash2 size={12} aria-hidden="true" />
+              </button>
+            </div>
+          </div>
         );
       })}
     </>

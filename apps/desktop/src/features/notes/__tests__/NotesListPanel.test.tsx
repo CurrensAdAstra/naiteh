@@ -10,13 +10,23 @@ vi.mock("../../../lib/api/notes", () => ({
   notesList: vi.fn(),
   notesRead: vi.fn(),
   notesCreate: vi.fn(),
+  notesDelete: vi.fn(),
+  notesRename: vi.fn(),
 }));
 
-import { notesCreate, notesList, notesRead } from "../../../lib/api/notes";
+import {
+  notesCreate,
+  notesDelete,
+  notesList,
+  notesRead,
+  notesRename,
+} from "../../../lib/api/notes";
 
 const mockedList = vi.mocked(notesList);
 const mockedRead = vi.mocked(notesRead);
 const mockedCreate = vi.mocked(notesCreate);
+const mockedDelete = vi.mocked(notesDelete);
+const mockedRename = vi.mocked(notesRename);
 
 function note(relPath: string, title: string): NoteMeta {
   return {
@@ -35,6 +45,8 @@ describe("NotesListPanel", () => {
     mockedList.mockReset();
     mockedRead.mockReset();
     mockedCreate.mockReset();
+    mockedDelete.mockReset();
+    mockedRename.mockReset();
     useEditorStore.setState({ open: null });
   });
 
@@ -133,5 +145,91 @@ describe("NotesListPanel", () => {
     expect(
       await within(screen.getByTestId("list-panel-notes")).findByText(/no vault/i),
     ).toBeInTheDocument();
+  });
+
+  it("rename action calls notesRename with the prompted filename", async () => {
+    mockedList.mockResolvedValue([note("notes/loose.md", "Loose")]);
+    mockedRename.mockResolvedValue(note("notes/renamed.md", "Renamed"));
+    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("renamed");
+    const user = userEvent.setup();
+    render(<NotesListPanel />);
+    await user.click(
+      await screen.findByTestId("notes-rename-notes/loose.md"),
+    );
+    await waitFor(() =>
+      expect(mockedRename).toHaveBeenCalledWith(
+        "notes/loose.md",
+        "notes/renamed.md",
+      ),
+    );
+    promptSpy.mockRestore();
+  });
+
+  it("rename appends .md when missing and stays in the same folder", async () => {
+    mockedList.mockResolvedValue([note("notes/work/standup.md", "Standup")]);
+    mockedRename.mockResolvedValue(
+      note("notes/work/morning.md", "Morning"),
+    );
+    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("morning");
+    const user = userEvent.setup();
+    render(<NotesListPanel />);
+    await user.click(
+      await screen.findByTestId("notes-rename-notes/work/standup.md"),
+    );
+    await waitFor(() =>
+      expect(mockedRename).toHaveBeenCalledWith(
+        "notes/work/standup.md",
+        "notes/work/morning.md",
+      ),
+    );
+    promptSpy.mockRestore();
+  });
+
+  it("rename is a no-op when the prompt is cancelled or unchanged", async () => {
+    mockedList.mockResolvedValue([note("notes/loose.md", "Loose")]);
+    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue(null);
+    const user = userEvent.setup();
+    render(<NotesListPanel />);
+    await user.click(
+      await screen.findByTestId("notes-rename-notes/loose.md"),
+    );
+    expect(mockedRename).not.toHaveBeenCalled();
+    promptSpy.mockRestore();
+  });
+
+  it("delete action calls notesDelete after confirm and clears the editor when the open note is deleted", async () => {
+    mockedList.mockResolvedValue([note("notes/loose.md", "Loose")]);
+    mockedDelete.mockResolvedValue(undefined);
+    useEditorStore.setState({
+      open: {
+        source: { kind: "note", relPath: "notes/loose.md" },
+        key: "note:notes/loose.md",
+        content: "x",
+        savedContent: "x",
+      },
+    });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    render(<NotesListPanel />);
+    await user.click(
+      await screen.findByTestId("notes-delete-notes/loose.md"),
+    );
+    await waitFor(() => {
+      expect(mockedDelete).toHaveBeenCalledWith("notes/loose.md");
+      expect(useEditorStore.getState().open).toBeNull();
+    });
+    confirmSpy.mockRestore();
+  });
+
+  it("delete is a no-op when the confirm prompt is cancelled", async () => {
+    mockedList.mockResolvedValue([note("notes/loose.md", "Loose")]);
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    const user = userEvent.setup();
+    render(<NotesListPanel />);
+    await user.click(
+      await screen.findByTestId("notes-delete-notes/loose.md"),
+    );
+    expect(mockedDelete).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
   });
 });
