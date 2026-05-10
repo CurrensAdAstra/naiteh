@@ -89,6 +89,41 @@ describe("EditorPanel", () => {
     expect(screen.getByText(/journal · 2026-05-09/i)).toBeInTheDocument();
   });
 
+  it("Pin toggle reflects current front-matter and flips it on click", async () => {
+    useEditorStore.setState({
+      open: noteOpen("notes/x.md", "body without front matter", "body without front matter"),
+    });
+    render(<EditorPanel />);
+    const button = screen.getByTestId("editor-pin-toggle");
+    expect(button).toHaveAttribute("aria-pressed", "false");
+
+    act(() => {
+      button.click();
+    });
+    // The handler updates editor content via the (mocked) view; with no
+    // real view dispatch we fall through to the store-direct path so the
+    // store reflects the new content.
+    await waitFor(() => {
+      const open = useEditorStore.getState().open!;
+      expect(open.content).toMatch(/pinned: true/);
+    });
+  });
+
+  it("Pin toggle starts pressed when content already has pinned: true", () => {
+    useEditorStore.setState({
+      open: noteOpen(
+        "notes/x.md",
+        "---\npinned: true\n---\nbody",
+        "---\npinned: true\n---\nbody",
+      ),
+    });
+    render(<EditorPanel />);
+    expect(screen.getByTestId("editor-pin-toggle")).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+  });
+
   it("flips to the dirty status when content drifts from disk", () => {
     useEditorStore.setState({ open: noteOpen("notes/x.md", "a", "a") });
     render(<EditorPanel />);

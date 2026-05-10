@@ -105,6 +105,35 @@ export function readCurrentSelection(): CurrentSelection | null {
 }
 
 /**
+ * Replace the entire editor document, preserving the cursor at its
+ * current offset clamped to the new length. The store's `open.content`
+ * is updated unconditionally so callers don't need to coordinate with
+ * the CodeMirror updateListener (which is essential for tests using a
+ * stubbed view, and idempotent in production where the listener fires
+ * setContent with the same value).
+ */
+export function replaceWholeDocument(insert: string): boolean {
+  const state = useEditorStore.getState();
+  if (state.open === null) return false;
+  const view = state.view;
+  // The mounted-view path is the production case. In tests a stubbed
+  // view may be present without a real `state`/`focus`; we still want
+  // the store update below to fire.
+  if (view !== null && view.state !== undefined) {
+    const cursor = Math.min(view.state.selection.main.head, insert.length);
+    view.dispatch({
+      changes: { from: 0, to: view.state.doc.length, insert },
+      selection: { anchor: cursor, head: cursor },
+    });
+    if (typeof view.focus === "function") view.focus();
+  }
+  useEditorStore.setState((s) =>
+    s.open === null ? s : { open: { ...s.open, content: insert } },
+  );
+  return true;
+}
+
+/**
  * Replace the supplied range in the current editor view. Returns true on
  * success, false when no view is mounted.
  */

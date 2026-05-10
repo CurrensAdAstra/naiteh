@@ -1,14 +1,19 @@
 import { markdown } from "@codemirror/lang-markdown";
 import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import { EditorView, basicSetup } from "codemirror";
-import { Sparkles } from "lucide-react";
+import { Sparkles, Star } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, type CSSProperties } from "react";
 
 import { journalSave } from "../lib/api/journal";
 import { notesWrite } from "../lib/api/notes";
+import {
+  isPinnedInContent,
+  togglePinnedInContent,
+} from "../lib/frontMatter";
 import { formatAppError } from "../lib/types";
 import {
   isDirty,
+  replaceWholeDocument,
   useEditorStore,
   type OpenSource,
 } from "../state/editorStore";
@@ -151,6 +156,7 @@ export function EditorPanel() {
             <span className={styles.path} title={headerLabel}>
               {headerLabel}
             </span>
+            <PinToggleButton />
             <AiToggleButton />
             <span
               className={dirty ? styles.statusDirty : styles.statusSaved}
@@ -167,6 +173,48 @@ export function EditorPanel() {
         </>
       )}
     </div>
+  );
+}
+
+function PinToggleButton() {
+  const content = useEditorStore((s) => s.open?.content ?? null);
+  if (content === null) return null;
+  const pinned = isPinnedInContent(content);
+
+  function handleToggle() {
+    const current = useEditorStore.getState().open;
+    if (current === null) return;
+    const next = togglePinnedInContent(current.content);
+    // Replace the editor doc; CodeMirror's update listener will mirror
+    // the new text into editorStore.open.content, which triggers the
+    // 800ms autosave path.
+    if (!replaceWholeDocument(next)) {
+      // Editor view not mounted yet — push to the store directly so
+      // autosave still picks it up.
+      useEditorStore.setState((state) =>
+        state.open === null
+          ? state
+          : { open: { ...state.open, content: next } },
+      );
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      className={`${styles.pinToggle} ${pinned ? styles.pinToggleOn : ""}`}
+      aria-pressed={pinned}
+      aria-label={pinned ? "Unpin note" : "Pin note"}
+      title={pinned ? "Unpin" : "Pin"}
+      onClick={handleToggle}
+      data-testid="editor-pin-toggle"
+    >
+      <Star
+        size={14}
+        fill={pinned ? "currentColor" : "none"}
+        aria-hidden="true"
+      />
+    </button>
   );
 }
 
