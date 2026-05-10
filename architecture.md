@@ -21,6 +21,12 @@ All implementation tasks reference this file.
 4. **Sync / Backup** — backed by Git under the hood; the UI never says
    "Git", only "Sync" or "Backup".
 5. **Tagging** — cross-cutting organization in addition to folders.
+6. **AI Assist (opt-in)** — a side panel where the user can revise the
+   currently selected text using a third-party Chat Completions API
+   (default OpenAI). The API key lives in app config; no network call
+   ever fires without an explicit click in the panel. naiteh stays
+   local-first everywhere else — AI Assist is the one feature that
+   knowingly leaves the local trust boundary.
 
 ### Non-goals (for v1)
 
@@ -30,21 +36,24 @@ All implementation tasks reference this file.
 - Real-time collaboration
 - Mobile app (revisited after v1.5)
 - Calendar event integration (system Calendar / Reminders)
+- Implicit AI calls — auto-completion, ghost text, background revision,
+  embedding-based search, etc. v1 AI Assist is strictly user-initiated.
 
 ---
 
 ## 2. Tech Stack
 
-| Layer            | Choice                                  |
-|------------------|-----------------------------------------|
-| Shell            | **Tauri v2** (latest stable)            |
-| Backend language | **Rust**                                |
-| Frontend         | **React 18 + TypeScript + Vite**        |
-| Styling          | **CSS Modules**                         |
-| Editor           | **CodeMirror 6** (added in a later task)|
-| Git integration  | **`git2` crate** (libgit2 bindings)     |
-| Package manager  | **pnpm**                                |
-| Target OS (v1)   | Windows, macOS, Linux                   |
+| Layer             | Choice                                                    |
+|-------------------|-----------------------------------------------------------|
+| Shell             | **Tauri v2** (latest stable)                              |
+| Backend language  | **Rust**                                                  |
+| Frontend          | **React 18 + TypeScript + Vite**                          |
+| Styling           | **CSS Modules**                                           |
+| Editor            | **CodeMirror 6** (added in a later task)                  |
+| Git integration   | **`git2` crate** (libgit2 bindings)                       |
+| AI HTTP client    | **`reqwest` (rustls-tls)** — used only by AI Assist (§7.8)|
+| Package manager   | **pnpm**                                                  |
+| Target OS (v1)    | Windows, macOS, Linux                                     |
 
 ### Why these choices
 
@@ -520,6 +529,22 @@ pub struct SyncStatus {
 }
 ```
 
+### 6.7 AI Assist
+
+```rust
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiConfig {
+    pub api_key: Option<String>,   // None disables the feature in the UI
+    pub model: String,             // e.g. "gpt-4o-mini"
+    pub base_url: String,          // OpenAI-compatible base URL
+}
+```
+
+`AiConfig` is part of the app-level config (§8). The `api_key` is stored
+in plaintext under the user's app-config directory; OS-level user-account
+permissions are the trust boundary. v1 does not use the system keychain.
+
 ---
 
 ## 7. Tauri Commands (IPC API)
@@ -604,6 +629,29 @@ The UI never exposes the words "git", "commit", "rebase", or "remote URL"
 to casual users — it shows "Sync now", "Backup destination", etc. Power
 users can see Git terms in advanced settings.
 
+### 7.8 AI Assist
+
+```rust
+ai_improve(text: String, instruction: String) -> Result<String, AppError>
+```
+
+The only naiteh command that issues outbound HTTP outside the Sync
+feature. Reads `AiConfig` (§6.7) from app config, calls the configured
+Chat Completions endpoint with the user's API key, returns the model's
+revised text. Errors when no API key is configured, when `text` or
+`instruction` is empty, when the upstream returns a non-2xx status, or
+when the request times out (60 s). The system prompt instructs the model
+to return revised text only — no preamble or commentary — but third-party
+providers are explicitly outside naiteh's trust boundary.
+
+App-config setters live alongside the rest of the settings IPC:
+
+```rust
+app_config_get() -> Result<AppConfig, AppError>
+app_config_set_editor(font_size: u16, line_wrapping: bool) -> Result<AppConfig, AppError>
+app_config_set_ai(api_key: Option<String>, model: String, base_url: Option<String>) -> Result<AppConfig, AppError>
+```
+
 ---
 
 ## 8. App Config
@@ -635,6 +683,11 @@ Schema:
   },
   "journal": {
     "splitRatio": 0.5
+  },
+  "ai": {
+    "apiKey": null,
+    "model": "gpt-4o-mini",
+    "baseUrl": "https://api.openai.com/v1"
   }
 }
 ```
@@ -653,6 +706,11 @@ Per-vault settings live in `<vault>/.naiteh/config.json`.
   keeps both versions as `<file>.md` and `<file>.conflict-<timestamp>.md`
   and surfaces a "resolve conflicts" UI in the Sync panel. v1 does not
   auto-merge.
+- **Privacy boundary**: Sync (§7.7) sends note bytes to the user's chosen
+  Git remote; AI Assist (§7.8) sends the selected passage to the user's
+  configured Chat Completions endpoint. These are the only two outbound
+  network paths in v1, and both are user-initiated. No telemetry, no
+  background calls, no implicit AI rewriting.
 
 ---
 
@@ -670,6 +728,7 @@ Per-vault settings live in `<vault>/.naiteh/config.json`.
 - Pinning via front matter `pinned: true`
 - Full-text search (naive grep first; ripgrep-via-Rust later)
 - Sync: init, set remote, sync now, basic conflict surfacing
+- AI Assist side panel (opt-in; OpenAI Chat Completions by default)
 - Light theme (VS Code Light Modern)
 
 ### v1.5
@@ -705,3 +764,4 @@ Per-vault settings live in `<vault>/.naiteh/config.json`.
 | ViewMode   | Which feature the List Panel is showing                       |
 | Timeline   | Calendar mode's date-grouped list of notes/entries            |
 | On the Agenda | The pinned area at the top of the calendar timeline        |
+| AI Assist  | Opt-in side panel that sends selected text to a Chat Completions API and replaces it with the model's revision |
