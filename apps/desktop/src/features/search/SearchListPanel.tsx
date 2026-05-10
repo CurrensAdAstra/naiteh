@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { searchText } from "../../lib/api/search";
+import { HighlightedText } from "../../lib/HighlightedText";
 import { openByRelPath } from "../../lib/openByRelPath";
 import { formatAppError } from "../../lib/types";
 import type { SearchHit } from "../../lib/types";
@@ -105,10 +106,14 @@ export function SearchListPanel() {
                     data-testid={`search-hit-${hit.relPath}-${hit.line}`}
                   >
                     <span className={styles.rowHeader}>
-                      <span className={styles.rowTitle}>{hit.title}</span>
+                      <span className={styles.rowTitle}>
+                        <HighlightedText text={hit.title} query={trimmed} />
+                      </span>
                       <span className={styles.rowLine}>L{hit.line}</span>
                     </span>
-                    <span className={styles.rowExcerpt}>{hit.excerpt}</span>
+                    <span className={styles.rowExcerpt}>
+                      <HighlightedText text={hit.excerpt} query={trimmed} />
+                    </span>
                     <span className={styles.rowRelPath}>{hit.relPath}</span>
                   </button>
                 </li>

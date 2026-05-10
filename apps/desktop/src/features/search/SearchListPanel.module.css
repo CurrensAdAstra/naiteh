@@ -122,6 +122,14 @@
   font-family: var(--font-mono);
 }
 
+.rowExcerpt :global(mark),
+.rowTitle :global(mark) {
+  background: var(--color-selection);
+  color: var(--color-text-primary);
+  padding: 0 1px;
+  border-radius: 2px;
+}
+
 .rowRelPath {
   margin-top: 2px;
   color: var(--color-text-muted);

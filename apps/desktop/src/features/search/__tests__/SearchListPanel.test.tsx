@@ -101,9 +101,17 @@ describe("SearchListPanel", () => {
         { timeout: 1500 },
       );
       const results = screen.getByTestId("search-results");
+      // Title doesn't contain the query → renders as a single text node.
       expect(within(results).getByText("Standup")).toBeInTheDocument();
       expect(within(results).getByText("L7")).toBeInTheDocument();
-      expect(within(results).getByText("agenda for today")).toBeInTheDocument();
+      // The excerpt "agenda for today" gets split because "agenda" is
+      // wrapped in a <mark>; verify total textContent + that the highlight
+      // ran.
+      const hitRow = within(results).getByTestId(
+        "search-hit-notes/work/standup.md-7",
+      );
+      expect(hitRow.textContent).toContain("agenda for today");
+      expect(hitRow.querySelector("mark")?.textContent).toBe("agenda");
       expect(within(results).getByText("notes/work/standup.md")).toBeInTheDocument();
     },
     2000,

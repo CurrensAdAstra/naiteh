@@ -7,6 +7,7 @@ import { EditorPanel } from "./EditorPanel";
 import { ListPanelResizer } from "./ListPanelResizer";
 import { PanelRouter } from "./PanelRouter";
 import { StatusBar } from "./StatusBar";
+import { useKeyboardShortcuts } from "./useKeyboardShortcuts";
 import styles from "./AppShell.module.css";
 
 const AI_PANEL_WIDTH_PX = 360;
@@ -15,6 +16,7 @@ export function AppShell() {
   const viewMode = useUIStore((s) => s.viewMode);
   const listPanelWidth = useUIStore((s) => s.listPanelWidth);
   const aiPanelOpen = useUIStore((s) => s.aiPanelOpen);
+  useKeyboardShortcuts();
 
   const shellStyle: CSSProperties = {
     ["--list-panel-width" as string]: `${listPanelWidth}px`,
