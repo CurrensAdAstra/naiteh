@@ -28,11 +28,14 @@ interface UIState {
   listPanelWidth: number;
   journalSplitRatio: number;
   aiPanelOpen: boolean;
+  editorReadOnly: boolean;
   setViewMode: (mode: ViewMode) => void;
   setListPanelWidth: (px: number) => void;
   setJournalSplitRatio: (ratio: number) => void;
   setAiPanelOpen: (open: boolean) => void;
   toggleAiPanel: () => void;
+  setEditorReadOnly: (readOnly: boolean) => void;
+  toggleEditorReadOnly: () => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
@@ -40,6 +43,7 @@ export const useUIStore = create<UIState>((set) => ({
   listPanelWidth: LIST_PANEL_DEFAULT,
   journalSplitRatio: JOURNAL_SPLIT_DEFAULT,
   aiPanelOpen: false,
+  editorReadOnly: false,
   setViewMode: (mode) => set({ viewMode: mode }),
   setListPanelWidth: (px) =>
     set({ listPanelWidth: clamp(px, LIST_PANEL_MIN, LIST_PANEL_MAX) }),
@@ -49,4 +53,7 @@ export const useUIStore = create<UIState>((set) => ({
     }),
   setAiPanelOpen: (open) => set({ aiPanelOpen: open }),
   toggleAiPanel: () => set((s) => ({ aiPanelOpen: !s.aiPanelOpen })),
+  setEditorReadOnly: (readOnly) => set({ editorReadOnly: readOnly }),
+  toggleEditorReadOnly: () =>
+    set((s) => ({ editorReadOnly: !s.editorReadOnly })),
 }));

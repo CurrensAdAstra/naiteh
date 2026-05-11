@@ -1,7 +1,7 @@
 import { markdown } from "@codemirror/lang-markdown";
 import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import { EditorView, basicSetup } from "codemirror";
-import { Sparkles, Star } from "lucide-react";
+import { Lock, Sparkles, Star, Unlock } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, type CSSProperties } from "react";
 
 import { journalSave } from "../lib/api/journal";
@@ -10,6 +10,7 @@ import {
   isPinnedInContent,
   togglePinnedInContent,
 } from "../lib/frontMatter";
+import { markdownKeymap } from "../lib/markdownKeymap";
 import { formatAppError } from "../lib/types";
 import {
   isDirty,
@@ -19,6 +20,7 @@ import {
 } from "../state/editorStore";
 import { selectEditorConfig, useSettingsStore } from "../state/settingsStore";
 import { useUIStore } from "../state/uiStore";
+import { TagsBar } from "./TagsBar";
 import styles from "./EditorPanel.module.css";
 
 const AUTOSAVE_DELAY_MS = 800;
@@ -37,9 +39,11 @@ export function EditorPanel() {
   const markSaved = useEditorStore((s) => s.markSaved);
   const setView = useEditorStore((s) => s.setView);
   const editorConfig = useSettingsStore(selectEditorConfig);
+  const editorReadOnly = useUIStore((s) => s.editorReadOnly);
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const wrapCompartmentRef = useRef<Compartment | null>(null);
+  const readOnlyCompartmentRef = useRef<Compartment | null>(null);
 
   const editorKey = open?.key ?? null;
   const dirty = open !== null && isDirty(open);
@@ -64,17 +68,24 @@ export function EditorPanel() {
     if (container === null || editorKey === null) return;
     const initial = useEditorStore.getState().open?.savedContent ?? "";
     const wrapCompartment = new Compartment();
+    const readOnlyCompartment = new Compartment();
     wrapCompartmentRef.current = wrapCompartment;
+    readOnlyCompartmentRef.current = readOnlyCompartment;
     const initialWrap: Extension =
       useSettingsStore.getState().config?.editor.lineWrapping ?? true
         ? EditorView.lineWrapping
         : [];
+    const initialReadOnly: Extension = useUIStore.getState().editorReadOnly
+      ? EditorState.readOnly.of(true)
+      : [];
     const state = EditorState.create({
       doc: initial,
       extensions: [
         basicSetup,
         markdown(),
+        markdownKeymap(),
         wrapCompartment.of(initialWrap),
+        readOnlyCompartment.of(initialReadOnly),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
             setContent(update.state.doc.toString());
@@ -89,6 +100,7 @@ export function EditorPanel() {
       view.destroy();
       viewRef.current = null;
       wrapCompartmentRef.current = null;
+      readOnlyCompartmentRef.current = null;
       setView(null);
     };
   }, [editorKey, setContent, setView]);
@@ -104,6 +116,18 @@ export function EditorPanel() {
       ),
     });
   }, [editorConfig.lineWrapping]);
+
+  // Live-apply the read-only toggle.
+  useEffect(() => {
+    const view = viewRef.current;
+    const compartment = readOnlyCompartmentRef.current;
+    if (view === null || compartment === null) return;
+    view.dispatch({
+      effects: compartment.reconfigure(
+        editorReadOnly ? EditorState.readOnly.of(true) : [],
+      ),
+    });
+  }, [editorReadOnly]);
 
   // Debounced autosave when the editor content drifts from disk.
   useEffect(() => {
@@ -157,14 +181,16 @@ export function EditorPanel() {
               {headerLabel}
             </span>
             <PinToggleButton />
+            <ReadOnlyToggleButton />
             <AiToggleButton />
             <span
               className={dirty ? styles.statusDirty : styles.statusSaved}
               data-testid="editor-status"
             >
-              {dirty ? "● Unsaved" : "Saved"}
+              {editorReadOnly ? "Read-only" : dirty ? "● Unsaved" : "Saved"}
             </span>
           </div>
+          <TagsBar />
           <div
             ref={containerRef}
             className={styles.editor}
@@ -214,6 +240,28 @@ function PinToggleButton() {
         fill={pinned ? "currentColor" : "none"}
         aria-hidden="true"
       />
+    </button>
+  );
+}
+
+function ReadOnlyToggleButton() {
+  const readOnly = useUIStore((s) => s.editorReadOnly);
+  const toggle = useUIStore((s) => s.toggleEditorReadOnly);
+  return (
+    <button
+      type="button"
+      className={`${styles.lockToggle} ${readOnly ? styles.lockToggleOn : ""}`}
+      aria-pressed={readOnly}
+      aria-label={readOnly ? "Disable read-only mode" : "Enable read-only mode"}
+      title={readOnly ? "Disable read-only" : "Make read-only"}
+      onClick={toggle}
+      data-testid="editor-readonly-toggle"
+    >
+      {readOnly ? (
+        <Lock size={14} aria-hidden="true" />
+      ) : (
+        <Unlock size={14} aria-hidden="true" />
+      )}
     </button>
   );
 }

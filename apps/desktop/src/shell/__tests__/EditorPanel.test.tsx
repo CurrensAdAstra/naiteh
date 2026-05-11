@@ -3,6 +3,7 @@ import { act } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { useEditorStore } from "../../state/editorStore";
+import { useUIStore } from "../../state/uiStore";
 import { EditorPanel } from "../EditorPanel";
 
 // Stub CodeMirror so jsdom doesn't have to render contenteditable + selection.
@@ -17,7 +18,10 @@ vi.mock("codemirror", () => {
 });
 vi.mock("@codemirror/lang-markdown", () => ({ markdown: () => null }));
 vi.mock("@codemirror/state", () => ({
-  EditorState: { create: () => ({}) },
+  EditorState: {
+    create: () => ({}),
+    readOnly: { of: () => null },
+  },
   Compartment: class {
     of() {
       return null;
@@ -67,6 +71,7 @@ describe("EditorPanel", () => {
     mockedWrite.mockClear();
     mockedJournalSave.mockClear();
     useEditorStore.setState({ open: null });
+    useUIStore.setState({ editorReadOnly: false });
   });
 
   it("shows the empty state when no note is open", () => {
@@ -122,6 +127,22 @@ describe("EditorPanel", () => {
       "aria-pressed",
       "true",
     );
+  });
+
+  it("Read-only toggle flips uiStore + updates the status label", async () => {
+    useEditorStore.setState({ open: noteOpen("notes/x.md", "body", "body") });
+    useUIStore.setState({ editorReadOnly: false });
+    render(<EditorPanel />);
+    const button = screen.getByTestId("editor-readonly-toggle");
+    expect(button).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByTestId("editor-status")).toHaveTextContent(/saved/i);
+
+    act(() => {
+      button.click();
+    });
+    expect(useUIStore.getState().editorReadOnly).toBe(true);
+    expect(button).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByTestId("editor-status")).toHaveTextContent(/read-only/i);
   });
 
   it("flips to the dirty status when content drifts from disk", () => {
