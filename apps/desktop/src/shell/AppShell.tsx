@@ -8,6 +8,7 @@ import {
 import { openByRelPath } from "../lib/openByRelPath";
 import type { LastOpened } from "../lib/types";
 import { useEditorStore } from "../state/editorStore";
+import { useSyncStore } from "../state/syncStore";
 import { useUIStore } from "../state/uiStore";
 import { ActivityBar } from "./ActivityBar";
 import { EditorPanel } from "./EditorPanel";
@@ -18,6 +19,7 @@ import { useKeyboardShortcuts } from "./useKeyboardShortcuts";
 import styles from "./AppShell.module.css";
 
 const AI_PANEL_WIDTH_PX = 360;
+const SYNC_STATUS_REFRESH_MS = 30_000;
 
 function journalRelPathFor(date: string): string {
   return `journal/${date.slice(0, 4)}/${date.slice(5, 7)}/${date}.md`;
@@ -28,6 +30,18 @@ export function AppShell() {
   const listPanelWidth = useUIStore((s) => s.listPanelWidth);
   const aiPanelOpen = useUIStore((s) => s.aiPanelOpen);
   useKeyboardShortcuts();
+
+  // Sync status: pull on mount, then refresh on a slow interval so the
+  // status bar's "Sync: 5m ago" stays accurate without polling git on
+  // every keystroke. AppShell is keyed on vault root so the interval
+  // tears down + restarts automatically when the user switches vaults.
+  useEffect(() => {
+    const refresh = useSyncStore.getState().refresh;
+    useSyncStore.getState().reset();
+    void refresh();
+    const handle = setInterval(() => void refresh(), SYNC_STATUS_REFRESH_MS);
+    return () => clearInterval(handle);
+  }, []);
 
   // On mount (i.e. when the active vault first becomes available or
   // changes — AppShell is keyed on the vault root in App.tsx), restore

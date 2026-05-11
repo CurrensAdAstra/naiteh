@@ -28,6 +28,23 @@ vi.mock("../../lib/api/workspace", () => ({
 vi.mock("../../lib/openByRelPath", () => ({
   openByRelPath: vi.fn().mockResolvedValue(undefined),
 }));
+// Sync status refresh fires on mount + a 30s interval — stub it so the
+// store doesn't hit the (unmocked) Tauri invoke.
+vi.mock("../../lib/api/sync", () => ({
+  syncStatus: vi.fn().mockResolvedValue({
+    remoteUrl: null,
+    branch: "main",
+    ahead: 0,
+    behind: 0,
+    dirty: false,
+    lastSync: null,
+  }),
+  syncInit: vi.fn(),
+  syncSetRemote: vi.fn(),
+  syncPull: vi.fn(),
+  syncPush: vi.fn(),
+  syncNow: vi.fn(),
+}));
 
 function resetStores() {
   useUIStore.setState({
