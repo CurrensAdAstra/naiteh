@@ -98,6 +98,7 @@ fn ensure_gitignore(vault_root: &Path) -> Result<(), AppError> {
     }
     let body = "# naiteh - machine-local state, not synced\n\
                 .naiteh/sync-state.json\n\
+                .naiteh/workspace.json\n\
                 .naiteh/tags.json\n";
     fsx::atomic_write(&path, body.as_bytes())
 }

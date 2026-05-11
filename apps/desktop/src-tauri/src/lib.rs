@@ -40,6 +40,8 @@ pub fn run() {
             commands::settings::app_config_set_editor,
             commands::settings::app_config_set_ai,
             commands::ai::ai_improve,
+            commands::workspace::workspace_get,
+            commands::workspace::workspace_set_last_opened,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

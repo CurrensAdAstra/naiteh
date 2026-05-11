@@ -20,6 +20,15 @@ vi.mock("../PanelRouter", () => ({
   ),
 }));
 
+// Workspace IPC is fire-and-forget during mount; mock it to no-op.
+vi.mock("../../lib/api/workspace", () => ({
+  workspaceGet: vi.fn().mockResolvedValue({ lastOpened: null }),
+  workspaceSetLastOpened: vi.fn().mockResolvedValue({ lastOpened: null }),
+}));
+vi.mock("../../lib/openByRelPath", () => ({
+  openByRelPath: vi.fn().mockResolvedValue(undefined),
+}));
+
 function resetStores() {
   useUIStore.setState({
     viewMode: "journal",

@@ -114,6 +114,14 @@ export const EDITOR_FONT_MIN = 8;
 export const EDITOR_FONT_MAX = 32;
 export const EDITOR_FONT_DEFAULT = 14;
 
+export type LastOpened =
+  | { kind: "Note"; relPath: string }
+  | { kind: "Journal"; date: string };
+
+export interface WorkspaceState {
+  lastOpened: LastOpened | null;
+}
+
 export type AppError =
   | { kind: "Io"; message: string }
   | { kind: "NotFound"; message: string }

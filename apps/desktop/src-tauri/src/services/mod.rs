@@ -5,3 +5,4 @@ pub mod fs;
 pub mod git;
 pub mod notes;
 pub mod sync_state;
+pub mod workspace;
