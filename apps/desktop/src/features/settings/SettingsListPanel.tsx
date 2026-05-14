@@ -1,5 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
 
+import {
+  authListAuditLogs,
+  authListUsers,
+  authSetUserActive,
+} from "../../lib/api/auth";
+import { legalDocsStatus, legalDocsSync } from "../../lib/api/rag";
 import { appConfigSetAi, appConfigSetEditor } from "../../lib/api/settings";
 import {
   vaultInit,
@@ -13,8 +19,12 @@ import {
   EDITOR_FONT_MIN,
   formatAppError,
   isAppError,
+  type AuditLogEntry,
+  type AuthUser,
+  type LegalDocsStatus,
   type VaultInfo,
 } from "../../lib/types";
+import { useAuthStore } from "../../state/authStore";
 import { useEditorStore } from "../../state/editorStore";
 import {
   selectEditorConfig,
@@ -23,7 +33,20 @@ import {
 import { useVaultStore } from "../../state/vaultStore";
 import styles from "./SettingsListPanel.module.css";
 
+function formatAuditTimestamp(timestamp: string): string {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return timestamp;
+  return new Intl.DateTimeFormat(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
 export function SettingsListPanel() {
+  const session = useAuthStore((s) => s.session);
+  const logAction = useAuthStore((s) => s.logAction);
   const config = useSettingsStore((s) => s.config);
   const editorConfig = useSettingsStore(selectEditorConfig);
   const refreshSettings = useSettingsStore((s) => s.refresh);
@@ -33,9 +56,12 @@ export function SettingsListPanel() {
   const closeOpenNote = useEditorStore((s) => s.closeNote);
 
   const [knownVaults, setKnownVaults] = useState<VaultInfo[]>([]);
+  const [users, setUsers] = useState<AuthUser[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
+  const [legalStatus, setLegalStatus] = useState<LegalDocsStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<
-    null | "switch" | "pick" | "editor" | "ai"
+    null | "switch" | "pick" | "editor" | "ai" | "accounts" | "legalDocs"
   >(null);
 
   // AI section local form state, synced from authoritative config below.
@@ -61,6 +87,41 @@ export function SettingsListPanel() {
     void refreshKnown();
   }, [refreshKnown, activeVault?.root]);
 
+  const refreshLegalDocs = useCallback(async () => {
+    try {
+      const status = await legalDocsStatus();
+      setLegalStatus(status);
+    } catch (e) {
+      setError(formatAppError(e));
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshLegalDocs();
+  }, [refreshLegalDocs]);
+
+  const refreshAdmin = useCallback(async () => {
+    if (session?.role !== "Admin") {
+      setUsers([]);
+      setAuditLogs([]);
+      return;
+    }
+    try {
+      const [nextUsers, nextLogs] = await Promise.all([
+        authListUsers(session.username),
+        authListAuditLogs(session.username, 100),
+      ]);
+      setUsers(nextUsers);
+      setAuditLogs(nextLogs);
+    } catch (e) {
+      setError(formatAppError(e));
+    }
+  }, [session]);
+
+  useEffect(() => {
+    void refreshAdmin();
+  }, [refreshAdmin]);
+
   const switchVault = useCallback(
     async (root: string) => {
       if (root === activeVault?.root) return;
@@ -71,13 +132,14 @@ export function SettingsListPanel() {
         // Editor's open file points into the previous vault; clear it.
         closeOpenNote();
         setActiveVault(next);
+        void logAction("vault_switch", root).catch(() => {});
       } catch (e) {
         setError(formatAppError(e));
       } finally {
         setBusy(null);
       }
     },
-    [activeVault?.root, closeOpenNote, setActiveVault],
+    [activeVault?.root, closeOpenNote, logAction, setActiveVault],
   );
 
   async function handleAddVault(intent: "existing" | "new") {
@@ -103,6 +165,7 @@ export function SettingsListPanel() {
       const next = await vaultSetActive(initialized.root);
       closeOpenNote();
       setActiveVault(next);
+      void logAction("vault_switch", initialized.root).catch(() => {});
       await refreshKnown();
     } catch (e) {
       if (isAppError(e) && e.kind === "Cancelled") return;
@@ -176,6 +239,38 @@ export function SettingsListPanel() {
     }
   }
 
+  async function handleSetUserActive(username: string, active: boolean) {
+    if (session === null) return;
+    setBusy("accounts");
+    setError(null);
+    try {
+      const next = await authSetUserActive(session.username, username, active);
+      setUsers(next);
+      const nextLogs = await authListAuditLogs(session.username, 100);
+      setAuditLogs(nextLogs);
+    } catch (e) {
+      setError(formatAppError(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleSyncLegalDocs() {
+    setBusy("legalDocs");
+    setError(null);
+    try {
+      const next = await legalDocsSync();
+      setLegalStatus(next);
+      void logAction("legal_docs_sync", next.head ?? next.localPath).catch(
+        () => {},
+      );
+    } catch (e) {
+      setError(formatAppError(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
   const aiKeyConfigured =
     config !== null &&
     config.ai.apiKey !== null &&
@@ -241,6 +336,55 @@ export function SettingsListPanel() {
               data-testid="vault-create-new"
             >
               Create new vault
+            </button>
+          </div>
+        </section>
+
+        <section className={styles.section} data-testid="settings-legal-docs">
+          <h3 className={styles.sectionTitle}>Legal RAG Source</h3>
+          <p className={styles.helpText}>
+            대한민국 법령 원문은 앱 데이터 폴더의 별도 Git 저장소로
+            관리됩니다. 사용자 vault에는 섞이지 않습니다.
+          </p>
+          <dl className={styles.metaList}>
+            <div className={styles.metaRow}>
+              <dt>Repository</dt>
+              <dd>{legalStatus?.repoUrl ?? "Loading…"}</dd>
+            </div>
+            <div className={styles.metaRow}>
+              <dt>Local path</dt>
+              <dd>{legalStatus?.localPath ?? "Loading…"}</dd>
+            </div>
+            <div className={styles.metaRow}>
+              <dt>Docs root</dt>
+              <dd>{legalStatus?.docsPath ?? "Loading…"}</dd>
+            </div>
+            <div className={styles.metaRow}>
+              <dt>Status</dt>
+              <dd>
+                {legalStatus === null
+                  ? "Loading…"
+                  : legalStatus.installed
+                    ? `${legalStatus.documentCount.toLocaleString()} Markdown files`
+                    : "Not installed"}
+              </dd>
+            </div>
+            {legalStatus?.head !== null && legalStatus?.head !== undefined && (
+              <div className={styles.metaRow}>
+                <dt>Revision</dt>
+                <dd>{legalStatus.head.slice(0, 12)}</dd>
+              </div>
+            )}
+          </dl>
+          <div className={styles.actionGroup}>
+            <button
+              type="button"
+              className={styles.button}
+              onClick={() => void handleSyncLegalDocs()}
+              disabled={busy !== null}
+              data-testid="legal-docs-sync"
+            >
+              {busy === "legalDocs" ? "Updating…" : "Update legal docs"}
             </button>
           </div>
         </section>
@@ -350,6 +494,89 @@ export function SettingsListPanel() {
             )}
           </div>
         </section>
+
+        {session?.role === "Admin" && (
+          <>
+            <section className={styles.section} data-testid="settings-accounts">
+              <h3 className={styles.sectionTitle}>Accounts</h3>
+              {users.length === 0 ? (
+                <p className={styles.helpText}>No users loaded.</p>
+              ) : (
+                <ul className={styles.accountList}>
+                  {users.map((user) => {
+                    const locked = user.username === "admin";
+                    return (
+                      <li key={user.username} className={styles.accountRow}>
+                        <div className={styles.accountMeta}>
+                          <span className={styles.accountName}>
+                            {user.username}
+                          </span>
+                          <span className={styles.accountRole}>
+                            {user.role}
+                          </span>
+                          <span
+                            className={
+                              user.active
+                                ? styles.accountActive
+                                : styles.accountDisabled
+                            }
+                          >
+                            {user.active ? "Active" : "Disabled"}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          className={styles.button}
+                          disabled={busy !== null || locked}
+                          onClick={() =>
+                            void handleSetUserActive(
+                              user.username,
+                              !user.active,
+                            )
+                          }
+                          data-testid={`account-toggle-${user.username}`}
+                        >
+                          {user.active ? "Disable" : "Enable"}
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+
+            <section className={styles.section} data-testid="settings-audit">
+              <h3 className={styles.sectionTitle}>Audit Log</h3>
+              {auditLogs.length === 0 ? (
+                <p className={styles.helpText}>No log entries yet.</p>
+              ) : (
+                <ul className={styles.auditList}>
+                  {auditLogs.map((entry, index) => (
+                    <li
+                      key={`${entry.timestamp}-${entry.action}-${index}`}
+                      className={styles.auditRow}
+                    >
+                      <span className={styles.auditTime}>
+                        {formatAuditTimestamp(entry.timestamp)}
+                      </span>
+                      <span className={styles.auditAction}>
+                        {entry.action}
+                      </span>
+                      <span className={styles.auditUser}>
+                        {entry.username}
+                      </span>
+                      {entry.detail !== null && (
+                        <span className={styles.auditDetail}>
+                          {entry.detail}
+                        </span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          </>
+        )}
       </div>
     </div>
   );

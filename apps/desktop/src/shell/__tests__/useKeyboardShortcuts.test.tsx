@@ -20,7 +20,11 @@ function dispatchModifier(key: string) {
 
 describe("useKeyboardShortcuts", () => {
   beforeEach(() => {
-    useUIStore.setState({ viewMode: "journal", aiPanelOpen: false });
+    useUIStore.setState({
+      viewMode: "journal",
+      aiPanelOpen: false,
+      commandPaletteOpen: false,
+    });
   });
 
   it("Cmd+1..7 switches ViewMode", () => {
@@ -59,6 +63,37 @@ describe("useKeyboardShortcuts", () => {
     expect(useUIStore.getState().aiPanelOpen).toBe(true);
     dispatchModifier("e");
     expect(useUIStore.getState().aiPanelOpen).toBe(false);
+  });
+
+  it("Cmd+K opens the command palette even when an input has focus", () => {
+    const { container } = render(
+      <>
+        <Harness />
+        <input data-testid="editable" />
+      </>,
+    );
+    const input = container.querySelector(
+      "input[data-testid='editable']",
+    ) as HTMLInputElement;
+    input.focus();
+    fireEvent.keyDown(input, {
+      key: "k",
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    expect(useUIStore.getState().commandPaletteOpen).toBe(true);
+  });
+
+  it("Escape closes the command palette", () => {
+    render(<Harness />);
+    useUIStore.getState().setCommandPaletteOpen(true);
+    fireEvent.keyDown(window, {
+      key: "Escape",
+      bubbles: true,
+      cancelable: true,
+    });
+    expect(useUIStore.getState().commandPaletteOpen).toBe(false);
   });
 
   it("Cmd+E does NOT toggle when an INPUT has focus", () => {

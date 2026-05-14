@@ -27,6 +27,13 @@ All implementation tasks reference this file.
    ever fires without an explicit click in the panel. naiteh stays
    local-first everywhere else — AI Assist is the one feature that
    knowingly leaves the local trust boundary.
+7. **Local user access control** — the app opens on a login screen before
+   any vault content is shown. The seeded local accounts are `admin`
+   (administrator) and `mgkyung` (standard user). Administrators can manage
+   other local accounts and review login / work audit logs.
+8. **Legal RAG source management** — South Korean statute Markdown files are
+   pulled from `https://github.com/legalize-kr/legalize-kr` as a managed Git
+   repository outside the user's vault.
 
 ### Non-goals (for v1)
 
@@ -38,6 +45,10 @@ All implementation tasks reference this file.
 - Calendar event integration (system Calendar / Reminders)
 - Implicit AI calls — auto-completion, ghost text, background revision,
   embedding-based search, etc. v1 AI Assist is strictly user-initiated.
+- Cloud identity, SSO, or multi-tenant server authorization. v1 auth is
+  local app access control backed by the user's OS app-config directory.
+- Editing generated legal statute Markdown in-place. The legal RAG source is
+  upstream-managed and refreshed as a whole repository.
 
 ---
 
@@ -123,6 +134,20 @@ naiteh/
 The `apps/` prefix is used so we can later add `apps/mobile/` without
 restructuring.
 
+Managed legal RAG data is not stored in the application source tree or in a
+user vault. It lives under the OS app-data directory:
+
+```
+<app-data-dir>/naiteh/
+└── rag/
+    └── legalize-kr/
+        └── repo/                 ← clone of legalize-kr/legalize-kr
+            └── kr/               ← Markdown document root for retrieval
+```
+
+On macOS this resolves to
+`~/Library/Application Support/naiteh/rag/legalize-kr/repo`.
+
 ---
 
 ## 4. Vault
@@ -198,6 +223,18 @@ that date show up on the timeline.
 ## 5. UI Architecture
 
 ### 5.1 Layout (desktop, v1)
+
+#### Authentication gate
+
+The first screen at the dev URL root (`/`) and admin URL (`/admin`) is the
+same local login screen. No vault, journal, note, sync, or settings content
+is rendered before a successful login.
+
+- `admin` logs in with the `Admin` role and can manage other accounts.
+- `mgkyung` logs in with the `User` role and cannot manage accounts.
+- `/admin` does not bypass authentication; after a successful admin login it
+  opens the Settings panel with the account-management section visible.
+- Failed and successful login attempts are written to the audit log.
 
 VS Code-like 3-column shell:
 
@@ -320,7 +357,7 @@ Behavior:
 | search    | Search input + result list (full-text)                              |
 | tags      | Flat tag list with counts; selecting a tag shows its notes          |
 | sync      | Last sync time, pending changes, "Sync now" button, log             |
-| settings  | Setting categories                                                  |
+| settings  | Setting categories; admin-only account and audit-log management     |
 
 ### 5.5 Journal mode (quick capture + activity summary)
 
@@ -545,6 +582,67 @@ pub struct AiConfig {
 in plaintext under the user's app-config directory; OS-level user-account
 permissions are the trust boundary. v1 does not use the system keychain.
 
+### 6.8 Auth & Audit
+
+```rust
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum UserRole {
+    Admin,
+    User,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthUser {
+    pub username: String,
+    pub role: UserRole,
+    pub active: bool,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthSession {
+    pub username: String,
+    pub role: UserRole,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditLogEntry {
+    pub timestamp: String,       // RFC 3339 UTC
+    pub username: String,        // attempted or authenticated username
+    pub action: String,          // login_success, login_failure, note_open, ...
+    pub detail: Option<String>,  // rel path, target account, failure reason
+}
+```
+
+The local account store lives in the app-config directory. Passwords are
+never exposed to the frontend; only `AuthUser` records cross the IPC
+boundary. The audit log is append-only JSONL at
+`<app-config-dir>/audit-log.jsonl` so it can grow independently of
+`config.json`.
+
+### 6.9 Legal RAG Source
+
+```rust
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegalDocsStatus {
+    pub repo_url: String,         // https://github.com/legalize-kr/legalize-kr.git
+    pub local_path: String,       // <app-data-dir>/naiteh/rag/legalize-kr/repo
+    pub docs_path: String,        // <local_path>/kr
+    pub installed: bool,
+    pub branch: Option<String>,
+    pub head: Option<String>,
+    pub document_count: u32,      // Markdown files under docs_path
+}
+```
+
+The legal source repository may be force-pushed upstream, so updates fetch
+`origin/main` and reset the managed clone to that revision. User notes are
+never committed into this repository.
+
 ---
 
 ## 7. Tauri Commands (IPC API)
@@ -652,6 +750,34 @@ app_config_set_editor(font_size: u16, line_wrapping: bool) -> Result<AppConfig, 
 app_config_set_ai(api_key: Option<String>, model: String, base_url: Option<String>) -> Result<AppConfig, AppError>
 ```
 
+### 7.9 Auth & Audit
+
+```rust
+auth_login(username: String, password: String) -> Result<AuthSession, AppError>
+auth_list_users(actor: String) -> Result<Vec<AuthUser>, AppError>
+auth_set_user_active(actor: String, username: String, active: bool) -> Result<Vec<AuthUser>, AppError>
+auth_list_audit_logs(actor: String, limit: u32) -> Result<Vec<AuditLogEntry>, AppError>
+auth_log_action(username: String, action: String, detail: Option<String>) -> Result<(), AppError>
+```
+
+The account-management and log-read commands require an admin actor.
+`auth_set_user_active` refuses to deactivate the `admin` account.
+`auth_log_action` is used by the frontend for work-audit events such as
+note open, note save, vault switch, and logout.
+
+### 7.10 Legal RAG Source
+
+```rust
+legal_docs_status() -> Result<LegalDocsStatus, AppError>
+legal_docs_sync() -> Result<LegalDocsStatus, AppError>
+```
+
+`legal_docs_sync` clones
+`https://github.com/legalize-kr/legalize-kr.git` into the managed app-data
+path when missing. If it already exists, it fetches `origin/main`, resets
+the local `main` branch to the fetched revision, and force-checks out the
+working tree so upstream generated-document rewrites are accepted.
+
 ---
 
 ## 8. App Config
@@ -694,6 +820,26 @@ Schema:
 
 Per-vault settings live in `<vault>/.naiteh/config.json`.
 
+The app-config directory also contains:
+
+```
+auth.json
+audit-log.jsonl
+```
+
+`auth.json` stores local users and backend-only password hashes. Each
+`audit-log.jsonl` line is one `AuditLogEntry` JSON object. Login attempts
+are logged by the backend; user work events are logged through
+`auth_log_action`.
+
+App-managed, rebuildable data lives in the OS app-data directory:
+
+```
+<app-data-dir>/naiteh/rag/legalize-kr/repo
+```
+
+The RAG document root is `<app-data-dir>/naiteh/rag/legalize-kr/repo/kr`.
+
 ---
 
 ## 9. Concurrency & Safety
@@ -711,6 +857,11 @@ Per-vault settings live in `<vault>/.naiteh/config.json`.
   configured Chat Completions endpoint. These are the only two outbound
   network paths in v1, and both are user-initiated. No telemetry, no
   background calls, no implicit AI rewriting.
+- **Audit trail**: login attempts and selected work events are recorded in
+  append-only local JSONL. The audit log is local-only and visible to admin
+  users from Settings.
+- **Managed RAG source**: legal documents live outside vaults and are
+  refreshed from their upstream Git repository as a complete source tree.
 
 ---
 
@@ -719,6 +870,9 @@ Per-vault settings live in `<vault>/.naiteh/config.json`.
 ### v1.0 (MVP)
 
 - Vault picker + first-run setup
+- Local login screen with seeded `admin` / `mgkyung` accounts
+- Admin-only account management and audit-log review
+- Managed `legalize-kr/legalize-kr` clone for Korean statute RAG documents
 - 3-column shell with all seven ViewModes
 - Journal: quick capture + recent activity
 - Calendar: Agenda-style timeline (mtime-based) + month grid sub-view
@@ -765,3 +919,6 @@ Per-vault settings live in `<vault>/.naiteh/config.json`.
 | Timeline   | Calendar mode's date-grouped list of notes/entries            |
 | On the Agenda | The pinned area at the top of the calendar timeline        |
 | AI Assist  | Opt-in side panel that sends selected text to a Chat Completions API and replaces it with the model's revision |
+| Admin      | Local account role that can manage users and inspect logs     |
+| Audit log  | Local JSONL history of login and selected work events         |
+| Legal RAG source | Managed clone of `legalize-kr/legalize-kr` under app data |

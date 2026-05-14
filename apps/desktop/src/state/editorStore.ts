@@ -139,11 +139,38 @@ export function replaceWholeDocument(insert: string): boolean {
  */
 export function replaceRange(from: number, to: number, insert: string): boolean {
   const view = useEditorStore.getState().view;
-  if (view === null) return false;
+  const open = useEditorStore.getState().open;
+  if (open === null) return false;
+  if (view === null || view.state === undefined) {
+    const next = `${open.content.slice(0, from)}${insert}${open.content.slice(to)}`;
+    useEditorStore.setState({ open: { ...open, content: next } });
+    return true;
+  }
   view.dispatch({
     changes: { from, to, insert },
     selection: { anchor: from, head: from + insert.length },
   });
   view.focus();
+  useEditorStore.setState((s) =>
+    s.open === null
+      ? s
+      : {
+          open: {
+            ...s.open,
+            content: `${s.open.content.slice(0, from)}${insert}${s.open.content.slice(to)}`,
+          },
+        },
+  );
   return true;
+}
+
+export function insertAtCursor(insert: string): boolean {
+  const open = useEditorStore.getState().open;
+  if (open === null) return false;
+  const view = useEditorStore.getState().view;
+  if (view === null || view.state === undefined) {
+    return replaceRange(open.content.length, open.content.length, insert);
+  }
+  const range = view.state.selection.main;
+  return replaceRange(range.from, range.to, insert);
 }

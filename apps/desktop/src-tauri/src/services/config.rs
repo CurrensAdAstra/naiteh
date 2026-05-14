@@ -110,6 +110,15 @@ pub fn default_app_config_dir() -> Result<PathBuf, AppError> {
     Ok(base.join(APP_DIR_NAME))
 }
 
+/// Per-OS app data directory for managed, rebuildable data such as RAG
+/// source repositories. This is intentionally separate from user vaults.
+pub fn default_app_data_dir() -> Result<PathBuf, AppError> {
+    let base = dirs::data_dir()
+        .or_else(dirs::config_dir)
+        .ok_or_else(|| AppError::NotFound("OS app data directory unavailable".into()))?;
+    Ok(base.join(APP_DIR_NAME))
+}
+
 /// `<config_dir>/config.json`.
 pub fn config_path(config_dir: &Path) -> PathBuf {
     config_dir.join(CONFIG_FILE)
@@ -149,6 +158,12 @@ mod tests {
     #[test]
     fn default_dir_ends_with_naiteh() {
         let dir = default_app_config_dir().unwrap();
+        assert_eq!(dir.file_name().and_then(|n| n.to_str()), Some(APP_DIR_NAME));
+    }
+
+    #[test]
+    fn default_data_dir_ends_with_naiteh() {
+        let dir = default_app_data_dir().unwrap();
         assert_eq!(dir.file_name().and_then(|n| n.to_str()), Some(APP_DIR_NAME));
     }
 

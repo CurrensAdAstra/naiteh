@@ -26,6 +26,9 @@ pub enum AppError {
     #[error("Config corrupt: {0}")]
     ConfigCorrupt(String),
 
+    #[error("Unauthorized: {0}")]
+    Unauthorized(String),
+
     #[error("Cancelled")]
     Cancelled,
 }

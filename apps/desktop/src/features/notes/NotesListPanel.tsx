@@ -17,6 +17,7 @@ import {
 } from "../../lib/api/notes";
 import { formatAppError } from "../../lib/types";
 import type { NoteMeta } from "../../lib/types";
+import { useAuthStore } from "../../state/authStore";
 import { useEditorStore } from "../../state/editorStore";
 import { buildTree, type FolderNode } from "./buildTree";
 import styles from "./NotesListPanel.module.css";
@@ -34,6 +35,7 @@ export function NotesListPanel() {
   const [creating, setCreating] = useState(false);
   const openNote = useEditorStore((s) => s.openNote);
   const closeNote = useEditorStore((s) => s.closeNote);
+  const logAction = useAuthStore((s) => s.logAction);
   const openRelPath = useEditorStore((s) =>
     s.open !== null && s.open.source.kind === "note"
       ? s.open.source.relPath
@@ -59,11 +61,12 @@ export function NotesListPanel() {
       try {
         const content = await notesRead(note.relPath);
         openNote(note.relPath, content);
+        void logAction("note_open", note.relPath).catch(() => {});
       } catch (e) {
         setError(formatAppError(e));
       }
     },
-    [openNote],
+    [logAction, openNote],
   );
 
   async function handleNewNote() {
@@ -72,6 +75,7 @@ export function NotesListPanel() {
     setCreating(true);
     try {
       const meta = await notesCreate("notes", title);
+      void logAction("note_create", meta.relPath).catch(() => {});
       await refresh();
       await handleOpen(meta);
     } catch (e) {
@@ -95,6 +99,10 @@ export function NotesListPanel() {
       const targetRelPath = segments.join("/");
       try {
         const updated = await notesRename(note.relPath, targetRelPath);
+        void logAction(
+          "note_rename",
+          `${note.relPath} -> ${updated.relPath}`,
+        ).catch(() => {});
         await refresh();
         if (openRelPath === note.relPath) {
           // The currently open note moved — re-open it from the new path.
@@ -105,7 +113,7 @@ export function NotesListPanel() {
         setError(formatAppError(e));
       }
     },
-    [openNote, openRelPath, refresh],
+    [logAction, openNote, openRelPath, refresh],
   );
 
   const handleDelete = useCallback(
@@ -116,13 +124,14 @@ export function NotesListPanel() {
       if (!ok) return;
       try {
         await notesDelete(note.relPath);
+        void logAction("note_delete", note.relPath).catch(() => {});
         if (openRelPath === note.relPath) closeNote();
         await refresh();
       } catch (e) {
         setError(formatAppError(e));
       }
     },
-    [closeNote, openRelPath, refresh],
+    [closeNote, logAction, openRelPath, refresh],
   );
 
   const tree = buildTree(notes);

@@ -38,11 +38,21 @@ vi.mock("../../lib/api/notes", () => ({
 vi.mock("../../lib/api/journal", () => ({
   journalSave: vi.fn().mockResolvedValue({}),
 }));
+vi.mock("../../lib/api/attachments", () => ({
+  attachmentsImport: vi.fn().mockResolvedValue({
+    relPath: "attachments/screen-shot.png",
+    fileName: "screen-shot.png",
+    markdown: "![screen shot](attachments/screen-shot.png)",
+  }),
+}));
 
+import { attachmentsImport } from "../../lib/api/attachments";
 import { journalSave } from "../../lib/api/journal";
 import { notesWrite } from "../../lib/api/notes";
+import type { AppError } from "../../lib/types";
 const mockedWrite = vi.mocked(notesWrite);
 const mockedJournalSave = vi.mocked(journalSave);
+const mockedAttachmentsImport = vi.mocked(attachmentsImport);
 
 function noteOpen(relPath: string, content: string, saved: string) {
   return {
@@ -70,7 +80,13 @@ describe("EditorPanel", () => {
   beforeEach(() => {
     mockedWrite.mockClear();
     mockedJournalSave.mockClear();
-    useEditorStore.setState({ open: null });
+    mockedAttachmentsImport.mockClear();
+    mockedAttachmentsImport.mockResolvedValue({
+      relPath: "attachments/screen-shot.png",
+      fileName: "screen-shot.png",
+      markdown: "![screen shot](attachments/screen-shot.png)",
+    });
+    useEditorStore.setState({ open: null, view: null });
     useUIStore.setState({ editorReadOnly: false });
   });
 
@@ -143,6 +159,46 @@ describe("EditorPanel", () => {
     expect(useUIStore.getState().editorReadOnly).toBe(true);
     expect(button).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByTestId("editor-status")).toHaveTextContent(/read-only/i);
+  });
+
+  it("imports an attachment and inserts its markdown", async () => {
+    useEditorStore.setState({ open: noteOpen("notes/x.md", "body", "body") });
+    render(<EditorPanel />);
+
+    act(() => {
+      screen.getByTestId("editor-attach-button").click();
+    });
+
+    await waitFor(() => {
+      expect(useEditorStore.getState().open?.content).toBe(
+        "body![screen shot](attachments/screen-shot.png)",
+      );
+    });
+    expect(mockedAttachmentsImport).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not show an error when attachment picking is cancelled", async () => {
+    const cancelled: AppError = { kind: "Cancelled" };
+    mockedAttachmentsImport.mockRejectedValueOnce(cancelled);
+    useEditorStore.setState({ open: noteOpen("notes/x.md", "body", "body") });
+    render(<EditorPanel />);
+
+    act(() => {
+      screen.getByTestId("editor-attach-button").click();
+    });
+
+    await waitFor(() => {
+      expect(mockedAttachmentsImport).toHaveBeenCalledTimes(1);
+    });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("disables attachment insertion while read-only", () => {
+    useEditorStore.setState({ open: noteOpen("notes/x.md", "body", "body") });
+    useUIStore.setState({ editorReadOnly: true });
+    render(<EditorPanel />);
+
+    expect(screen.getByTestId("editor-attach-button")).toBeDisabled();
   });
 
   it("flips to the dirty status when content drifts from disk", () => {

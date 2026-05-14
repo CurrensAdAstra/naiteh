@@ -11,6 +11,7 @@ import { useEditorStore } from "../state/editorStore";
 import { useSyncStore } from "../state/syncStore";
 import { useUIStore } from "../state/uiStore";
 import { ActivityBar } from "./ActivityBar";
+import { CommandPalette } from "./CommandPalette";
 import { EditorPanel } from "./EditorPanel";
 import { ListPanelResizer } from "./ListPanelResizer";
 import { PanelRouter } from "./PanelRouter";
@@ -121,6 +122,7 @@ export function AppShell() {
           <AiPanel />
         </div>
       )}
+      <CommandPalette />
       <div className={styles.status}>
         <StatusBar />
       </div>

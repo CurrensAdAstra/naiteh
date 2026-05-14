@@ -90,6 +90,62 @@ pub struct SyncStatus {
     pub last_sync: Option<i64>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentImport {
+    pub rel_path: String,
+    pub file_name: String,
+    pub markdown: String,
+}
+
+/// architecture.md §6.8
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UserRole {
+    Admin,
+    User,
+}
+
+/// architecture.md §6.8 — public account shape returned to the frontend.
+/// Password hashes stay backend-only in the auth service.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthUser {
+    pub username: String,
+    pub role: UserRole,
+    pub active: bool,
+}
+
+/// architecture.md §6.8
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthSession {
+    pub username: String,
+    pub role: UserRole,
+}
+
+/// architecture.md §6.8
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuditLogEntry {
+    pub timestamp: String,
+    pub username: String,
+    pub action: String,
+    pub detail: Option<String>,
+}
+
+/// RAG source status for the managed Korean statutes repository.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LegalDocsStatus {
+    pub repo_url: String,
+    pub local_path: String,
+    pub docs_path: String,
+    pub installed: bool,
+    pub branch: Option<String>,
+    pub head: Option<String>,
+    pub document_count: u32,
+}
+
 /// architecture.md §6.3 — used by both journal "Recent Activity" and the
 /// calendar timeline. Variants stay in PascalCase so `kind` reads as
 /// `"JournalEntry"` / `"Note"` on the wire; fields are camelCased per

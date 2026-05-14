@@ -17,6 +17,9 @@ describe("uiStore", () => {
       viewMode: "journal",
       listPanelWidth: LIST_PANEL_DEFAULT,
       journalSplitRatio: JOURNAL_SPLIT_DEFAULT,
+      aiPanelOpen: false,
+      commandPaletteOpen: false,
+      editorReadOnly: false,
     });
   });
 
@@ -62,5 +65,13 @@ describe("uiStore", () => {
   it("setJournalSplitRatio clamps above the maximum", () => {
     useUIStore.getState().setJournalSplitRatio(1.5);
     expect(useUIStore.getState().journalSplitRatio).toBe(JOURNAL_SPLIT_MAX);
+  });
+
+  it("toggles the command palette", () => {
+    useUIStore.getState().setCommandPaletteOpen(true);
+    expect(useUIStore.getState().commandPaletteOpen).toBe(true);
+
+    useUIStore.getState().toggleCommandPalette();
+    expect(useUIStore.getState().commandPaletteOpen).toBe(false);
   });
 });
