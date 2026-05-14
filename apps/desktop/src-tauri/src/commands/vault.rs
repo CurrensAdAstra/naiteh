@@ -82,6 +82,7 @@ fn vault_init_impl(root: &Path) -> Result<VaultInfo, AppError> {
     }
 
     fsx::ensure_dir(&naiteh_dir)?;
+    fsx::ensure_dir(&root.join("attachments"))?;
     fsx::ensure_dir(&root.join("journal"))?;
     fsx::ensure_dir(&root.join("notes").join("_inbox"))?;
 
@@ -157,6 +158,7 @@ mod tests {
 
         assert!(root_dir.path().join(".naiteh").is_dir());
         assert!(root_dir.path().join(".naiteh/config.json").is_file());
+        assert!(root_dir.path().join("attachments").is_dir());
         assert!(root_dir.path().join("journal").is_dir());
         assert!(root_dir.path().join("notes/_inbox").is_dir());
     }

@@ -9,6 +9,7 @@ import {
 import { notesRead } from "../../lib/api/notes";
 import { formatAppError } from "../../lib/types";
 import type { TimelineDay, TimelineItem } from "../../lib/types";
+import { useAuthStore } from "../../state/authStore";
 import { useEditorStore } from "../../state/editorStore";
 import { CalendarGrid } from "./CalendarGrid";
 import {
@@ -32,6 +33,7 @@ export function CalendarListPanel() {
   const openKey = useEditorStore((s) => s.open?.key ?? null);
   const openNoteAction = useEditorStore((s) => s.openNote);
   const openJournalAction = useEditorStore((s) => s.openJournal);
+  const logAction = useAuthStore((s) => s.logAction);
 
   // Resolve the timeline range from the displayed grid month: always covers
   // the visible grid AND extends through today so the timeline below always
@@ -81,15 +83,17 @@ export function CalendarListPanel() {
             journalRelPathFor(item.date),
             result.content,
           );
+          void logAction("journal_open", item.date).catch(() => {});
         } else {
           const content = await notesRead(item.relPath);
           openNoteAction(item.relPath, content);
+          void logAction("note_open", item.relPath).catch(() => {});
         }
       } catch (e) {
         setError(formatAppError(e));
       }
     },
-    [openJournalAction, openNoteAction],
+    [logAction, openJournalAction, openNoteAction],
   );
 
   const handleOpenEmptyDay = useCallback(
@@ -97,11 +101,12 @@ export function CalendarListPanel() {
       try {
         const result = await journalOpen(date);
         openJournalAction(date, journalRelPathFor(date), result.content);
+        void logAction("journal_open", date).catch(() => {});
       } catch (e) {
         setError(formatAppError(e));
       }
     },
-    [openJournalAction],
+    [logAction, openJournalAction],
   );
 
   const handleSelectDate = useCallback((date: string) => {

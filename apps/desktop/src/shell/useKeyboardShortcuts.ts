@@ -16,6 +16,7 @@ const VIEW_MODES_BY_INDEX: readonly ViewMode[] = [
 /**
  * Wires up the global keyboard shortcuts:
  *   - Cmd/Ctrl + 1..7 → switch ViewMode
+ *   - Cmd/Ctrl + K    → open command palette
  *   - Cmd/Ctrl + E    → toggle AI Assist panel
  * These are intentionally distinct from Cmd/Ctrl + S (handled in EditorPanel)
  * and from any shortcut a third-party-style modifier alone (Alt etc.) would
@@ -25,10 +26,17 @@ const VIEW_MODES_BY_INDEX: readonly ViewMode[] = [
  */
 export function useKeyboardShortcuts(): void {
   const setViewMode = useUIStore((s) => s.setViewMode);
+  const setCommandPaletteOpen = useUIStore((s) => s.setCommandPaletteOpen);
   const toggleAiPanel = useUIStore((s) => s.toggleAiPanel);
 
   useEffect(() => {
     function handler(e: KeyboardEvent) {
+      if (e.key === "Escape" && useUIStore.getState().commandPaletteOpen) {
+        e.preventDefault();
+        setCommandPaletteOpen(false);
+        return;
+      }
+
       if (!(e.metaKey || e.ctrlKey)) return;
       if (e.altKey || e.shiftKey) return; // keep the surface tight
 
@@ -47,6 +55,12 @@ export function useKeyboardShortcuts(): void {
         return;
       }
 
+      if (e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setCommandPaletteOpen(true);
+        return;
+      }
+
       if (e.key.toLowerCase() === "e" && !inEditableField) {
         e.preventDefault();
         toggleAiPanel();
@@ -55,7 +69,7 @@ export function useKeyboardShortcuts(): void {
     }
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [setViewMode, toggleAiPanel]);
+  }, [setCommandPaletteOpen, setViewMode, toggleAiPanel]);
 }
 
 function isEditableTarget(target: Element | null): boolean {

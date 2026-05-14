@@ -11,12 +11,13 @@ import { activityRecent, quickCreate, quickList } from "../../lib/api/journal";
 import { openByRelPath } from "../../lib/openByRelPath";
 import { formatAppError } from "../../lib/types";
 import type { NoteMeta, TimelineItem } from "../../lib/types";
+import { useAuthStore } from "../../state/authStore";
+import { useEditorStore } from "../../state/editorStore";
 import {
   JOURNAL_SPLIT_MAX,
   JOURNAL_SPLIT_MIN,
   useUIStore,
 } from "../../state/uiStore";
-import { useEditorStore } from "../../state/editorStore";
 import { formatRelative } from "./formatRelative";
 import styles from "./JournalListPanel.module.css";
 
@@ -48,6 +49,7 @@ export function JournalListPanel() {
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const openRelPath = useEditorStore((s) => s.open?.source.relPath ?? null);
+  const logAction = useAuthStore((s) => s.logAction);
 
   const refresh = useCallback(async () => {
     try {
@@ -79,6 +81,7 @@ export function JournalListPanel() {
     setCreating(true);
     try {
       const meta = await quickCreate();
+      void logAction("quick_note_create", meta.relPath).catch(() => {});
       await refresh();
       await handleOpenRelPath(meta.relPath);
     } catch (e) {

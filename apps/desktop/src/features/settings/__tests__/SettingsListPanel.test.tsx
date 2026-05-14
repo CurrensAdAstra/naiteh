@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   EDITOR_FONT_DEFAULT,
   type AppConfig,
+  type LegalDocsStatus,
   type VaultInfo,
 } from "../../../lib/types";
 import { useEditorStore } from "../../../state/editorStore";
@@ -19,9 +20,25 @@ vi.mock("../../../lib/api/vault", () => ({
   vaultSetActive: vi.fn(),
 }));
 vi.mock("../../../lib/api/settings", () => ({
+  appConfigSetAi: vi.fn(),
   appConfigSetEditor: vi.fn(),
 }));
+vi.mock("../../../lib/api/auth", () => ({
+  authListAuditLogs: vi.fn(),
+  authListUsers: vi.fn(),
+  authSetUserActive: vi.fn(),
+}));
+vi.mock("../../../lib/api/rag", () => ({
+  legalDocsStatus: vi.fn(),
+  legalDocsSync: vi.fn(),
+}));
 
+import {
+  authListAuditLogs,
+  authListUsers,
+  authSetUserActive,
+} from "../../../lib/api/auth";
+import { legalDocsStatus, legalDocsSync } from "../../../lib/api/rag";
 import { appConfigSetEditor } from "../../../lib/api/settings";
 import {
   vaultInit,
@@ -29,12 +46,18 @@ import {
   vaultPickFolder,
   vaultSetActive,
 } from "../../../lib/api/vault";
+import { useAuthStore } from "../../../state/authStore";
 
 const mockedListKnown = vi.mocked(vaultListKnown);
 const mockedPick = vi.mocked(vaultPickFolder);
 const mockedInit = vi.mocked(vaultInit);
 const mockedSetActive = vi.mocked(vaultSetActive);
 const mockedSetEditor = vi.mocked(appConfigSetEditor);
+const mockedAuthListUsers = vi.mocked(authListUsers);
+const mockedAuthListAuditLogs = vi.mocked(authListAuditLogs);
+const mockedAuthSetUserActive = vi.mocked(authSetUserActive);
+const mockedLegalDocsStatus = vi.mocked(legalDocsStatus);
+const mockedLegalDocsSync = vi.mocked(legalDocsSync);
 
 function vault(root: string, name: string, initialized = true): VaultInfo {
   return { root, name, initialized };
@@ -56,6 +79,18 @@ function configWithEditor(fontSize: number, lineWrapping: boolean): AppConfig {
   };
 }
 
+function legalStatus(installed = false): LegalDocsStatus {
+  return {
+    repoUrl: "https://github.com/legalize-kr/legalize-kr.git",
+    localPath: "/app/naiteh/rag/legalize-kr/repo",
+    docsPath: "/app/naiteh/rag/legalize-kr/repo/kr",
+    installed,
+    branch: installed ? "main" : null,
+    head: installed ? "abcdef1234567890" : null,
+    documentCount: installed ? 1200 : 0,
+  };
+}
+
 describe("SettingsListPanel", () => {
   beforeEach(() => {
     mockedListKnown.mockReset();
@@ -63,12 +98,22 @@ describe("SettingsListPanel", () => {
     mockedInit.mockReset();
     mockedSetActive.mockReset();
     mockedSetEditor.mockReset();
+    mockedAuthListUsers.mockReset();
+    mockedAuthListAuditLogs.mockReset();
+    mockedAuthSetUserActive.mockReset();
+    mockedLegalDocsStatus.mockReset();
+    mockedLegalDocsSync.mockReset();
     useVaultStore.setState({ active: vault("/v", "v") });
+    useAuthStore.setState({ session: null });
     useSettingsStore.setState({
       config: configWithEditor(EDITOR_FONT_DEFAULT, true),
       loading: false,
     });
     useEditorStore.setState({ open: null });
+    mockedAuthListUsers.mockResolvedValue([]);
+    mockedAuthListAuditLogs.mockResolvedValue([]);
+    mockedLegalDocsStatus.mockResolvedValue(legalStatus());
+    mockedLegalDocsSync.mockResolvedValue(legalStatus(true));
   });
 
   it("renders known vaults with the active one badged", async () => {
@@ -199,5 +244,89 @@ describe("SettingsListPanel", () => {
     });
     render(<SettingsListPanel />);
     expect(await screen.findByText(/list failed/i)).toBeInTheDocument();
+  });
+
+  it("shows the managed legal documents repository path", async () => {
+    mockedListKnown.mockResolvedValue([vault("/v", "v")]);
+    mockedLegalDocsStatus.mockResolvedValue(legalStatus(true));
+    render(<SettingsListPanel />);
+
+    expect(await screen.findByTestId("settings-legal-docs")).toHaveTextContent(
+      "/app/naiteh/rag/legalize-kr/repo/kr",
+    );
+    expect(screen.getByTestId("settings-legal-docs")).toHaveTextContent(
+      "1,200 Markdown files",
+    );
+  });
+
+  it("syncs the legal documents repository on demand", async () => {
+    mockedListKnown.mockResolvedValue([vault("/v", "v")]);
+    const user = userEvent.setup();
+    render(<SettingsListPanel />);
+
+    await user.click(await screen.findByTestId("legal-docs-sync"));
+
+    await waitFor(() => {
+      expect(mockedLegalDocsSync).toHaveBeenCalled();
+      expect(screen.getByTestId("settings-legal-docs")).toHaveTextContent(
+        "abcdef123456",
+      );
+    });
+  });
+
+  it("shows admin account management and audit logs", async () => {
+    mockedListKnown.mockResolvedValue([vault("/v", "v")]);
+    mockedAuthListUsers.mockResolvedValue([
+      { username: "admin", role: "Admin", active: true },
+      { username: "mgkyung", role: "User", active: true },
+    ]);
+    mockedAuthListAuditLogs.mockResolvedValue([
+      {
+        timestamp: "2026-05-15T01:00:00Z",
+        username: "admin",
+        action: "login_success",
+        detail: null,
+      },
+    ]);
+    useAuthStore.setState({
+      session: { username: "admin", role: "Admin" },
+    });
+
+    render(<SettingsListPanel />);
+
+    expect(await screen.findByTestId("settings-accounts")).toHaveTextContent(
+      "mgkyung",
+    );
+    expect(screen.getByTestId("settings-audit")).toHaveTextContent(
+      "login_success",
+    );
+  });
+
+  it("admin can disable a standard account", async () => {
+    mockedListKnown.mockResolvedValue([vault("/v", "v")]);
+    mockedAuthListUsers.mockResolvedValue([
+      { username: "admin", role: "Admin", active: true },
+      { username: "mgkyung", role: "User", active: true },
+    ]);
+    mockedAuthSetUserActive.mockResolvedValue([
+      { username: "admin", role: "Admin", active: true },
+      { username: "mgkyung", role: "User", active: false },
+    ]);
+    mockedAuthListAuditLogs.mockResolvedValue([]);
+    useAuthStore.setState({
+      session: { username: "admin", role: "Admin" },
+    });
+
+    const user = userEvent.setup();
+    render(<SettingsListPanel />);
+    await user.click(await screen.findByTestId("account-toggle-mgkyung"));
+
+    await waitFor(() => {
+      expect(mockedAuthSetUserActive).toHaveBeenCalledWith(
+        "admin",
+        "mgkyung",
+        false,
+      );
+    });
   });
 });

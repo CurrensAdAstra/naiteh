@@ -1,9 +1,17 @@
 import { markdown } from "@codemirror/lang-markdown";
 import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import { EditorView, basicSetup } from "codemirror";
-import { Lock, Sparkles, Star, Unlock } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, type CSSProperties } from "react";
+import { Lock, Paperclip, Sparkles, Star, Unlock } from "lucide-react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+} from "react";
 
+import { attachmentsImport } from "../lib/api/attachments";
 import { journalSave } from "../lib/api/journal";
 import { notesWrite } from "../lib/api/notes";
 import {
@@ -11,13 +19,15 @@ import {
   togglePinnedInContent,
 } from "../lib/frontMatter";
 import { markdownKeymap } from "../lib/markdownKeymap";
-import { formatAppError } from "../lib/types";
+import { formatAppError, isAppError } from "../lib/types";
 import {
+  insertAtCursor,
   isDirty,
   replaceWholeDocument,
   useEditorStore,
   type OpenSource,
 } from "../state/editorStore";
+import { useAuthStore } from "../state/authStore";
 import { selectEditorConfig, useSettingsStore } from "../state/settingsStore";
 import { useUIStore } from "../state/uiStore";
 import { TagsBar } from "./TagsBar";
@@ -33,6 +43,10 @@ async function persist(source: OpenSource, content: string): Promise<void> {
   }
 }
 
+function auditDetail(source: OpenSource): string {
+  return source.kind === "note" ? source.relPath : source.date;
+}
+
 export function EditorPanel() {
   const open = useEditorStore((s) => s.open);
   const setContent = useEditorStore((s) => s.setContent);
@@ -40,6 +54,8 @@ export function EditorPanel() {
   const setView = useEditorStore((s) => s.setView);
   const editorConfig = useSettingsStore(selectEditorConfig);
   const editorReadOnly = useUIStore((s) => s.editorReadOnly);
+  const logAction = useAuthStore((s) => s.logAction);
+  const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const wrapCompartmentRef = useRef<Compartment | null>(null);
@@ -53,6 +69,10 @@ export function EditorPanel() {
       try {
         await persist(source, content);
         markSaved();
+        void logAction(
+          source.kind === "note" ? "note_save" : "journal_save",
+          auditDetail(source),
+        ).catch(() => {});
       } catch (e) {
         console.error("autosave failed:", formatAppError(e));
       }
@@ -181,6 +201,10 @@ export function EditorPanel() {
               {headerLabel}
             </span>
             <PinToggleButton />
+            <AttachmentButton
+              readOnly={editorReadOnly}
+              onError={setAttachmentError}
+            />
             <ReadOnlyToggleButton />
             <AiToggleButton />
             <span
@@ -190,6 +214,11 @@ export function EditorPanel() {
               {editorReadOnly ? "Read-only" : dirty ? "● Unsaved" : "Saved"}
             </span>
           </div>
+          {attachmentError !== null && (
+            <div className={styles.inlineError} role="alert">
+              {attachmentError}
+            </div>
+          )}
           <TagsBar />
           <div
             ref={containerRef}
@@ -199,6 +228,46 @@ export function EditorPanel() {
         </>
       )}
     </div>
+  );
+}
+
+interface AttachmentButtonProps {
+  readOnly: boolean;
+  onError: (message: string | null) => void;
+}
+
+function AttachmentButton({ readOnly, onError }: AttachmentButtonProps) {
+  const [busy, setBusy] = useState(false);
+
+  async function handleImport() {
+    onError(null);
+    setBusy(true);
+    try {
+      const attachment = await attachmentsImport();
+      const ok = insertAtCursor(attachment.markdown);
+      if (!ok) {
+        onError("Open a note before inserting an attachment.");
+      }
+    } catch (e) {
+      if (isAppError(e) && e.kind === "Cancelled") return;
+      onError(formatAppError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      className={styles.attachToggle}
+      aria-label="Attach file"
+      title="Attach file"
+      onClick={() => void handleImport()}
+      disabled={busy || readOnly}
+      data-testid="editor-attach-button"
+    >
+      <Paperclip size={14} aria-hidden="true" />
+    </button>
   );
 }
 

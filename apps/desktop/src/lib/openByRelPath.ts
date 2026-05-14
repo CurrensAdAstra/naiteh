@@ -1,5 +1,6 @@
 import { journalOpen } from "./api/journal";
 import { notesRead } from "./api/notes";
+import { useAuthStore } from "../state/authStore";
 import { useEditorStore } from "../state/editorStore";
 
 const JOURNAL_PATTERN = /^journal\/\d{4}\/\d{2}\/(\d{4}-\d{2}-\d{2})\.md$/;
@@ -16,8 +17,10 @@ export async function openByRelPath(relPath: string): Promise<void> {
     const date = journalMatch[1]!;
     const result = await journalOpen(date);
     useEditorStore.getState().openJournal(date, relPath, result.content);
+    void useAuthStore.getState().logAction("journal_open", relPath).catch(() => {});
     return;
   }
   const content = await notesRead(relPath);
   useEditorStore.getState().openNote(relPath, content);
+  void useAuthStore.getState().logAction("note_open", relPath).catch(() => {});
 }

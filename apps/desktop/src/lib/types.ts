@@ -81,6 +81,12 @@ export interface SyncStatus {
   lastSync: number | null;
 }
 
+export interface AttachmentImport {
+  relPath: string;
+  fileName: string;
+  markdown: string;
+}
+
 export interface EditorConfig {
   fontSize: number;
   lineWrapping: boolean;
@@ -98,6 +104,36 @@ export interface AiConfig {
   apiKey: string | null;
   model: string;
   baseUrl: string;
+}
+
+export type UserRole = "Admin" | "User";
+
+export interface AuthUser {
+  username: string;
+  role: UserRole;
+  active: boolean;
+}
+
+export interface AuthSession {
+  username: string;
+  role: UserRole;
+}
+
+export interface AuditLogEntry {
+  timestamp: string;
+  username: string;
+  action: string;
+  detail: string | null;
+}
+
+export interface LegalDocsStatus {
+  repoUrl: string;
+  localPath: string;
+  docsPath: string;
+  installed: boolean;
+  branch: string | null;
+  head: string | null;
+  documentCount: number;
 }
 
 export interface AppConfig {
@@ -129,6 +165,7 @@ export type AppError =
   | { kind: "AlreadyInitialized"; message: string }
   | { kind: "Conflict"; message: string }
   | { kind: "ConfigCorrupt"; message: string }
+  | { kind: "Unauthorized"; message: string }
   | { kind: "Cancelled" };
 
 export function isAppError(err: unknown): err is AppError {

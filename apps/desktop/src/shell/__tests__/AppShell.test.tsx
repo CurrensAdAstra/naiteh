@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import { act } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -57,19 +57,28 @@ function resetStores() {
   });
 }
 
+async function waitForShellRefresh() {
+  await waitFor(() => {
+    expect(screen.getByTestId("status-sync")).toHaveTextContent("Sync: local only");
+  });
+}
+
 describe("AppShell", () => {
   beforeEach(resetStores);
 
-  it("renders activity bar, list panel, editor panel, and status bar", () => {
+  it("renders activity bar, list panel, editor panel, and status bar", async () => {
     render(<AppShell />);
+    await waitForShellRefresh();
+
     expect(screen.getByRole("navigation", { name: /activity bar/i })).toBeInTheDocument();
     expect(screen.getByTestId("list-panel")).toBeInTheDocument();
     expect(screen.getByTestId("editor-panel")).toBeInTheDocument();
     expect(screen.getByTestId("status-bar")).toBeInTheDocument();
   });
 
-  it("preserves the Editor Panel DOM node across ViewMode changes", () => {
+  it("preserves the Editor Panel DOM node across ViewMode changes", async () => {
     render(<AppShell />);
+    await waitForShellRefresh();
     const editorBefore = screen.getByTestId("editor-panel");
 
     const sequence: ViewMode[] = ["notes", "calendar", "tags", "settings"];
@@ -84,8 +93,10 @@ describe("AppShell", () => {
     expect(editorAfter).toBe(editorBefore);
   });
 
-  it("status bar shows the active vault name", () => {
+  it("status bar shows the active vault name", async () => {
     render(<AppShell />);
+    await waitForShellRefresh();
+
     expect(screen.getByTestId("status-bar")).toHaveTextContent("vault");
   });
 });
