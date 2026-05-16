@@ -14,6 +14,7 @@ import {
 import { attachmentsImport } from "../lib/api/attachments";
 import { journalSave } from "../lib/api/journal";
 import { notesWrite } from "../lib/api/notes";
+import { editorAttachmentDrop } from "../lib/editorAttachmentDrop";
 import {
   isPinnedInContent,
   togglePinnedInContent,
@@ -106,6 +107,7 @@ export function EditorPanel() {
         markdownKeymap(),
         wrapCompartment.of(initialWrap),
         readOnlyCompartment.of(initialReadOnly),
+        editorAttachmentDrop({ onError: setAttachmentError }),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
             setContent(update.state.doc.toString());

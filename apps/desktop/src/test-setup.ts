@@ -33,3 +33,21 @@ class PointerEventPolyfill extends MouseEvent {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).PointerEvent = PointerEventPolyfill;
+
+// jsdom's Blob predates the arrayBuffer() method that real browsers
+// expose. The editor's paste/drop handlers depend on it for byte
+// extraction, so polyfill via FileReader.
+if (typeof Blob.prototype.arrayBuffer !== "function") {
+  Object.defineProperty(Blob.prototype, "arrayBuffer", {
+    value: function arrayBuffer(this: Blob): Promise<ArrayBuffer> {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result as ArrayBuffer);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsArrayBuffer(this);
+      });
+    },
+    configurable: true,
+    writable: true,
+  });
+}
