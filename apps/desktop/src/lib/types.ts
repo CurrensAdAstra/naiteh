@@ -140,16 +140,6 @@ export interface AuditLogEntry {
   detail: string | null;
 }
 
-export interface LegalDocsStatus {
-  repoUrl: string;
-  localPath: string;
-  docsPath: string;
-  installed: boolean;
-  branch: string | null;
-  head: string | null;
-  documentCount: number;
-}
-
 export interface AppConfig {
   activeVault: string | null;
   knownVaults: string[];

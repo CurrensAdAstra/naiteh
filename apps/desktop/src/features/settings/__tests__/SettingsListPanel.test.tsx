@@ -5,7 +5,6 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   EDITOR_FONT_DEFAULT,
   type AppConfig,
-  type LegalDocsStatus,
   type VaultInfo,
 } from "../../../lib/types";
 import { useEditorStore } from "../../../state/editorStore";
@@ -28,10 +27,6 @@ vi.mock("../../../lib/api/auth", () => ({
   authListUsers: vi.fn(),
   authSetUserActive: vi.fn(),
 }));
-vi.mock("../../../lib/api/rag", () => ({
-  legalDocsStatus: vi.fn(),
-  legalDocsSync: vi.fn(),
-}));
 vi.mock("../../../lib/api/evernote", () => ({
   evernoteImport: vi.fn(),
 }));
@@ -42,7 +37,6 @@ import {
   authSetUserActive,
 } from "../../../lib/api/auth";
 import { evernoteImport } from "../../../lib/api/evernote";
-import { legalDocsStatus, legalDocsSync } from "../../../lib/api/rag";
 import { appConfigSetEditor } from "../../../lib/api/settings";
 import {
   vaultInit,
@@ -60,8 +54,6 @@ const mockedSetEditor = vi.mocked(appConfigSetEditor);
 const mockedAuthListUsers = vi.mocked(authListUsers);
 const mockedAuthListAuditLogs = vi.mocked(authListAuditLogs);
 const mockedAuthSetUserActive = vi.mocked(authSetUserActive);
-const mockedLegalDocsStatus = vi.mocked(legalDocsStatus);
-const mockedLegalDocsSync = vi.mocked(legalDocsSync);
 const mockedEvernoteImport = vi.mocked(evernoteImport);
 
 function vault(root: string, name: string, initialized = true): VaultInfo {
@@ -84,18 +76,6 @@ function configWithEditor(fontSize: number, lineWrapping: boolean): AppConfig {
   };
 }
 
-function legalStatus(installed = false): LegalDocsStatus {
-  return {
-    repoUrl: "https://github.com/legalize-kr/legalize-kr.git",
-    localPath: "/app/naiteh/rag/legalize-kr/repo",
-    docsPath: "/app/naiteh/rag/legalize-kr/repo/kr",
-    installed,
-    branch: installed ? "main" : null,
-    head: installed ? "abcdef1234567890" : null,
-    documentCount: installed ? 1200 : 0,
-  };
-}
-
 describe("SettingsListPanel", () => {
   beforeEach(() => {
     mockedListKnown.mockReset();
@@ -106,8 +86,6 @@ describe("SettingsListPanel", () => {
     mockedAuthListUsers.mockReset();
     mockedAuthListAuditLogs.mockReset();
     mockedAuthSetUserActive.mockReset();
-    mockedLegalDocsStatus.mockReset();
-    mockedLegalDocsSync.mockReset();
     useVaultStore.setState({ active: vault("/v", "v") });
     useAuthStore.setState({ session: null });
     useSettingsStore.setState({
@@ -117,8 +95,6 @@ describe("SettingsListPanel", () => {
     useEditorStore.setState({ open: null });
     mockedAuthListUsers.mockResolvedValue([]);
     mockedAuthListAuditLogs.mockResolvedValue([]);
-    mockedLegalDocsStatus.mockResolvedValue(legalStatus());
-    mockedLegalDocsSync.mockResolvedValue(legalStatus(true));
     mockedEvernoteImport.mockReset();
   });
 
@@ -250,34 +226,6 @@ describe("SettingsListPanel", () => {
     });
     render(<SettingsListPanel />);
     expect(await screen.findByText(/list failed/i)).toBeInTheDocument();
-  });
-
-  it("shows the managed legal documents repository path", async () => {
-    mockedListKnown.mockResolvedValue([vault("/v", "v")]);
-    mockedLegalDocsStatus.mockResolvedValue(legalStatus(true));
-    render(<SettingsListPanel />);
-
-    expect(await screen.findByTestId("settings-legal-docs")).toHaveTextContent(
-      "/app/naiteh/rag/legalize-kr/repo/kr",
-    );
-    expect(screen.getByTestId("settings-legal-docs")).toHaveTextContent(
-      "1,200 Markdown files",
-    );
-  });
-
-  it("syncs the legal documents repository on demand", async () => {
-    mockedListKnown.mockResolvedValue([vault("/v", "v")]);
-    const user = userEvent.setup();
-    render(<SettingsListPanel />);
-
-    await user.click(await screen.findByTestId("legal-docs-sync"));
-
-    await waitFor(() => {
-      expect(mockedLegalDocsSync).toHaveBeenCalled();
-      expect(screen.getByTestId("settings-legal-docs")).toHaveTextContent(
-        "abcdef123456",
-      );
-    });
   });
 
   it("renders the Evernote import section with an enabled button", async () => {

@@ -6,7 +6,6 @@ import {
   authSetUserActive,
 } from "../../lib/api/auth";
 import { evernoteImport } from "../../lib/api/evernote";
-import { legalDocsStatus, legalDocsSync } from "../../lib/api/rag";
 import { appConfigSetAi, appConfigSetEditor } from "../../lib/api/settings";
 import {
   vaultInit,
@@ -23,7 +22,6 @@ import {
   type AuditLogEntry,
   type AuthUser,
   type EvernoteImportReport,
-  type LegalDocsStatus,
   type VaultInfo,
 } from "../../lib/types";
 import { useAuthStore } from "../../state/authStore";
@@ -60,7 +58,6 @@ export function SettingsListPanel() {
   const [knownVaults, setKnownVaults] = useState<VaultInfo[]>([]);
   const [users, setUsers] = useState<AuthUser[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
-  const [legalStatus, setLegalStatus] = useState<LegalDocsStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<
     | null
@@ -69,7 +66,6 @@ export function SettingsListPanel() {
     | "editor"
     | "ai"
     | "accounts"
-    | "legalDocs"
     | "evernote"
   >(null);
   const [lastImportReport, setLastImportReport] =
@@ -97,19 +93,6 @@ export function SettingsListPanel() {
   useEffect(() => {
     void refreshKnown();
   }, [refreshKnown, activeVault?.root]);
-
-  const refreshLegalDocs = useCallback(async () => {
-    try {
-      const status = await legalDocsStatus();
-      setLegalStatus(status);
-    } catch (e) {
-      setError(formatAppError(e));
-    }
-  }, []);
-
-  useEffect(() => {
-    void refreshLegalDocs();
-  }, [refreshLegalDocs]);
 
   const refreshAdmin = useCallback(async () => {
     if (session?.role !== "Admin") {
@@ -266,22 +249,6 @@ export function SettingsListPanel() {
     }
   }
 
-  async function handleSyncLegalDocs() {
-    setBusy("legalDocs");
-    setError(null);
-    try {
-      const next = await legalDocsSync();
-      setLegalStatus(next);
-      void logAction("legal_docs_sync", next.head ?? next.localPath).catch(
-        () => {},
-      );
-    } catch (e) {
-      setError(formatAppError(e));
-    } finally {
-      setBusy(null);
-    }
-  }
-
   async function handleEvernoteImport() {
     setBusy("evernote");
     setError(null);
@@ -366,55 +333,6 @@ export function SettingsListPanel() {
               data-testid="vault-create-new"
             >
               Create new vault
-            </button>
-          </div>
-        </section>
-
-        <section className={styles.section} data-testid="settings-legal-docs">
-          <h3 className={styles.sectionTitle}>Legal RAG Source</h3>
-          <p className={styles.helpText}>
-            대한민국 법령 원문은 앱 데이터 폴더의 별도 Git 저장소로
-            관리됩니다. 사용자 vault에는 섞이지 않습니다.
-          </p>
-          <dl className={styles.metaList}>
-            <div className={styles.metaRow}>
-              <dt>Repository</dt>
-              <dd>{legalStatus?.repoUrl ?? "Loading…"}</dd>
-            </div>
-            <div className={styles.metaRow}>
-              <dt>Local path</dt>
-              <dd>{legalStatus?.localPath ?? "Loading…"}</dd>
-            </div>
-            <div className={styles.metaRow}>
-              <dt>Docs root</dt>
-              <dd>{legalStatus?.docsPath ?? "Loading…"}</dd>
-            </div>
-            <div className={styles.metaRow}>
-              <dt>Status</dt>
-              <dd>
-                {legalStatus === null
-                  ? "Loading…"
-                  : legalStatus.installed
-                    ? `${legalStatus.documentCount.toLocaleString()} Markdown files`
-                    : "Not installed"}
-              </dd>
-            </div>
-            {legalStatus?.head !== null && legalStatus?.head !== undefined && (
-              <div className={styles.metaRow}>
-                <dt>Revision</dt>
-                <dd>{legalStatus.head.slice(0, 12)}</dd>
-              </div>
-            )}
-          </dl>
-          <div className={styles.actionGroup}>
-            <button
-              type="button"
-              className={styles.button}
-              onClick={() => void handleSyncLegalDocs()}
-              disabled={busy !== null}
-              data-testid="legal-docs-sync"
-            >
-              {busy === "legalDocs" ? "Updating…" : "Update legal docs"}
             </button>
           </div>
         </section>
