@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
-import type { SyncStatus } from "../types";
+import type { ConflictPair, SyncStatus } from "../types";
 
 export function syncStatus(): Promise<SyncStatus> {
   return invoke<SyncStatus>("sync_status");
@@ -24,4 +24,24 @@ export function syncPush(): Promise<SyncStatus> {
 
 export function syncNow(): Promise<SyncStatus> {
   return invoke<SyncStatus>("sync_now");
+}
+
+export function syncListConflicts(): Promise<ConflictPair[]> {
+  return invoke<ConflictPair[]>("sync_list_conflicts");
+}
+
+export function syncResolveKeepOurs(
+  conflictRelPath: string,
+): Promise<void> {
+  return invoke<void>("sync_resolve_keep_ours", { conflictRelPath });
+}
+
+export function syncResolveKeepTheirs(
+  conflictRelPath: string,
+  relPath: string,
+): Promise<void> {
+  return invoke<void>("sync_resolve_keep_theirs", {
+    conflictRelPath,
+    relPath,
+  });
 }

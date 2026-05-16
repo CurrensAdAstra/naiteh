@@ -3,6 +3,7 @@
 pub mod attachments;
 pub mod auth;
 pub mod config;
+pub mod conflicts;
 pub mod evernote;
 pub mod fs;
 pub mod git;

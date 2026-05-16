@@ -8,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::domain::{AppError, SyncStatus};
 use crate::services::config;
+use crate::services::conflicts::{self, ConflictPair};
 use crate::services::git;
 use crate::services::sync_state;
 use crate::services::vault_lock::VaultLocks;
@@ -78,6 +79,35 @@ pub async fn sync_now(
     git::sync_now(&vault_root)?;
     record_sync(&vault_root)?;
     sync_status_impl(&vault_root)
+}
+
+#[tauri::command]
+pub fn sync_list_conflicts() -> Result<Vec<ConflictPair>, AppError> {
+    let vault_root = config::current_vault_root()?;
+    conflicts::list(&vault_root)
+}
+
+#[tauri::command]
+pub async fn sync_resolve_keep_ours(
+    locks: tauri::State<'_, VaultLocks>,
+    conflict_rel_path: String,
+) -> Result<(), AppError> {
+    let vault_root = config::current_vault_root()?;
+    let lock = locks.for_vault(&vault_root);
+    let _guard = lock.lock().await;
+    conflicts::resolve_keep_ours(&vault_root, &conflict_rel_path)
+}
+
+#[tauri::command]
+pub async fn sync_resolve_keep_theirs(
+    locks: tauri::State<'_, VaultLocks>,
+    conflict_rel_path: String,
+    rel_path: String,
+) -> Result<(), AppError> {
+    let vault_root = config::current_vault_root()?;
+    let lock = locks.for_vault(&vault_root);
+    let _guard = lock.lock().await;
+    conflicts::resolve_keep_theirs(&vault_root, &conflict_rel_path, &rel_path)
 }
 
 fn record_sync(vault_root: &Path) -> Result<(), AppError> {

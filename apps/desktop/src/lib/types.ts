@@ -81,6 +81,12 @@ export interface SyncStatus {
   lastSync: number | null;
 }
 
+export interface ConflictPair {
+  relPath: string;
+  conflictRelPath: string;
+  timestamp: string;
+}
+
 export interface AttachmentImport {
   relPath: string;
   fileName: string;
