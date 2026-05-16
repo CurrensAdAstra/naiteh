@@ -14,6 +14,7 @@ use crate::domain::{
 };
 use crate::services::config;
 use crate::services::fs as fsx;
+use crate::services::index::TagIndex;
 use crate::services::notes;
 use crate::services::vault_lock::VaultLocks;
 
@@ -24,11 +25,14 @@ const INBOX_DIR: &str = "_inbox";
 #[tauri::command]
 pub async fn quick_create(
     locks: tauri::State<'_, VaultLocks>,
+    index: tauri::State<'_, TagIndex>,
 ) -> Result<NoteMeta, AppError> {
     let vault_root = config::current_vault_root()?;
     let lock = locks.for_vault(&vault_root);
     let _guard = lock.lock().await;
-    quick_create_impl(&vault_root)
+    let result = quick_create_impl(&vault_root);
+    index.invalidate(&vault_root);
+    result
 }
 
 fn quick_create_impl(vault_root: &Path) -> Result<NoteMeta, AppError> {
@@ -134,13 +138,16 @@ fn journal_open_impl(vault_root: &Path, date: &str) -> Result<JournalOpenResult,
 #[tauri::command]
 pub async fn journal_save(
     locks: tauri::State<'_, VaultLocks>,
+    index: tauri::State<'_, TagIndex>,
     date: String,
     content: String,
 ) -> Result<JournalSaveResult, AppError> {
     let vault_root = config::current_vault_root()?;
     let lock = locks.for_vault(&vault_root);
     let _guard = lock.lock().await;
-    journal_save_impl(&vault_root, &date, &content)
+    let result = journal_save_impl(&vault_root, &date, &content);
+    index.invalidate(&vault_root);
+    result
 }
 
 fn journal_save_impl(

@@ -6,6 +6,7 @@ use tauri::{AppHandle, Runtime};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::domain::{AppError, EvernoteImportReport};
+use crate::services::index::TagIndex;
 use crate::services::vault_lock::VaultLocks;
 use crate::services::{config, evernote};
 
@@ -17,6 +18,7 @@ use crate::services::{config, evernote};
 pub async fn evernote_import<R: Runtime>(
     app: AppHandle<R>,
     locks: tauri::State<'_, VaultLocks>,
+    index: tauri::State<'_, TagIndex>,
 ) -> Result<EvernoteImportReport, AppError> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
@@ -53,6 +55,7 @@ pub async fn evernote_import<R: Runtime>(
             }
         }
     }
+    index.invalidate(&vault_root);
     Ok(merged)
 }
 
