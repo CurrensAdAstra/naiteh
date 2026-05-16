@@ -50,7 +50,6 @@ pub struct Resource {
 }
 
 /// Reads + parses an .enex file. Returns one entry per `<note>` element.
-#[allow(dead_code)] // wired up by `import` in C3
 pub fn parse_enex(path: &Path) -> Result<Vec<EvernoteNote>, AppError> {
     let bytes = std::fs::read(path).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => AppError::NotFound(format!(

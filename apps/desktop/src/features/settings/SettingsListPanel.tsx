@@ -5,6 +5,7 @@ import {
   authListUsers,
   authSetUserActive,
 } from "../../lib/api/auth";
+import { evernoteImport } from "../../lib/api/evernote";
 import { legalDocsStatus, legalDocsSync } from "../../lib/api/rag";
 import { appConfigSetAi, appConfigSetEditor } from "../../lib/api/settings";
 import {
@@ -21,6 +22,7 @@ import {
   isAppError,
   type AuditLogEntry,
   type AuthUser,
+  type EvernoteImportReport,
   type LegalDocsStatus,
   type VaultInfo,
 } from "../../lib/types";
@@ -61,8 +63,17 @@ export function SettingsListPanel() {
   const [legalStatus, setLegalStatus] = useState<LegalDocsStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<
-    null | "switch" | "pick" | "editor" | "ai" | "accounts" | "legalDocs"
+    | null
+    | "switch"
+    | "pick"
+    | "editor"
+    | "ai"
+    | "accounts"
+    | "legalDocs"
+    | "evernote"
   >(null);
+  const [lastImportReport, setLastImportReport] =
+    useState<EvernoteImportReport | null>(null);
 
   // AI section local form state, synced from authoritative config below.
   const [aiKeyDraft, setAiKeyDraft] = useState("");
@@ -265,6 +276,25 @@ export function SettingsListPanel() {
         () => {},
       );
     } catch (e) {
+      setError(formatAppError(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleEvernoteImport() {
+    setBusy("evernote");
+    setError(null);
+    try {
+      const report = await evernoteImport();
+      setLastImportReport(report);
+      void logAction(
+        "evernote_import",
+        `imported=${report.importedCount} failed=${report.failedCount}`,
+      ).catch(() => {});
+    } catch (e) {
+      // Cancelling the file picker isn't an error worth surfacing.
+      if (isAppError(e) && e.kind === "Cancelled") return;
       setError(formatAppError(e));
     } finally {
       setBusy(null);
@@ -493,6 +523,64 @@ export function SettingsListPanel() {
               </button>
             )}
           </div>
+        </section>
+
+        <section
+          className={styles.section}
+          data-testid="settings-evernote-import"
+        >
+          <h3 className={styles.sectionTitle}>Import from Evernote</h3>
+          <p className={styles.helpText}>
+            Pick one or more <code>.enex</code> exports — naiteh converts each
+            note to Markdown and places it under{" "}
+            <code>notes/&lt;notebook&gt;/&lt;slug&gt;/</code> with its
+            attachments alongside. Your original Evernote items stay untouched.
+          </p>
+          <div className={styles.actionGroup}>
+            <button
+              type="button"
+              className={styles.button}
+              onClick={() => void handleEvernoteImport()}
+              disabled={busy === "evernote" || activeVault === null}
+              data-testid="evernote-import-button"
+            >
+              {busy === "evernote" ? "Importing…" : "Choose .enex files…"}
+            </button>
+          </div>
+          {lastImportReport !== null && (
+            <div data-testid="evernote-import-summary">
+              <dl className={styles.metaRow}>
+                <dt>Imported</dt>
+                <dd>{lastImportReport.importedCount}</dd>
+              </dl>
+              {lastImportReport.failedCount > 0 && (
+                <dl className={styles.metaRow}>
+                  <dt>Failed</dt>
+                  <dd>{lastImportReport.failedCount}</dd>
+                </dl>
+              )}
+              {lastImportReport.errors.length > 0 && (
+                <ul className={styles.helpText}>
+                  {lastImportReport.errors.map((err, i) => (
+                    <li key={i}>{err}</li>
+                  ))}
+                </ul>
+              )}
+              {(() => {
+                const withWarnings = lastImportReport.notes.filter(
+                  (n) => n.warnings.length > 0,
+                ).length;
+                if (withWarnings === 0) return null;
+                return (
+                  <p className={styles.helpText}>
+                    {withWarnings} note{withWarnings === 1 ? "" : "s"} have
+                    import warnings — see <code>import_warnings:</code> in the
+                    note&rsquo;s YAML front matter.
+                  </p>
+                );
+              })()}
+            </div>
+          )}
         </section>
 
         {session?.role === "Admin" && (

@@ -21,10 +21,6 @@
 //! The result is a String the caller writes to disk. We do not add
 //! a trailing newline — the caller controls that.
 
-// The public surface is exercised by the unit tests in this module but
-// not yet by lib code — the importer wires it in C3.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 
 use quick_xml::events::{BytesEnd, BytesStart, Event};
