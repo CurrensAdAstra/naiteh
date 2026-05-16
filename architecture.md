@@ -151,8 +151,10 @@ journal entries, and metadata. naiteh never stores notes anywhere else.
 ```
 <vault-root>/
 ├── .naiteh/                  ← app metadata (committed to Git)
-│   ├── config.json           ← per-vault settings
-│   └── tags.json             ← tag index (rebuildable cache)
+│   └── config.json           ← per-vault settings
+                              ↑ a future on-disk tag cache may live here;
+                                v1 keeps the index in memory only and
+                                rebuilds on vault open / after any write
 ├── .git/                     ← managed by Sync feature, hidden from UI
 ├── journal/
 │   └── YYYY/

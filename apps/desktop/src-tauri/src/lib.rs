@@ -9,6 +9,9 @@ pub fn run() {
         // Per-vault mutex shared across all write + sync commands; see
         // services::vault_lock and architecture.md §9.
         .manage(services::vault_lock::VaultLocks::default())
+        // In-memory tag index; rebuilt lazily, invalidated by writes.
+        // See services::index and architecture.md §4.3.
+        .manage(services::index::TagIndex::default())
         .invoke_handler(tauri::generate_handler![
             commands::vault::vault_pick_folder,
             commands::vault::vault_init,

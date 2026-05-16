@@ -1,58 +1,68 @@
-//! Tags IPC commands — see architecture.md §7.6.
+//! Tags IPC commands — see architecture.md §7.6 / §4.3.
 //!
-//! Tags are sourced from front-matter `tags: [...]` in any Markdown file
-//! under the vault (both `notes/` and `journal/` are scanned).
+//! Tag data is read out of an in-memory `TagIndex` (built lazily,
+//! invalidated by every write IPC) rather than re-scanning every
+//! Markdown file in the vault per call.
 
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::domain::{AppError, NoteMeta, TagCount};
 use crate::services::config;
+use crate::services::index::{TagIndex, TagSnapshot};
 use crate::services::notes;
 
 // ── tags_list ────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn tags_list() -> Result<Vec<TagCount>, AppError> {
+pub fn tags_list(index: tauri::State<'_, TagIndex>) -> Result<Vec<TagCount>, AppError> {
     let vault_root = config::current_vault_root()?;
-    tags_list_impl(&vault_root)
+    let snap = index.get_or_build(&vault_root)?;
+    Ok(tags_list_from_snapshot(&snap))
 }
 
-fn tags_list_impl(vault_root: &Path) -> Result<Vec<TagCount>, AppError> {
-    let mut counts: HashMap<String, u32> = HashMap::new();
-    for path in collect_taggable_files(vault_root)? {
-        let content = std::fs::read_to_string(&path).unwrap_or_default();
-        let (fm, _) = notes::parse_front_matter(&content);
-        for tag in fm.tags {
-            *counts.entry(tag).or_insert(0) += 1;
+fn tags_list_from_snapshot(snap: &TagSnapshot) -> Vec<TagCount> {
+    let mut counts: HashMap<&str, u32> = HashMap::new();
+    for n in &snap.notes {
+        for tag in &n.tags {
+            *counts.entry(tag.as_str()).or_insert(0) += 1;
         }
     }
     let mut out: Vec<TagCount> = counts
         .into_iter()
-        .map(|(tag, count)| TagCount { tag, count })
+        .map(|(tag, count)| TagCount {
+            tag: tag.to_string(),
+            count,
+        })
         .collect();
     // Most-used first; alphabetical tiebreaker for stable output.
     out.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.tag.cmp(&b.tag)));
-    Ok(out)
+    out
 }
 
 // ── tags_notes ───────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn tags_notes(tag: String) -> Result<Vec<NoteMeta>, AppError> {
+pub fn tags_notes(
+    index: tauri::State<'_, TagIndex>,
+    tag: String,
+) -> Result<Vec<NoteMeta>, AppError> {
     let vault_root = config::current_vault_root()?;
-    tags_notes_impl(&vault_root, &tag)
+    let snap = index.get_or_build(&vault_root)?;
+    tags_notes_from_snapshot(&vault_root, &snap, &tag)
 }
 
-fn tags_notes_impl(vault_root: &Path, tag: &str) -> Result<Vec<NoteMeta>, AppError> {
+fn tags_notes_from_snapshot(
+    vault_root: &Path,
+    snap: &TagSnapshot,
+    tag: &str,
+) -> Result<Vec<NoteMeta>, AppError> {
     let mut metas: Vec<NoteMeta> = Vec::new();
-    for path in collect_taggable_files(vault_root)? {
-        let content = std::fs::read_to_string(&path).unwrap_or_default();
-        let (fm, _) = notes::parse_front_matter(&content);
-        if !fm.tags.iter().any(|t| t == tag) {
+    for n in &snap.notes {
+        if !n.tags.iter().any(|t| t == tag) {
             continue;
         }
-        if let Ok(meta) = notes::read_note_meta(vault_root, &path) {
+        if let Ok(meta) = notes::read_note_meta(vault_root, &n.abs_path) {
             metas.push(meta);
         }
     }
@@ -60,13 +70,18 @@ fn tags_notes_impl(vault_root: &Path, tag: &str) -> Result<Vec<NoteMeta>, AppErr
     Ok(metas)
 }
 
-// ── helpers ──────────────────────────────────────────────────────────────
+#[cfg(test)]
+fn tags_list_impl(vault_root: &Path) -> Result<Vec<TagCount>, AppError> {
+    let idx = TagIndex::default();
+    let snap = idx.get_or_build(vault_root)?;
+    Ok(tags_list_from_snapshot(&snap))
+}
 
-/// Every Markdown file the user might have tagged: `notes/` and `journal/`.
-fn collect_taggable_files(vault_root: &Path) -> Result<Vec<PathBuf>, AppError> {
-    let mut files = notes::collect_md_files(&vault_root.join("notes"))?;
-    files.extend(notes::collect_md_files(&vault_root.join("journal"))?);
-    Ok(files)
+#[cfg(test)]
+fn tags_notes_impl(vault_root: &Path, tag: &str) -> Result<Vec<NoteMeta>, AppError> {
+    let idx = TagIndex::default();
+    let snap = idx.get_or_build(vault_root)?;
+    tags_notes_from_snapshot(vault_root, &snap, tag)
 }
 
 #[cfg(test)]

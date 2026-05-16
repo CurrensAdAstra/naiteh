@@ -10,6 +10,7 @@ use crate::domain::{AppError, SyncStatus};
 use crate::services::config;
 use crate::services::conflicts::{self, ConflictPair};
 use crate::services::git;
+use crate::services::index::TagIndex;
 use crate::services::sync_state;
 use crate::services::vault_lock::VaultLocks;
 
@@ -48,11 +49,16 @@ pub async fn sync_set_remote(
 #[tauri::command]
 pub async fn sync_pull(
     locks: tauri::State<'_, VaultLocks>,
+    index: tauri::State<'_, TagIndex>,
 ) -> Result<SyncStatus, AppError> {
     let vault_root = config::current_vault_root()?;
     let lock = locks.for_vault(&vault_root);
     let _guard = lock.lock().await;
-    git::pull_ff_only(&vault_root)?;
+    let pull_result = git::pull_ff_only(&vault_root);
+    // Pulls touch arbitrary files; invalidate even on partial failure
+    // since a conflict still leaves sidecar files on disk.
+    index.invalidate(&vault_root);
+    pull_result?;
     record_sync(&vault_root)?;
     sync_status_impl(&vault_root)
 }
@@ -72,11 +78,14 @@ pub async fn sync_push(
 #[tauri::command]
 pub async fn sync_now(
     locks: tauri::State<'_, VaultLocks>,
+    index: tauri::State<'_, TagIndex>,
 ) -> Result<SyncStatus, AppError> {
     let vault_root = config::current_vault_root()?;
     let lock = locks.for_vault(&vault_root);
     let _guard = lock.lock().await;
-    git::sync_now(&vault_root)?;
+    let sync_result = git::sync_now(&vault_root);
+    index.invalidate(&vault_root);
+    sync_result?;
     record_sync(&vault_root)?;
     sync_status_impl(&vault_root)
 }
