@@ -7,7 +7,6 @@ pub mod auth;
 pub mod evernote;
 pub mod journal;
 pub mod notes;
-pub mod rag;
 pub mod search;
 pub mod settings;
 pub mod sync;

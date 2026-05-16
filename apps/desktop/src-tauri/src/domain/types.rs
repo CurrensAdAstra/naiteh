@@ -133,19 +133,6 @@ pub struct AuditLogEntry {
     pub detail: Option<String>,
 }
 
-/// RAG source status for the managed Korean statutes repository.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LegalDocsStatus {
-    pub repo_url: String,
-    pub local_path: String,
-    pub docs_path: String,
-    pub installed: bool,
-    pub branch: Option<String>,
-    pub head: Option<String>,
-    pub document_count: u32,
-}
-
 /// architecture.md §6.3 — used by both journal "Recent Activity" and the
 /// calendar timeline. Variants stay in PascalCase so `kind` reads as
 /// `"JournalEntry"` / `"Note"` on the wire; fields are camelCased per

@@ -31,9 +31,6 @@ All implementation tasks reference this file.
    any vault content is shown. The seeded local accounts are `admin`
    (administrator) and `mgkyung` (standard user). Administrators can manage
    other local accounts and review login / work audit logs.
-8. **Legal RAG source management** — South Korean statute Markdown files are
-   pulled from `https://github.com/legalize-kr/legalize-kr` as a managed Git
-   repository outside the user's vault.
 
 ### Non-goals (for v1)
 
@@ -47,8 +44,6 @@ All implementation tasks reference this file.
   embedding-based search, etc. v1 AI Assist is strictly user-initiated.
 - Cloud identity, SSO, or multi-tenant server authorization. v1 auth is
   local app access control backed by the user's OS app-config directory.
-- Editing generated legal statute Markdown in-place. The legal RAG source is
-  upstream-managed and refreshed as a whole repository.
 
 ---
 
@@ -133,20 +128,6 @@ naiteh/
 
 The `apps/` prefix is used so we can later add `apps/mobile/` without
 restructuring.
-
-Managed legal RAG data is not stored in the application source tree or in a
-user vault. It lives under the OS app-data directory:
-
-```
-<app-data-dir>/naiteh/
-└── rag/
-    └── legalize-kr/
-        └── repo/                 ← clone of legalize-kr/legalize-kr
-            └── kr/               ← Markdown document root for retrieval
-```
-
-On macOS this resolves to
-`~/Library/Application Support/naiteh/rag/legalize-kr/repo`.
 
 ---
 
@@ -623,26 +604,6 @@ boundary. The audit log is append-only JSONL at
 `<app-config-dir>/audit-log.jsonl` so it can grow independently of
 `config.json`.
 
-### 6.9 Legal RAG Source
-
-```rust
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LegalDocsStatus {
-    pub repo_url: String,         // https://github.com/legalize-kr/legalize-kr.git
-    pub local_path: String,       // <app-data-dir>/naiteh/rag/legalize-kr/repo
-    pub docs_path: String,        // <local_path>/kr
-    pub installed: bool,
-    pub branch: Option<String>,
-    pub head: Option<String>,
-    pub document_count: u32,      // Markdown files under docs_path
-}
-```
-
-The legal source repository may be force-pushed upstream, so updates fetch
-`origin/main` and reset the managed clone to that revision. User notes are
-never committed into this repository.
-
 ---
 
 ## 7. Tauri Commands (IPC API)
@@ -765,19 +726,6 @@ The account-management and log-read commands require an admin actor.
 `auth_log_action` is used by the frontend for work-audit events such as
 note open, note save, vault switch, and logout.
 
-### 7.10 Legal RAG Source
-
-```rust
-legal_docs_status() -> Result<LegalDocsStatus, AppError>
-legal_docs_sync() -> Result<LegalDocsStatus, AppError>
-```
-
-`legal_docs_sync` clones
-`https://github.com/legalize-kr/legalize-kr.git` into the managed app-data
-path when missing. If it already exists, it fetches `origin/main`, resets
-the local `main` branch to the fetched revision, and force-checks out the
-working tree so upstream generated-document rewrites are accepted.
-
 ---
 
 ## 8. App Config
@@ -832,14 +780,6 @@ audit-log.jsonl
 are logged by the backend; user work events are logged through
 `auth_log_action`.
 
-App-managed, rebuildable data lives in the OS app-data directory:
-
-```
-<app-data-dir>/naiteh/rag/legalize-kr/repo
-```
-
-The RAG document root is `<app-data-dir>/naiteh/rag/legalize-kr/repo/kr`.
-
 ---
 
 ## 9. Concurrency & Safety
@@ -860,9 +800,6 @@ The RAG document root is `<app-data-dir>/naiteh/rag/legalize-kr/repo/kr`.
 - **Audit trail**: login attempts and selected work events are recorded in
   append-only local JSONL. The audit log is local-only and visible to admin
   users from Settings.
-- **Managed RAG source**: legal documents live outside vaults and are
-  refreshed from their upstream Git repository as a complete source tree.
-
 ---
 
 ## 10. Roadmap
@@ -872,7 +809,6 @@ The RAG document root is `<app-data-dir>/naiteh/rag/legalize-kr/repo/kr`.
 - Vault picker + first-run setup
 - Local login screen with seeded `admin` / `mgkyung` accounts
 - Admin-only account management and audit-log review
-- Managed `legalize-kr/legalize-kr` clone for Korean statute RAG documents
 - 3-column shell with all seven ViewModes
 - Journal: quick capture + recent activity
 - Calendar: Agenda-style timeline (mtime-based) + month grid sub-view
@@ -921,4 +857,3 @@ The RAG document root is `<app-data-dir>/naiteh/rag/legalize-kr/repo/kr`.
 | AI Assist  | Opt-in side panel that sends selected text to a Chat Completions API and replaces it with the model's revision |
 | Admin      | Local account role that can manage users and inspect logs     |
 | Audit log  | Local JSONL history of login and selected work events         |
-| Legal RAG source | Managed clone of `legalize-kr/legalize-kr` under app data |

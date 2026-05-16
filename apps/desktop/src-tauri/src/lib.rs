@@ -17,8 +17,6 @@ pub fn run() {
             commands::auth::auth_set_user_active,
             commands::auth::auth_list_audit_logs,
             commands::auth::auth_log_action,
-            commands::rag::legal_docs_status,
-            commands::rag::legal_docs_sync,
             commands::journal::quick_create,
             commands::journal::quick_list,
             commands::journal::activity_recent,

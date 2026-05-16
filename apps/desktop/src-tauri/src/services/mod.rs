@@ -6,7 +6,6 @@ pub mod config;
 pub mod evernote;
 pub mod fs;
 pub mod git;
-pub mod legal_docs;
 pub mod notes;
 pub mod sync_state;
 pub mod workspace;
