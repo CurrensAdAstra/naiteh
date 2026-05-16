@@ -245,6 +245,16 @@ pub fn push(vault_root: &Path) -> Result<(), AppError> {
 
 pub fn pull_ff_only(vault_root: &Path) -> Result<(), AppError> {
     let repo = open_repo(vault_root)?;
+    // Refuse to pull when the working tree is dirty — the force-checkout
+    // below would otherwise silently clobber the user's in-progress
+    // edits. `sync_now` handles dirty state by committing first; for
+    // raw `sync_pull` the user must save (autosave handles this) and
+    // retry, or use `sync_now` instead.
+    if is_dirty(&repo)? {
+        return Err(AppError::Conflict(
+            "vault has uncommitted changes; save your work or use \"Sync now\" instead of \"Pull\"".into(),
+        ));
+    }
     let branch = current_branch_name(&repo)?;
     let mut remote = repo
         .find_remote(REMOTE_NAME)

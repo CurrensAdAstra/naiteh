@@ -6,6 +6,9 @@ mod services;
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        // Per-vault mutex shared across all write + sync commands; see
+        // services::vault_lock and architecture.md §9.
+        .manage(services::vault_lock::VaultLocks::default())
         .invoke_handler(tauri::generate_handler![
             commands::vault::vault_pick_folder,
             commands::vault::vault_init,

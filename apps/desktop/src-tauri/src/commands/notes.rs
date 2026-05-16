@@ -10,6 +10,7 @@ use crate::domain::{AppError, NoteMeta};
 use crate::services::config;
 use crate::services::fs as fsx;
 use crate::services::notes;
+use crate::services::vault_lock::VaultLocks;
 
 // ── notes_list ────────────────────────────────────────────────────────────
 
@@ -56,8 +57,14 @@ fn notes_read_impl(vault_root: &Path, rel_path: &str) -> Result<String, AppError
 // ── notes_write ───────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn notes_write(rel_path: String, content: String) -> Result<NoteMeta, AppError> {
+pub async fn notes_write(
+    locks: tauri::State<'_, VaultLocks>,
+    rel_path: String,
+    content: String,
+) -> Result<NoteMeta, AppError> {
     let vault_root = config::current_vault_root()?;
+    let lock = locks.for_vault(&vault_root);
+    let _guard = lock.lock().await;
     notes_write_impl(&vault_root, &rel_path, &content)
 }
 
@@ -75,8 +82,14 @@ fn notes_write_impl(
 // ── notes_create ──────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn notes_create(rel_dir: String, title: String) -> Result<NoteMeta, AppError> {
+pub async fn notes_create(
+    locks: tauri::State<'_, VaultLocks>,
+    rel_dir: String,
+    title: String,
+) -> Result<NoteMeta, AppError> {
     let vault_root = config::current_vault_root()?;
+    let lock = locks.for_vault(&vault_root);
+    let _guard = lock.lock().await;
     notes_create_impl(&vault_root, &rel_dir, &title)
 }
 
@@ -111,8 +124,13 @@ fn yaml_quote(s: &str) -> String {
 // ── notes_delete ──────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn notes_delete(rel_path: String) -> Result<(), AppError> {
+pub async fn notes_delete(
+    locks: tauri::State<'_, VaultLocks>,
+    rel_path: String,
+) -> Result<(), AppError> {
     let vault_root = config::current_vault_root()?;
+    let lock = locks.for_vault(&vault_root);
+    let _guard = lock.lock().await;
     notes_delete_impl(&vault_root, &rel_path)
 }
 
@@ -128,8 +146,14 @@ fn notes_delete_impl(vault_root: &Path, rel_path: &str) -> Result<(), AppError> 
 // ── notes_rename ──────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn notes_rename(from: String, to: String) -> Result<NoteMeta, AppError> {
+pub async fn notes_rename(
+    locks: tauri::State<'_, VaultLocks>,
+    from: String,
+    to: String,
+) -> Result<NoteMeta, AppError> {
     let vault_root = config::current_vault_root()?;
+    let lock = locks.for_vault(&vault_root);
+    let _guard = lock.lock().await;
     notes_rename_impl(&vault_root, &from, &to)
 }
 
@@ -154,8 +178,14 @@ fn notes_rename_impl(vault_root: &Path, from: &str, to: &str) -> Result<NoteMeta
 // ── notes_set_pinned ──────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn notes_set_pinned(rel_path: String, pinned: bool) -> Result<NoteMeta, AppError> {
+pub async fn notes_set_pinned(
+    locks: tauri::State<'_, VaultLocks>,
+    rel_path: String,
+    pinned: bool,
+) -> Result<NoteMeta, AppError> {
     let vault_root = config::current_vault_root()?;
+    let lock = locks.for_vault(&vault_root);
+    let _guard = lock.lock().await;
     notes_set_pinned_impl(&vault_root, &rel_path, pinned)
 }
 

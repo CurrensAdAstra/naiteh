@@ -10,6 +10,7 @@ use crate::domain::{AppError, SyncStatus};
 use crate::services::config;
 use crate::services::git;
 use crate::services::sync_state;
+use crate::services::vault_lock::VaultLocks;
 
 #[tauri::command]
 pub fn sync_status() -> Result<SyncStatus, AppError> {
@@ -23,36 +24,57 @@ fn sync_status_impl(vault_root: &Path) -> Result<SyncStatus, AppError> {
 }
 
 #[tauri::command]
-pub fn sync_init() -> Result<(), AppError> {
+pub async fn sync_init(
+    locks: tauri::State<'_, VaultLocks>,
+) -> Result<(), AppError> {
     let vault_root = config::current_vault_root()?;
+    let lock = locks.for_vault(&vault_root);
+    let _guard = lock.lock().await;
     git::init(&vault_root)
 }
 
 #[tauri::command]
-pub fn sync_set_remote(url: String) -> Result<(), AppError> {
+pub async fn sync_set_remote(
+    locks: tauri::State<'_, VaultLocks>,
+    url: String,
+) -> Result<(), AppError> {
     let vault_root = config::current_vault_root()?;
+    let lock = locks.for_vault(&vault_root);
+    let _guard = lock.lock().await;
     git::set_remote(&vault_root, url.trim())
 }
 
 #[tauri::command]
-pub fn sync_pull() -> Result<SyncStatus, AppError> {
+pub async fn sync_pull(
+    locks: tauri::State<'_, VaultLocks>,
+) -> Result<SyncStatus, AppError> {
     let vault_root = config::current_vault_root()?;
+    let lock = locks.for_vault(&vault_root);
+    let _guard = lock.lock().await;
     git::pull_ff_only(&vault_root)?;
     record_sync(&vault_root)?;
     sync_status_impl(&vault_root)
 }
 
 #[tauri::command]
-pub fn sync_push() -> Result<SyncStatus, AppError> {
+pub async fn sync_push(
+    locks: tauri::State<'_, VaultLocks>,
+) -> Result<SyncStatus, AppError> {
     let vault_root = config::current_vault_root()?;
+    let lock = locks.for_vault(&vault_root);
+    let _guard = lock.lock().await;
     git::push(&vault_root)?;
     record_sync(&vault_root)?;
     sync_status_impl(&vault_root)
 }
 
 #[tauri::command]
-pub fn sync_now() -> Result<SyncStatus, AppError> {
+pub async fn sync_now(
+    locks: tauri::State<'_, VaultLocks>,
+) -> Result<SyncStatus, AppError> {
     let vault_root = config::current_vault_root()?;
+    let lock = locks.for_vault(&vault_root);
+    let _guard = lock.lock().await;
     git::sync_now(&vault_root)?;
     record_sync(&vault_root)?;
     sync_status_impl(&vault_root)
