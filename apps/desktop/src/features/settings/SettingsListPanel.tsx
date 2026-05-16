@@ -46,6 +46,7 @@ function formatAuditTimestamp(timestamp: string): string {
 
 export function SettingsListPanel() {
   const session = useAuthStore((s) => s.session);
+  const token = useAuthStore((s) => s.token);
   const logAction = useAuthStore((s) => s.logAction);
   const config = useSettingsStore((s) => s.config);
   const editorConfig = useSettingsStore(selectEditorConfig);
@@ -95,22 +96,22 @@ export function SettingsListPanel() {
   }, [refreshKnown, activeVault?.root]);
 
   const refreshAdmin = useCallback(async () => {
-    if (session?.role !== "Admin") {
+    if (session?.role !== "Admin" || token === null) {
       setUsers([]);
       setAuditLogs([]);
       return;
     }
     try {
       const [nextUsers, nextLogs] = await Promise.all([
-        authListUsers(session.username),
-        authListAuditLogs(session.username, 100),
+        authListUsers(token),
+        authListAuditLogs(token, 100),
       ]);
       setUsers(nextUsers);
       setAuditLogs(nextLogs);
     } catch (e) {
       setError(formatAppError(e));
     }
-  }, [session]);
+  }, [session, token]);
 
   useEffect(() => {
     void refreshAdmin();
@@ -234,13 +235,13 @@ export function SettingsListPanel() {
   }
 
   async function handleSetUserActive(username: string, active: boolean) {
-    if (session === null) return;
+    if (session === null || token === null) return;
     setBusy("accounts");
     setError(null);
     try {
-      const next = await authSetUserActive(session.username, username, active);
+      const next = await authSetUserActive(token, username, active);
       setUsers(next);
-      const nextLogs = await authListAuditLogs(session.username, 100);
+      const nextLogs = await authListAuditLogs(token, 100);
       setAuditLogs(nextLogs);
     } catch (e) {
       setError(formatAppError(e));

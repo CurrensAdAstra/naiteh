@@ -1,7 +1,14 @@
 //! Auth and audit IPC commands — see architecture.md §7.9.
+//!
+//! The authentication boundary is a single bearer token: `auth_login`
+//! authenticates the password and returns a fresh token; every command
+//! that needs to know who is asking takes that token and resolves it
+//! against the in-process `SessionStore`. The frontend never sends a
+//! plain username for authorization purposes.
 
-use crate::domain::{AppError, AuditLogEntry, AuthSession, AuthUser};
-use crate::services::{auth, config};
+use crate::domain::{AppError, AuditLogEntry, AuthUser, LoginResult};
+use crate::services::auth::{self, SessionStore};
+use crate::services::config;
 
 fn app_config_dir() -> Result<std::path::PathBuf, AppError> {
     let dir = config::default_app_config_dir()?;
@@ -10,12 +17,17 @@ fn app_config_dir() -> Result<std::path::PathBuf, AppError> {
 }
 
 #[tauri::command]
-pub fn auth_login(username: String, password: String) -> Result<AuthSession, AppError> {
+pub fn auth_login(
+    sessions: tauri::State<'_, SessionStore>,
+    username: String,
+    password: String,
+) -> Result<LoginResult, AppError> {
     let dir = app_config_dir()?;
     match auth::authenticate(&dir, &username, &password) {
         Ok(session) => {
             auth::append_audit(&dir, &session.username, "login_success", None)?;
-            Ok(session)
+            let token = sessions.issue(session.clone());
+            Ok(LoginResult { token, session })
         }
         Err(e) => {
             let detail = match &e {
@@ -29,33 +41,52 @@ pub fn auth_login(username: String, password: String) -> Result<AuthSession, App
 }
 
 #[tauri::command]
-pub fn auth_list_users(actor: String) -> Result<Vec<AuthUser>, AppError> {
+pub fn auth_logout(sessions: tauri::State<'_, SessionStore>, token: String) {
+    sessions.revoke(&token);
+}
+
+#[tauri::command]
+pub fn auth_list_users(
+    sessions: tauri::State<'_, SessionStore>,
+    token: String,
+) -> Result<Vec<AuthUser>, AppError> {
+    sessions.require_admin(&token)?;
     let dir = app_config_dir()?;
-    auth::list_users(&dir, &actor)
+    auth::list_users(&dir)
 }
 
 #[tauri::command]
 pub fn auth_set_user_active(
-    actor: String,
+    sessions: tauri::State<'_, SessionStore>,
+    token: String,
     username: String,
     active: bool,
 ) -> Result<Vec<AuthUser>, AppError> {
+    let admin = sessions.require_admin(&token)?;
     let dir = app_config_dir()?;
-    auth::set_user_active(&dir, &actor, &username, active)
+    auth::set_user_active(&dir, &admin.username, &username, active)
 }
 
 #[tauri::command]
-pub fn auth_list_audit_logs(actor: String, limit: u32) -> Result<Vec<AuditLogEntry>, AppError> {
+pub fn auth_list_audit_logs(
+    sessions: tauri::State<'_, SessionStore>,
+    token: String,
+    limit: u32,
+) -> Result<Vec<AuditLogEntry>, AppError> {
+    sessions.require_admin(&token)?;
     let dir = app_config_dir()?;
-    auth::read_audit(&dir, &actor, limit)
+    auth::read_audit(&dir, limit)
 }
 
 #[tauri::command]
 pub fn auth_log_action(
-    username: String,
+    sessions: tauri::State<'_, SessionStore>,
+    token: String,
     action: String,
     detail: Option<String>,
 ) -> Result<(), AppError> {
+    // Any live session — admin or user — may log work events for itself.
+    let session = sessions.resolve(&token)?;
     let dir = app_config_dir()?;
-    auth::append_audit(&dir, &username, &action, detail)
+    auth::append_audit(&dir, &session.username, &action, detail)
 }

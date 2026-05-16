@@ -12,6 +12,8 @@ pub fn run() {
         // In-memory tag index; rebuilt lazily, invalidated by writes.
         // See services::index and architecture.md §4.3.
         .manage(services::index::TagIndex::default())
+        // Opaque bearer-token session map. See services::auth.
+        .manage(services::auth::SessionStore::default())
         .invoke_handler(tauri::generate_handler![
             commands::vault::vault_pick_folder,
             commands::vault::vault_init,
@@ -19,6 +21,7 @@ pub fn run() {
             commands::vault::vault_set_active,
             commands::vault::vault_list_known,
             commands::auth::auth_login,
+            commands::auth::auth_logout,
             commands::auth::auth_list_users,
             commands::auth::auth_set_user_active,
             commands::auth::auth_list_audit_logs,

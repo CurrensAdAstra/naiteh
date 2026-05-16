@@ -30,7 +30,7 @@ export function StatusBar() {
 
   async function handleLogout() {
     await logAction("logout").catch(() => {});
-    clearSession();
+    await clearSession();
   }
 
   return (

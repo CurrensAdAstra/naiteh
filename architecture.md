@@ -28,9 +28,11 @@ All implementation tasks reference this file.
    local-first everywhere else — AI Assist is the one feature that
    knowingly leaves the local trust boundary.
 7. **Local user access control** — the app opens on a login screen before
-   any vault content is shown. The seeded local accounts are `admin`
-   (administrator) and `mgkyung` (standard user). Administrators can manage
-   other local accounts and review login / work audit logs.
+   any vault content is shown. A single `admin` account is seeded on first
+   run (password equals the username; change it from Settings). The admin
+   creates further accounts in the UI. Login mints an opaque session
+   token; the frontend passes that token, never a plain username, to
+   every IPC that needs to know who is asking.
 
 ### Non-goals (for v1)
 
@@ -213,8 +215,14 @@ The first screen at the dev URL root (`/`) and admin URL (`/admin`) is the
 same local login screen. No vault, journal, note, sync, or settings content
 is rendered before a successful login.
 
-- `admin` logs in with the `Admin` role and can manage other accounts.
-- `mgkyung` logs in with the `User` role and cannot manage accounts.
+- `admin` is the only seeded account on first run; the admin creates
+  further accounts in the Settings panel.
+- Passwords are hashed with Argon2id (per-user salt embedded in the PHC
+  string). Pre-token installs that still hold SHA-256 hashes are
+  upgraded transparently on the next successful login.
+- Successful login mints a 256-bit hex bearer token kept only in the
+  Tauri process memory; restart logs everyone out. Every admin IPC
+  takes that token and resolves it via the in-process session store.
 - `/admin` does not bypass authentication; after a successful admin login it
   opens the Settings panel with the account-management section visible.
 - Failed and successful login attempts are written to the audit log.
@@ -716,17 +724,23 @@ app_config_set_ai(api_key: Option<String>, model: String, base_url: Option<Strin
 ### 7.9 Auth & Audit
 
 ```rust
-auth_login(username: String, password: String) -> Result<AuthSession, AppError>
-auth_list_users(actor: String) -> Result<Vec<AuthUser>, AppError>
-auth_set_user_active(actor: String, username: String, active: bool) -> Result<Vec<AuthUser>, AppError>
-auth_list_audit_logs(actor: String, limit: u32) -> Result<Vec<AuditLogEntry>, AppError>
-auth_log_action(username: String, action: String, detail: Option<String>) -> Result<(), AppError>
+auth_login(username: String, password: String) -> Result<LoginResult, AppError>
+auth_logout(token: String)
+auth_list_users(token: String) -> Result<Vec<AuthUser>, AppError>
+auth_set_user_active(token: String, username: String, active: bool) -> Result<Vec<AuthUser>, AppError>
+auth_list_audit_logs(token: String, limit: u32) -> Result<Vec<AuditLogEntry>, AppError>
+auth_log_action(token: String, action: String, detail: Option<String>) -> Result<(), AppError>
 ```
 
-The account-management and log-read commands require an admin actor.
-`auth_set_user_active` refuses to deactivate the `admin` account.
-`auth_log_action` is used by the frontend for work-audit events such as
-note open, note save, vault switch, and logout.
+`auth_login` returns `LoginResult { token, session }`. The token is a
+256-bit hex string the frontend stores in memory and passes to every
+subsequent auth IPC. The backend resolves it via an in-process session
+map (`services::auth::SessionStore`) — there is no path that lets the
+frontend impersonate a user by passing a name string.
+
+Account-management and audit-log reads require an admin token;
+`auth_log_action` accepts any live token. `auth_set_user_active`
+refuses to deactivate the `admin` account.
 
 ---
 
@@ -821,7 +835,7 @@ are logged by the backend; user work events are logged through
 ### v1.0 (MVP)
 
 - Vault picker + first-run setup
-- Local login screen with seeded `admin` / `mgkyung` accounts
+- Local login screen with a single seeded `admin` account
 - Admin-only account management and audit-log review
 - 3-column shell with all seven ViewModes
 - Journal: quick capture + recent activity

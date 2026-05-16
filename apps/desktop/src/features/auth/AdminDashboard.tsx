@@ -27,6 +27,7 @@ function formatTime(timestamp: string): string {
 
 export function AdminDashboard() {
   const session = useAuthStore((s) => s.session);
+  const token = useAuthStore((s) => s.token);
   const clearSession = useAuthStore((s) => s.clearSession);
   const logAction = useAuthStore((s) => s.logAction);
   const [users, setUsers] = useState<AuthUser[]>([]);
@@ -35,11 +36,11 @@ export function AdminDashboard() {
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
-    if (session === null) return;
+    if (session === null || token === null) return;
     try {
       const [nextUsers, nextLogs] = await Promise.all([
-        authListUsers(session.username),
-        authListAuditLogs(session.username, 100),
+        authListUsers(token),
+        authListAuditLogs(token, 100),
       ]);
       setUsers(nextUsers);
       setLogs(nextLogs);
@@ -47,24 +48,24 @@ export function AdminDashboard() {
     } catch (e) {
       setError(formatAppError(e));
     }
-  }, [session]);
+  }, [session, token]);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
   async function handleToggle(user: AuthUser) {
-    if (session === null) return;
+    if (session === null || token === null) return;
     setBusy(true);
     setError(null);
     try {
       const next = await authSetUserActive(
-        session.username,
+        token,
         user.username,
         !user.active,
       );
       setUsers(next);
-      setLogs(await authListAuditLogs(session.username, 100));
+      setLogs(await authListAuditLogs(token, 100));
     } catch (e) {
       setError(formatAppError(e));
     } finally {
@@ -74,7 +75,7 @@ export function AdminDashboard() {
 
   async function handleLogout() {
     await logAction("logout").catch(() => {});
-    clearSession();
+    await clearSession();
   }
 
   return (

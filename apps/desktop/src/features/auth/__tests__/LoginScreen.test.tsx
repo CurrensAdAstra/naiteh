@@ -17,8 +17,11 @@ describe("LoginScreen", () => {
     window.history.replaceState({}, "", "/");
   });
 
-  it("submits credentials and returns the session", async () => {
-    mockedLogin.mockResolvedValue({ username: "admin", role: "Admin" });
+  it("submits credentials and returns the token + session", async () => {
+    mockedLogin.mockResolvedValue({
+      token: "deadbeef",
+      session: { username: "admin", role: "Admin" },
+    });
     const onLogin = vi.fn();
     const user = userEvent.setup();
 
@@ -29,7 +32,10 @@ describe("LoginScreen", () => {
 
     await waitFor(() => {
       expect(mockedLogin).toHaveBeenCalledWith("admin", "admin");
-      expect(onLogin).toHaveBeenCalledWith({ username: "admin", role: "Admin" });
+      expect(onLogin).toHaveBeenCalledWith("deadbeef", {
+        username: "admin",
+        role: "Admin",
+      });
     });
   });
 

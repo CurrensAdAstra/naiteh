@@ -299,6 +299,7 @@ describe("SettingsListPanel", () => {
       },
     ]);
     useAuthStore.setState({
+      token: "deadbeef",
       session: { username: "admin", role: "Admin" },
     });
 
@@ -324,6 +325,7 @@ describe("SettingsListPanel", () => {
     ]);
     mockedAuthListAuditLogs.mockResolvedValue([]);
     useAuthStore.setState({
+      token: "deadbeef",
       session: { username: "admin", role: "Admin" },
     });
 
@@ -333,7 +335,7 @@ describe("SettingsListPanel", () => {
 
     await waitFor(() => {
       expect(mockedAuthSetUserActive).toHaveBeenCalledWith(
-        "admin",
+        "deadbeef",
         "mgkyung",
         false,
       );

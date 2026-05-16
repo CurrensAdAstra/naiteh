@@ -6,7 +6,7 @@ import { formatAppError, type AuthSession } from "../../lib/types";
 import styles from "./LoginScreen.module.css";
 
 interface LoginScreenProps {
-  onLogin: (session: AuthSession) => void;
+  onLogin: (token: string, session: AuthSession) => void;
 }
 
 function initialUsername(): string {
@@ -30,8 +30,8 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
     setBusy(true);
     setError(null);
     try {
-      const session = await authLogin(username, password);
-      onLogin(session);
+      const result = await authLogin(username, password);
+      onLogin(result.token, result.session);
     } catch (err) {
       setError(formatAppError(err));
     } finally {
