@@ -6,11 +6,13 @@ use tauri::{AppHandle, Runtime};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::domain::{AppError, AttachmentImport};
+use crate::services::vault_lock::VaultLocks;
 use crate::services::{attachments, config};
 
 #[tauri::command]
 pub async fn attachments_import<R: Runtime>(
     app: AppHandle<R>,
+    locks: tauri::State<'_, VaultLocks>,
 ) -> Result<AttachmentImport, AppError> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog().file().pick_file(move |file| {
@@ -26,6 +28,8 @@ pub async fn attachments_import<R: Runtime>(
         .into_path()
         .map_err(|e| AppError::InvalidPath(e.to_string()))?;
     let vault_root = config::current_vault_root()?;
+    let lock = locks.for_vault(&vault_root);
+    let _guard = lock.lock().await;
     attachments::import(&vault_root, &source)
 }
 
@@ -39,11 +43,14 @@ pub async fn attachments_import<R: Runtime>(
 /// extension when the suggestion is unusable.
 #[tauri::command]
 pub async fn attachments_import_bytes(
+    locks: tauri::State<'_, VaultLocks>,
     bytes: Vec<u8>,
     suggested_name: String,
     mime: Option<String>,
 ) -> Result<AttachmentImport, AppError> {
     let vault_root = config::current_vault_root()?;
+    let lock = locks.for_vault(&vault_root);
+    let _guard = lock.lock().await;
     attachments::import_bytes(
         &vault_root,
         &bytes,

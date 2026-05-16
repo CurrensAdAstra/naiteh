@@ -6,6 +6,7 @@ use tauri::{AppHandle, Runtime};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::domain::{AppError, EvernoteImportReport};
+use crate::services::vault_lock::VaultLocks;
 use crate::services::{config, evernote};
 
 /// Open a native file dialog filtered to `.enex`, then import every
@@ -15,6 +16,7 @@ use crate::services::{config, evernote};
 #[tauri::command]
 pub async fn evernote_import<R: Runtime>(
     app: AppHandle<R>,
+    locks: tauri::State<'_, VaultLocks>,
 ) -> Result<EvernoteImportReport, AppError> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
@@ -34,6 +36,8 @@ pub async fn evernote_import<R: Runtime>(
     }
 
     let vault_root = config::current_vault_root()?;
+    let lock = locks.for_vault(&vault_root);
+    let _guard = lock.lock().await;
     let mut merged = EvernoteImportReport::default();
     for fp in paths {
         let p: PathBuf = fp

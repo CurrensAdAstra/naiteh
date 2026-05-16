@@ -785,7 +785,19 @@ are logged by the backend; user work events are logged through
 ## 9. Concurrency & Safety
 
 - **Atomic writes**: every file write goes via temp-file + rename.
-- **No write while syncing**: `sync_now` takes a vault-level lock.
+- **No write while syncing**: every IPC that touches files
+  (`notes_write` / `notes_create` / `notes_delete` / `notes_rename` /
+  `notes_set_pinned`, `journal_save` / `quick_create`,
+  `attachments_import` / `attachments_import_bytes`, `evernote_import`,
+  and all five `sync_*` commands) acquires a `tokio::sync::Mutex`
+  keyed on the canonical vault root before doing any work. Read-only
+  commands (`notes_read` / `notes_list`, `journal_open`, `tags_*`,
+  `search_text`, `sync_status`) do not lock; atomic-write semantics
+  mean they may observe the previous version, never a torn write.
+- **Pull refuses dirty trees**: `sync_pull` errors with `AppError::Conflict`
+  if the working tree has uncommitted changes, since the underlying
+  fast-forward force-checkout would otherwise silently clobber them.
+  Use `sync_now` (which commits first) when there are local edits.
 - **Auto-save**: editor debounces saves at 800 ms idle; explicit save on
   Ctrl/Cmd-S.
 - **Conflict handling**: if `sync_pull` produces a Git conflict, naiteh

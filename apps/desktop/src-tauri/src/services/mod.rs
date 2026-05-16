@@ -8,4 +8,5 @@ pub mod fs;
 pub mod git;
 pub mod notes;
 pub mod sync_state;
+pub mod vault_lock;
 pub mod workspace;
