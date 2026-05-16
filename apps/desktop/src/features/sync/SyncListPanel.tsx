@@ -2,13 +2,17 @@ import { useCallback, useEffect, useState } from "react";
 
 import {
   syncInit,
+  syncListConflicts,
   syncNow,
+  syncResolveKeepOurs,
+  syncResolveKeepTheirs,
   syncSetRemote,
   syncStatus,
 } from "../../lib/api/sync";
+import { openByRelPath } from "../../lib/openByRelPath";
 import { formatRelative } from "../journal/formatRelative";
 import { formatAppError, isAppError } from "../../lib/types";
-import type { AppError, SyncStatus } from "../../lib/types";
+import type { AppError, ConflictPair, SyncStatus } from "../../lib/types";
 import styles from "./SyncListPanel.module.css";
 
 interface ViewState {
@@ -30,8 +34,21 @@ function isNotInitialized(err: unknown): err is AppError {
 export function SyncListPanel() {
   const [view, setView] = useState<ViewState>({ status: null, loaded: false });
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState<null | "init" | "remote" | "sync">(null);
+  const [busy, setBusy] = useState<
+    null | "init" | "remote" | "sync" | "resolve"
+  >(null);
   const [remoteDraft, setRemoteDraft] = useState("");
+  const [conflicts, setConflicts] = useState<ConflictPair[]>([]);
+
+  const refreshConflicts = useCallback(async () => {
+    try {
+      const list = await syncListConflicts();
+      setConflicts(list);
+    } catch {
+      // Non-fatal: conflict scan failing shouldn't blank the whole panel.
+      setConflicts([]);
+    }
+  }, []);
 
   const refresh = useCallback(async () => {
     try {
@@ -48,7 +65,8 @@ export function SyncListPanel() {
         setView((prev) => ({ status: prev.status, loaded: true }));
       }
     }
-  }, []);
+    await refreshConflicts();
+  }, [refreshConflicts]);
 
   useEffect(() => {
     void refresh();
@@ -90,8 +108,44 @@ export function SyncListPanel() {
       await refresh();
     } catch (e) {
       setError(formatAppError(e));
+      // Conflicts may have been written even though sync_now itself errored.
+      await refreshConflicts();
     } finally {
       setBusy(null);
+    }
+  }
+
+  async function handleKeepOurs(pair: ConflictPair) {
+    setBusy("resolve");
+    setError(null);
+    try {
+      await syncResolveKeepOurs(pair.conflictRelPath);
+      await refreshConflicts();
+    } catch (e) {
+      setError(formatAppError(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleKeepTheirs(pair: ConflictPair) {
+    setBusy("resolve");
+    setError(null);
+    try {
+      await syncResolveKeepTheirs(pair.conflictRelPath, pair.relPath);
+      await refreshConflicts();
+    } catch (e) {
+      setError(formatAppError(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleOpenSide(relPath: string) {
+    try {
+      await openByRelPath(relPath);
+    } catch (e) {
+      setError(formatAppError(e));
     }
   }
 
@@ -174,6 +228,78 @@ export function SyncListPanel() {
               )}
             </section>
 
+            {conflicts.length > 0 && (
+              <section
+                className={styles.conflictSection}
+                data-testid="sync-conflicts"
+              >
+                <h3 className={styles.subheading}>
+                  Conflicts ({conflicts.length})
+                </h3>
+                <p className={styles.helpText}>
+                  The remote diverged on these files. Each has a sidecar
+                  saved as <code>.conflict-…</code> — pick which version
+                  to keep, or open both and merge by hand.
+                </p>
+                <ul className={styles.conflictList}>
+                  {conflicts.map((c) => (
+                    <li
+                      key={c.conflictRelPath}
+                      className={styles.conflictRow}
+                      data-testid={`conflict-${c.relPath}`}
+                    >
+                      <div className={styles.conflictMeta}>
+                        <span className={styles.conflictPath}>{c.relPath}</span>
+                        <span className={styles.conflictTimestamp}>
+                          {c.timestamp}
+                        </span>
+                      </div>
+                      <div className={styles.actionGroupRow}>
+                        <button
+                          type="button"
+                          className={styles.button}
+                          onClick={() => void handleOpenSide(c.relPath)}
+                          disabled={busy !== null}
+                          data-testid={`conflict-open-ours-${c.relPath}`}
+                        >
+                          Open mine
+                        </button>
+                        <button
+                          type="button"
+                          className={styles.button}
+                          onClick={() =>
+                            void handleOpenSide(c.conflictRelPath)
+                          }
+                          disabled={busy !== null}
+                          data-testid={`conflict-open-theirs-${c.relPath}`}
+                        >
+                          Open theirs
+                        </button>
+                        <button
+                          type="button"
+                          className={styles.button}
+                          onClick={() => void handleKeepOurs(c)}
+                          disabled={busy !== null}
+                          data-testid={`conflict-keep-ours-${c.relPath}`}
+                        >
+                          Keep mine
+                        </button>
+                        <button
+                          type="button"
+                          className={`${styles.button} ${styles.primary}`}
+                          onClick={() => void handleKeepTheirs(c)}
+                          disabled={busy !== null}
+                          data-testid={`conflict-keep-theirs-${c.relPath}`}
+                        >
+                          Keep theirs
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+
             <section className={styles.actionGroup}>
               <button
                 type="button"
@@ -217,8 +343,9 @@ export function SyncListPanel() {
                 </button>
               </div>
               <p className={styles.helpText}>
-                Conflicts that can&rsquo;t be fast-forwarded are surfaced as
-                errors; in v1 you resolve them manually outside the app.
+                Diverged remote edits are saved as <code>.conflict-…</code>
+                sidecars and surface in the Conflicts section above —
+                pick "Keep mine" or "Keep theirs" to resolve.
               </p>
             </section>
           </>
