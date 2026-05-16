@@ -1,9 +1,33 @@
-//! Local auth and audit-log storage — see architecture.md §6.8 and §7.9.
+//! Local auth + audit-log storage — see architecture.md §6.8 and §7.9.
+//!
+//! Two collaborating pieces:
+//!
+//!   - **AuthStore** persists local accounts (`auth.json` under the OS
+//!     app-config directory). Passwords are hashed with Argon2id; the
+//!     PHC string format embeds a per-user random salt.
+//!   - **SessionStore** is a Tauri-managed in-memory `HashMap<token, AuthSession>`.
+//!     `authenticate` returns a fresh 256-bit hex token; every admin
+//!     IPC takes that token and resolves it back to an `AuthSession`
+//!     before touching state. Tokens are not persisted, so app restart
+//!     logs everyone out.
+//!
+//! ## Migration from the legacy SHA-256 hash
+//!
+//! Earlier versions of naiteh stored passwords as
+//! `sha256(username:password:static_pepper)` — 64 hex chars, no salt,
+//! no key stretching. On login we detect that shape, verify against
+//! the old algorithm, and on success re-hash with Argon2 and persist.
+//! The user sees no difference; the on-disk format upgrades silently.
 
+use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex as StdMutex;
 
+use argon2::password_hash::rand_core::OsRng;
+use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
+use argon2::Argon2;
 use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -13,9 +37,10 @@ use crate::services::fs as fsx;
 
 const AUTH_FILE: &str = "auth.json";
 const AUDIT_FILE: &str = "audit-log.jsonl";
-const PASSWORD_PEPPER: &str = "naiteh-local-auth-v1";
 const ADMIN_USERNAME: &str = "admin";
-const USER_USERNAME: &str = "mgkyung";
+/// Legacy hash pepper, retained only for migrating older `auth.json`
+/// files to Argon2. New hashes ignore it entirely.
+const LEGACY_PASSWORD_PEPPER: &str = "naiteh-local-auth-v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -29,27 +54,32 @@ struct StoredUser {
     username: String,
     role: UserRole,
     active: bool,
+    /// Argon2id PHC string (`$argon2id$v=19$m=…$t=…$p=…$<salt>$<hash>`)
+    /// or — on installs that pre-date the migration — a 64-char SHA-256
+    /// hex digest, which `authenticate` rewrites on the next successful
+    /// login.
     password_hash: String,
 }
 
 impl Default for AuthStore {
     fn default() -> Self {
         Self {
-            users: vec![
-                StoredUser::seed(ADMIN_USERNAME, UserRole::Admin),
-                StoredUser::seed(USER_USERNAME, UserRole::User),
-            ],
+            users: vec![StoredUser::seed_admin()],
         }
     }
 }
 
 impl StoredUser {
-    fn seed(username: &str, role: UserRole) -> Self {
+    /// Seed the lone default account. Password equals the username
+    /// (`admin`) so first-run works out of the box; the user is
+    /// expected to change it from Settings after first login.
+    fn seed_admin() -> Self {
         Self {
-            username: username.to_string(),
-            role,
+            username: ADMIN_USERNAME.to_string(),
+            role: UserRole::Admin,
             active: true,
-            password_hash: hash_password(username, username),
+            password_hash: hash_password_argon2(ADMIN_USERNAME)
+                .expect("argon2 hash of static seed cannot fail"),
         }
     }
 
@@ -61,6 +91,8 @@ impl StoredUser {
         }
     }
 }
+
+// ── path helpers ─────────────────────────────────────────────────────
 
 fn auth_path(config_dir: &Path) -> PathBuf {
     config_dir.join(AUTH_FILE)
@@ -74,38 +106,54 @@ fn canonical_username(username: &str) -> String {
     username.trim().to_ascii_lowercase()
 }
 
-fn hash_password(username: &str, password: &str) -> String {
-    let canonical = canonical_username(username);
-    let input = format!("{canonical}:{password}:{PASSWORD_PEPPER}");
-    let digest = Sha256::digest(input.as_bytes());
-    digest.iter().map(|b| format!("{b:02x}")).collect()
+// ── hashing ──────────────────────────────────────────────────────────
+
+fn hash_password_argon2(password: &str) -> Result<String, AppError> {
+    let salt = SaltString::generate(&mut OsRng);
+    Argon2::default()
+        .hash_password(password.as_bytes(), &salt)
+        .map(|h| h.to_string())
+        .map_err(|e| AppError::Io(format!("argon2 hash: {e}")))
 }
 
-fn ensure_seed_users(store: &mut AuthStore) {
-    if !store
-        .users
-        .iter()
-        .any(|u| canonical_username(&u.username) == ADMIN_USERNAME)
-    {
-        store
-            .users
-            .insert(0, StoredUser::seed(ADMIN_USERNAME, UserRole::Admin));
+fn verify_password(password: &str, stored: &str, username_canonical: &str) -> bool {
+    if is_legacy_sha256(stored) {
+        return verify_legacy_sha256(password, stored, username_canonical);
     }
-    if !store
-        .users
-        .iter()
-        .any(|u| canonical_username(&u.username) == USER_USERNAME)
-    {
-        store
-            .users
-            .push(StoredUser::seed(USER_USERNAME, UserRole::User));
-    }
+    let Ok(parsed) = PasswordHash::new(stored) else {
+        return false;
+    };
+    Argon2::default()
+        .verify_password(password.as_bytes(), &parsed)
+        .is_ok()
 }
+
+fn is_legacy_sha256(hash: &str) -> bool {
+    hash.len() == 64 && hash.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+fn verify_legacy_sha256(password: &str, stored: &str, username_canonical: &str) -> bool {
+    let input = format!("{username_canonical}:{password}:{LEGACY_PASSWORD_PEPPER}");
+    let digest = Sha256::digest(input.as_bytes());
+    let recomputed: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+    // Constant-time isn't critical for the legacy path (it's only hit
+    // during one-shot migrations), but match length so an attacker can't
+    // shave time off via early-exit comparison.
+    recomputed.len() == stored.len()
+        && recomputed
+            .as_bytes()
+            .iter()
+            .zip(stored.as_bytes())
+            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+            == 0
+}
+
+// ── store IO ─────────────────────────────────────────────────────────
 
 fn load_store(config_dir: &Path) -> Result<AuthStore, AppError> {
     match fsx::read_json::<AuthStore>(&auth_path(config_dir)) {
         Ok(mut store) => {
-            ensure_seed_users(&mut store);
+            ensure_admin_seed(&mut store);
             Ok(store)
         }
         Err(AppError::NotFound(_)) => Ok(AuthStore::default()),
@@ -118,27 +166,27 @@ fn save_store(config_dir: &Path, store: &AuthStore) -> Result<(), AppError> {
     fsx::write_json(&auth_path(config_dir), store)
 }
 
-fn persist_seeded_store_if_needed(config_dir: &Path, store: &AuthStore) -> Result<(), AppError> {
+fn persist_seeded_store_if_needed(
+    config_dir: &Path,
+    store: &AuthStore,
+) -> Result<(), AppError> {
     if !auth_path(config_dir).exists() {
         save_store(config_dir, store)?;
     }
     Ok(())
 }
 
-fn require_admin(store: &AuthStore, actor: &str) -> Result<(), AppError> {
-    let actor = canonical_username(actor);
-    let Some(user) = store
+fn ensure_admin_seed(store: &mut AuthStore) {
+    if !store
         .users
         .iter()
-        .find(|u| canonical_username(&u.username) == actor)
-    else {
-        return Err(AppError::Unauthorized("admin account required".into()));
-    };
-    if !user.active || user.role != UserRole::Admin {
-        return Err(AppError::Unauthorized("admin account required".into()));
+        .any(|u| canonical_username(&u.username) == ADMIN_USERNAME)
+    {
+        store.users.insert(0, StoredUser::seed_admin());
     }
-    Ok(())
 }
+
+// ── public API ───────────────────────────────────────────────────────
 
 pub fn authenticate(
     config_dir: &Path,
@@ -151,48 +199,60 @@ pub fn authenticate(
             "username and password are required".into(),
         ));
     }
-    let store = load_store(config_dir)?;
+    let mut store = load_store(config_dir)?;
     persist_seeded_store_if_needed(config_dir, &store)?;
-    let Some(user) = store
+
+    let Some(user_idx) = store
         .users
         .iter()
-        .find(|u| canonical_username(&u.username) == username)
+        .position(|u| canonical_username(&u.username) == username)
     else {
         return Err(AppError::Unauthorized(
             "invalid username or password".into(),
         ));
     };
-    if !user.active {
-        return Err(AppError::Unauthorized("account is disabled".into()));
+
+    {
+        let user = &store.users[user_idx];
+        if !user.active {
+            return Err(AppError::Unauthorized("account is disabled".into()));
+        }
+        if !verify_password(password, &user.password_hash, &username) {
+            return Err(AppError::Unauthorized(
+                "invalid username or password".into(),
+            ));
+        }
     }
-    let attempted = hash_password(&username, password);
-    if attempted != user.password_hash {
-        return Err(AppError::Unauthorized(
-            "invalid username or password".into(),
-        ));
+
+    // Transparent upgrade from legacy SHA-256 to Argon2.
+    let needs_rehash = is_legacy_sha256(&store.users[user_idx].password_hash);
+    if needs_rehash {
+        let new_hash = hash_password_argon2(password)?;
+        store.users[user_idx].password_hash = new_hash;
+        save_store(config_dir, &store)?;
     }
+
+    let user = &store.users[user_idx];
     Ok(AuthSession {
         username: user.username.clone(),
         role: user.role.clone(),
     })
 }
 
-pub fn list_users(config_dir: &Path, actor: &str) -> Result<Vec<AuthUser>, AppError> {
+pub fn list_users(config_dir: &Path) -> Result<Vec<AuthUser>, AppError> {
     let store = load_store(config_dir)?;
     persist_seeded_store_if_needed(config_dir, &store)?;
-    require_admin(&store, actor)?;
     Ok(store.users.iter().map(StoredUser::public).collect())
 }
 
 pub fn set_user_active(
     config_dir: &Path,
-    actor: &str,
+    actor_username: &str,
     username: &str,
     active: bool,
 ) -> Result<Vec<AuthUser>, AppError> {
     let mut store = load_store(config_dir)?;
     persist_seeded_store_if_needed(config_dir, &store)?;
-    require_admin(&store, actor)?;
 
     let username = canonical_username(username);
     if username == ADMIN_USERNAME && !active {
@@ -213,7 +273,7 @@ pub fn set_user_active(
 
     append_audit(
         config_dir,
-        actor,
+        actor_username,
         if active {
             "user_enabled"
         } else {
@@ -259,13 +319,8 @@ pub fn append_audit(
 
 pub fn read_audit(
     config_dir: &Path,
-    actor: &str,
     limit: u32,
 ) -> Result<Vec<AuditLogEntry>, AppError> {
-    let store = load_store(config_dir)?;
-    persist_seeded_store_if_needed(config_dir, &store)?;
-    require_admin(&store, actor)?;
-
     let path = audit_path(config_dir);
     let text = match std::fs::read_to_string(&path) {
         Ok(text) => text,
@@ -289,17 +344,82 @@ pub fn read_audit(
     Ok(entries)
 }
 
+// ── SessionStore ─────────────────────────────────────────────────────
+
+/// Tauri-managed in-memory map from opaque bearer token → AuthSession.
+/// Tokens are 256 bits of OS randomness, lower-hex encoded (64 chars).
+#[derive(Default)]
+pub struct SessionStore {
+    inner: StdMutex<HashMap<String, AuthSession>>,
+}
+
+impl SessionStore {
+    /// Mint a fresh token for `session` and remember the mapping.
+    pub fn issue(&self, session: AuthSession) -> String {
+        let token = new_token();
+        let mut map = self.inner.lock().expect("session map poisoned");
+        map.insert(token.clone(), session);
+        token
+    }
+
+    /// Resolve a token to a (live) session. Returns
+    /// `AppError::Unauthorized` for unknown / forged tokens.
+    pub fn resolve(&self, token: &str) -> Result<AuthSession, AppError> {
+        let map = self.inner.lock().expect("session map poisoned");
+        map.get(token).cloned().ok_or_else(|| {
+            AppError::Unauthorized("invalid or expired session".into())
+        })
+    }
+
+    /// Resolve and additionally require the role to be Admin.
+    pub fn require_admin(&self, token: &str) -> Result<AuthSession, AppError> {
+        let session = self.resolve(token)?;
+        if session.role != UserRole::Admin {
+            return Err(AppError::Unauthorized("admin account required".into()));
+        }
+        Ok(session)
+    }
+
+    /// Drop a token. No-op if the token isn't known.
+    pub fn revoke(&self, token: &str) {
+        self.inner
+            .lock()
+            .expect("session map poisoned")
+            .remove(token);
+    }
+}
+
+fn new_token() -> String {
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes).expect("OS rng failure while minting session token");
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
 
     #[test]
-    fn default_admin_can_login() {
+    fn default_admin_can_login_with_seeded_password() {
         let dir = tempdir().unwrap();
         let session = authenticate(dir.path(), "admin", "admin").unwrap();
         assert_eq!(session.username, "admin");
         assert_eq!(session.role, UserRole::Admin);
+    }
+
+    #[test]
+    fn seeded_admin_hash_is_argon2_not_sha256() {
+        let dir = tempdir().unwrap();
+        authenticate(dir.path(), "admin", "admin").unwrap();
+        let store: AuthStore =
+            serde_json::from_str(&std::fs::read_to_string(auth_path(dir.path())).unwrap())
+                .unwrap();
+        assert!(
+            store.users[0].password_hash.starts_with("$argon2"),
+            "seed hash should be argon2, got {}",
+            store.users[0].password_hash
+        );
     }
 
     #[test]
@@ -310,30 +430,158 @@ mod tests {
     }
 
     #[test]
-    fn admin_can_toggle_standard_user() {
+    fn legacy_sha256_hash_authenticates_and_is_upgraded_to_argon2() {
         let dir = tempdir().unwrap();
-        authenticate(dir.path(), "admin", "admin").unwrap();
-        let users = set_user_active(dir.path(), "admin", "mgkyung", false).unwrap();
-        let mgkyung = users.iter().find(|u| u.username == "mgkyung").unwrap();
-        assert!(!mgkyung.active);
+        // Hand-craft an auth.json with a SHA-256 hash matching the
+        // legacy formula for username="mgkyung", password="mgkyung".
+        let legacy: String = {
+            let input = format!("mgkyung:mgkyung:{LEGACY_PASSWORD_PEPPER}");
+            let digest = Sha256::digest(input.as_bytes());
+            digest.iter().map(|b| format!("{b:02x}")).collect()
+        };
+        let legacy_store = AuthStore {
+            users: vec![
+                StoredUser {
+                    username: "admin".into(),
+                    role: UserRole::Admin,
+                    active: true,
+                    password_hash: hash_password_argon2("admin").unwrap(),
+                },
+                StoredUser {
+                    username: "mgkyung".into(),
+                    role: UserRole::User,
+                    active: true,
+                    password_hash: legacy.clone(),
+                },
+            ],
+        };
+        save_store(dir.path(), &legacy_store).unwrap();
+
+        // Login succeeds against the legacy hash.
+        authenticate(dir.path(), "mgkyung", "mgkyung").unwrap();
+
+        // Now on disk the hash has been re-written as argon2.
+        let reloaded: AuthStore =
+            serde_json::from_str(&std::fs::read_to_string(auth_path(dir.path())).unwrap())
+                .unwrap();
+        let upgraded = &reloaded
+            .users
+            .iter()
+            .find(|u| u.username == "mgkyung")
+            .unwrap()
+            .password_hash;
+        assert!(upgraded.starts_with("$argon2"));
+        assert_ne!(upgraded, &legacy);
+
+        // And login still works after the upgrade.
+        authenticate(dir.path(), "mgkyung", "mgkyung").unwrap();
     }
 
     #[test]
-    fn non_admin_cannot_list_users() {
+    fn set_user_active_refuses_to_disable_admin() {
         let dir = tempdir().unwrap();
-        authenticate(dir.path(), "mgkyung", "mgkyung").unwrap();
-        let err = list_users(dir.path(), "mgkyung").unwrap_err();
-        assert!(matches!(err, AppError::Unauthorized(_)), "got {err:?}");
+        // Seed a non-admin user first.
+        let mut store = load_store(dir.path()).unwrap();
+        store.users.push(StoredUser {
+            username: "alice".into(),
+            role: UserRole::User,
+            active: true,
+            password_hash: hash_password_argon2("alice").unwrap(),
+        });
+        save_store(dir.path(), &store).unwrap();
+
+        let err = set_user_active(dir.path(), "admin", "admin", false).unwrap_err();
+        assert!(matches!(err, AppError::Conflict(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn set_user_active_disables_a_standard_user() {
+        let dir = tempdir().unwrap();
+        let mut store = load_store(dir.path()).unwrap();
+        store.users.push(StoredUser {
+            username: "alice".into(),
+            role: UserRole::User,
+            active: true,
+            password_hash: hash_password_argon2("alice").unwrap(),
+        });
+        save_store(dir.path(), &store).unwrap();
+
+        let users = set_user_active(dir.path(), "admin", "alice", false).unwrap();
+        let alice = users.iter().find(|u| u.username == "alice").unwrap();
+        assert!(!alice.active);
+    }
+
+    #[test]
+    fn fresh_install_seeds_only_admin() {
+        let dir = tempdir().unwrap();
+        let users = list_users(dir.path()).unwrap();
+        let names: Vec<_> = users.iter().map(|u| u.username.as_str()).collect();
+        assert_eq!(names, vec!["admin"]);
     }
 
     #[test]
     fn audit_is_returned_newest_first() {
         let dir = tempdir().unwrap();
-        authenticate(dir.path(), "admin", "admin").unwrap();
         append_audit(dir.path(), "admin", "first", None).unwrap();
         append_audit(dir.path(), "admin", "second", Some("note".into())).unwrap();
-        let entries = read_audit(dir.path(), "admin", 10).unwrap();
+        let entries = read_audit(dir.path(), 10).unwrap();
         assert_eq!(entries[0].action, "second");
         assert_eq!(entries[1].action, "first");
+    }
+
+    // ── SessionStore ─────────────────────────────────────────────────
+
+    fn session(username: &str, role: UserRole) -> AuthSession {
+        AuthSession {
+            username: username.into(),
+            role,
+        }
+    }
+
+    #[test]
+    fn session_store_issues_unique_tokens() {
+        let store = SessionStore::default();
+        let a = store.issue(session("admin", UserRole::Admin));
+        let b = store.issue(session("admin", UserRole::Admin));
+        assert_ne!(a, b);
+        assert_eq!(a.len(), 64);
+    }
+
+    #[test]
+    fn session_store_resolves_known_tokens() {
+        let store = SessionStore::default();
+        let t = store.issue(session("alice", UserRole::User));
+        let resolved = store.resolve(&t).unwrap();
+        assert_eq!(resolved.username, "alice");
+    }
+
+    #[test]
+    fn session_store_rejects_unknown_tokens() {
+        let store = SessionStore::default();
+        let err = store.resolve("ffff").unwrap_err();
+        assert!(matches!(err, AppError::Unauthorized(_)));
+    }
+
+    #[test]
+    fn require_admin_rejects_standard_users() {
+        let store = SessionStore::default();
+        let t = store.issue(session("alice", UserRole::User));
+        let err = store.require_admin(&t).unwrap_err();
+        assert!(matches!(err, AppError::Unauthorized(_)));
+    }
+
+    #[test]
+    fn require_admin_accepts_admin_tokens() {
+        let store = SessionStore::default();
+        let t = store.issue(session("admin", UserRole::Admin));
+        store.require_admin(&t).unwrap();
+    }
+
+    #[test]
+    fn revoke_invalidates_token() {
+        let store = SessionStore::default();
+        let t = store.issue(session("admin", UserRole::Admin));
+        store.revoke(&t);
+        assert!(store.resolve(&t).is_err());
     }
 }

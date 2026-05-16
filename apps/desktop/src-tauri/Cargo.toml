@@ -27,6 +27,9 @@ sha2 = "0.10"
 quick-xml = "0.36"
 base64 = "0.22"
 md-5 = "0.10"
+argon2 = { version = "0.5", features = ["std"] }
+password-hash = { version = "0.5", features = ["getrandom"] }
+getrandom = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

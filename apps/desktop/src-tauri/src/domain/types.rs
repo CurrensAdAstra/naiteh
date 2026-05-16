@@ -123,6 +123,18 @@ pub struct AuthSession {
     pub role: UserRole,
 }
 
+/// Returned by `auth_login`. The `token` is an opaque bearer string the
+/// frontend stores in memory and passes to every subsequent IPC that
+/// needs to know who is asking; the backend resolves it via
+/// `services::auth::SessionStore`. Tokens are not persisted — restart
+/// invalidates all sessions.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoginResult {
+    pub token: String,
+    pub session: AuthSession,
+}
+
 /// architecture.md §6.8
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

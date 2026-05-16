@@ -139,6 +139,11 @@ export interface AuthSession {
   role: UserRole;
 }
 
+export interface LoginResult {
+  token: string;
+  session: AuthSession;
+}
+
 export interface AuditLogEntry {
   timestamp: string;
   username: string;
