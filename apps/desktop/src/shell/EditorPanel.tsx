@@ -77,7 +77,7 @@ export function EditorPanel() {
         console.error("autosave failed:", formatAppError(e));
       }
     },
-    [markSaved],
+    [markSaved, logAction],
   );
 
   // Build / rebuild the CodeMirror view whenever a different file is opened.

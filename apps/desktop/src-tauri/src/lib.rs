@@ -48,6 +48,7 @@ pub fn run() {
             commands::settings::app_config_set_ai,
             commands::ai::ai_improve,
             commands::attachments::attachments_import,
+            commands::evernote::evernote_import,
             commands::workspace::workspace_get,
             commands::workspace::workspace_set_last_opened,
         ])

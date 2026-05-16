@@ -19,10 +19,6 @@
 //! captured in the front matter (`import_warnings: [...]`) so the user
 //! can see what was dropped without diff-ing against the original.
 
-// The public surface is exercised by integration tests in this module
-// but is not yet called by lib code — the IPC command wires it in C4.
-#![allow(dead_code)]
-
 use std::collections::HashMap;
 use std::path::Path;
 

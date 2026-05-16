@@ -4,6 +4,7 @@
 pub mod ai;
 pub mod attachments;
 pub mod auth;
+pub mod evernote;
 pub mod journal;
 pub mod notes;
 pub mod rag;

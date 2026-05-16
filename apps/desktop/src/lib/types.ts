@@ -87,6 +87,20 @@ export interface AttachmentImport {
   markdown: string;
 }
 
+export interface EvernoteImportedNote {
+  sourceTitle: string;
+  relPath: string;
+  warnings: string[];
+}
+
+export interface EvernoteImportReport {
+  importedCount: number;
+  skippedCount: number;
+  failedCount: number;
+  notes: EvernoteImportedNote[];
+  errors: string[];
+}
+
 export interface EditorConfig {
   fontSize: number;
   lineWrapping: boolean;

@@ -32,12 +32,16 @@ vi.mock("../../../lib/api/rag", () => ({
   legalDocsStatus: vi.fn(),
   legalDocsSync: vi.fn(),
 }));
+vi.mock("../../../lib/api/evernote", () => ({
+  evernoteImport: vi.fn(),
+}));
 
 import {
   authListAuditLogs,
   authListUsers,
   authSetUserActive,
 } from "../../../lib/api/auth";
+import { evernoteImport } from "../../../lib/api/evernote";
 import { legalDocsStatus, legalDocsSync } from "../../../lib/api/rag";
 import { appConfigSetEditor } from "../../../lib/api/settings";
 import {
@@ -58,6 +62,7 @@ const mockedAuthListAuditLogs = vi.mocked(authListAuditLogs);
 const mockedAuthSetUserActive = vi.mocked(authSetUserActive);
 const mockedLegalDocsStatus = vi.mocked(legalDocsStatus);
 const mockedLegalDocsSync = vi.mocked(legalDocsSync);
+const mockedEvernoteImport = vi.mocked(evernoteImport);
 
 function vault(root: string, name: string, initialized = true): VaultInfo {
   return { root, name, initialized };
@@ -114,6 +119,7 @@ describe("SettingsListPanel", () => {
     mockedAuthListAuditLogs.mockResolvedValue([]);
     mockedLegalDocsStatus.mockResolvedValue(legalStatus());
     mockedLegalDocsSync.mockResolvedValue(legalStatus(true));
+    mockedEvernoteImport.mockReset();
   });
 
   it("renders known vaults with the active one badged", async () => {
@@ -272,6 +278,62 @@ describe("SettingsListPanel", () => {
         "abcdef123456",
       );
     });
+  });
+
+  it("renders the Evernote import section with an enabled button", async () => {
+    mockedListKnown.mockResolvedValue([vault("/v", "v")]);
+    render(<SettingsListPanel />);
+    const button = await screen.findByTestId("evernote-import-button");
+    expect(button).toBeEnabled();
+    expect(button).toHaveTextContent(/choose .enex/i);
+  });
+
+  it("clicking Import calls evernote_import and shows the summary", async () => {
+    mockedListKnown.mockResolvedValue([vault("/v", "v")]);
+    mockedEvernoteImport.mockResolvedValue({
+      importedCount: 3,
+      skippedCount: 0,
+      failedCount: 0,
+      notes: [
+        { sourceTitle: "A", relPath: "notes/x/a/index.md", warnings: [] },
+        {
+          sourceTitle: "B",
+          relPath: "notes/x/b/index.md",
+          warnings: ["dropped resource (application/vnd.evernote.ink)"],
+        },
+        { sourceTitle: "C", relPath: "notes/x/c/index.md", warnings: [] },
+      ],
+      errors: [],
+    });
+    const user = userEvent.setup();
+    render(<SettingsListPanel />);
+
+    await user.click(await screen.findByTestId("evernote-import-button"));
+
+    await waitFor(() => {
+      expect(mockedEvernoteImport).toHaveBeenCalled();
+    });
+    const summary = await screen.findByTestId("evernote-import-summary");
+    expect(summary).toHaveTextContent("3"); // imported count
+    expect(summary).toHaveTextContent(/import warnings/i);
+  });
+
+  it("Cancelled errors from the picker are swallowed silently", async () => {
+    mockedListKnown.mockResolvedValue([vault("/v", "v")]);
+    mockedEvernoteImport.mockRejectedValue({
+      kind: "Cancelled",
+      message: "Cancelled",
+    });
+    const user = userEvent.setup();
+    render(<SettingsListPanel />);
+
+    await user.click(await screen.findByTestId("evernote-import-button"));
+
+    await waitFor(() => {
+      expect(mockedEvernoteImport).toHaveBeenCalled();
+    });
+    // No summary, no error banner — the section just goes back to idle.
+    expect(screen.queryByTestId("evernote-import-summary")).toBeNull();
   });
 
   it("shows admin account management and audit logs", async () => {
