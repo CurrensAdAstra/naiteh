@@ -5,7 +5,7 @@ pub mod types;
 
 pub use error::AppError;
 pub use types::{
-    AttachmentImport, AuditLogEntry, AuthSession, AuthUser, DayMeta, JournalOpenResult,
-    JournalSaveResult, LegalDocsStatus, NoteMeta, SearchHit, SyncStatus, TagCount, TimelineDay,
-    TimelineItem, UserRole, VaultInfo,
+    AttachmentImport, AuditLogEntry, AuthSession, AuthUser, DayMeta, EvernoteImportReport,
+    EvernoteImportedNote, JournalOpenResult, JournalSaveResult, LegalDocsStatus, NoteMeta,
+    SearchHit, SyncStatus, TagCount, TimelineDay, TimelineItem, UserRole, VaultInfo,
 };
