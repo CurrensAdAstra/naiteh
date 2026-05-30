@@ -101,6 +101,19 @@ pub fn mtime_secs(path: &Path) -> i64 {
 /// Build [`NoteMeta`] for `abs_path`. Title falls back to first H1, then
 /// filename stem. Tags / pinned come from front matter.
 pub fn read_note_meta(vault_root: &Path, abs_path: &Path) -> Result<NoteMeta, AppError> {
+    let content = std::fs::read_to_string(abs_path).unwrap_or_default();
+    note_meta_from_content(vault_root, abs_path, &content)
+}
+
+/// Build [`NoteMeta`] from already-read `content`, reusing the caller's
+/// read instead of re-opening the file. Still issues one cheap
+/// `metadata()` syscall for mtime/size. Used by the tag index so it can
+/// cache full metadata at build time without a second read per file.
+pub fn note_meta_from_content(
+    vault_root: &Path,
+    abs_path: &Path,
+    content: &str,
+) -> Result<NoteMeta, AppError> {
     let metadata = std::fs::metadata(abs_path)?;
     let mtime = metadata
         .modified()
@@ -109,8 +122,7 @@ pub fn read_note_meta(vault_root: &Path, abs_path: &Path) -> Result<NoteMeta, Ap
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
     let size = metadata.len();
-    let content = std::fs::read_to_string(abs_path).unwrap_or_default();
-    let (fm, body) = parse_front_matter(&content);
+    let (fm, body) = parse_front_matter(content);
     let title = fm
         .title
         .clone()
