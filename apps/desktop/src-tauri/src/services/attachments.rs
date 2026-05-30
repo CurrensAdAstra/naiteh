@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use crate::domain::{AppError, AttachmentImport};
 use crate::services::fs as fsx;
-use crate::services::notes;
+use crate::services::fs_naming;
 
 const DIR: &str = "attachments";
 
@@ -39,7 +39,7 @@ pub fn import(vault_root: &Path, source: &Path) -> Result<AttachmentImport, AppE
     let file_name = source
         .file_name()
         .and_then(|n| n.to_str())
-        .map(sanitize_file_name)
+        .map(fs_naming::sanitize_file_name)
         .filter(|n| !n.is_empty())
         .ok_or_else(|| AppError::InvalidPath("attachment has no file name".into()))?;
     let bytes = std::fs::read(source)?;
@@ -89,8 +89,8 @@ fn write_and_describe(
         .and_then(|n| n.to_str())
         .unwrap_or(file_name)
         .to_string();
-    let label = label_for(&final_name);
-    let markdown = if is_image(&final_name) {
+    let label = fs_naming::label_for(&final_name);
+    let markdown = if fs_naming::is_image_filename(&final_name) {
         format!("![{label}]({rel_path})")
     } else {
         format!("[{label}]({rel_path})")
@@ -109,28 +109,13 @@ fn write_and_describe(
 ///   2. `paste-YYYY-MM-DD-HHMMSS.<ext>` with extension from MIME
 ///   3. `paste-YYYY-MM-DD-HHMMSS.bin` as last resort
 fn pick_paste_name(suggested: &str, mime: Option<&str>) -> String {
-    let cleaned = sanitize_file_name(suggested);
+    let cleaned = fs_naming::sanitize_file_name(suggested);
     if !cleaned.is_empty() && cleaned != "attachment" {
         return cleaned;
     }
     let stamp = chrono::Utc::now().format("%Y-%m-%d-%H%M%S").to_string();
-    let ext = mime.and_then(extension_for_mime).unwrap_or("bin");
+    let ext = mime.and_then(fs_naming::extension_for_mime).unwrap_or("bin");
     format!("paste-{stamp}.{ext}")
-}
-
-fn extension_for_mime(mime: &str) -> Option<&'static str> {
-    match mime.to_ascii_lowercase().as_str() {
-        "image/png" => Some("png"),
-        "image/jpeg" | "image/jpg" => Some("jpg"),
-        "image/gif" => Some("gif"),
-        "image/webp" => Some("webp"),
-        "image/svg+xml" => Some("svg"),
-        "image/bmp" => Some("bmp"),
-        "image/avif" => Some("avif"),
-        "application/pdf" => Some("pdf"),
-        "text/plain" => Some("txt"),
-        _ => None,
-    }
 }
 
 fn available_target(vault_root: &Path, file_name: &str) -> Result<PathBuf, AppError> {
@@ -157,49 +142,6 @@ fn available_target(vault_root: &Path, file_name: &str) -> Result<PathBuf, AppEr
     Err(AppError::Conflict(format!(
         "could not create a unique attachment name for {file_name}"
     )))
-}
-
-fn sanitize_file_name(input: &str) -> String {
-    let p = Path::new(input);
-    let stem = p
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .map(notes::slugify)
-        .unwrap_or_else(|| "attachment".to_string());
-    match p.extension().and_then(|e| e.to_str()) {
-        Some(ext) if !ext.trim().is_empty() => {
-            let ext = ext
-                .chars()
-                .filter(|ch| ch.is_ascii_alphanumeric())
-                .collect::<String>()
-                .to_ascii_lowercase();
-            if ext.is_empty() {
-                stem
-            } else {
-                format!("{stem}.{ext}")
-            }
-        }
-        _ => stem,
-    }
-}
-
-fn label_for(file_name: &str) -> String {
-    Path::new(file_name)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or(file_name)
-        .replace('-', " ")
-}
-
-fn is_image(file_name: &str) -> bool {
-    matches!(
-        Path::new(file_name)
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.to_ascii_lowercase())
-            .as_deref(),
-        Some("avif" | "bmp" | "gif" | "jpeg" | "jpg" | "png" | "svg" | "webp")
-    )
 }
 
 #[cfg(test)]
