@@ -6,6 +6,7 @@ pub mod config;
 pub mod conflicts;
 pub mod evernote;
 pub mod fs;
+pub mod fs_naming;
 pub mod git;
 pub mod index;
 pub mod notes;

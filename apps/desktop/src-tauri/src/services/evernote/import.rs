@@ -28,6 +28,7 @@ use crate::domain::{AppError, EvernoteImportReport, EvernoteImportedNote};
 use crate::services::evernote::enml::enml_to_markdown;
 use crate::services::evernote::parser::{parse_enex, EvernoteNote, Resource};
 use crate::services::fs as fsx;
+use crate::services::fs_naming;
 use crate::services::notes;
 
 /// Import every note in `enex_path` into `vault_root`. The notebook
@@ -114,8 +115,10 @@ fn import_one_note(
         let resource_path = note_dir.join(&file_name);
         fsx::atomic_write(&resource_path, &resource.data)?;
 
-        let label = label_for(&file_name);
-        let markdown = if is_image_mime(&resource.mime) || is_image_filename(&file_name) {
+        let label = fs_naming::label_for(&file_name);
+        let markdown = if fs_naming::is_image_mime(&resource.mime)
+            || fs_naming::is_image_filename(&file_name)
+        {
             format!("![{label}]({file_name})")
         } else {
             format!("[{label}]({file_name})")
@@ -189,9 +192,9 @@ fn pick_resource_name(
     used: &mut Vec<String>,
 ) -> String {
     let candidate = if let Some(name) = &r.file_name {
-        sanitize_attachment_name(name)
+        fs_naming::sanitize_file_name(name)
     } else {
-        let ext = extension_for_mime(&r.mime).unwrap_or("bin");
+        let ext = fs_naming::extension_for_mime(&r.mime).unwrap_or("bin");
         format!("attachment-{}.{}", index + 1, ext)
     };
     if !used.iter().any(|u| u == &candidate) {
@@ -215,79 +218,6 @@ fn pick_resource_name(
     let fallback = format!("{stem}-{}", chrono::Utc::now().timestamp());
     used.push(fallback.clone());
     fallback
-}
-
-fn sanitize_attachment_name(name: &str) -> String {
-    let p = Path::new(name);
-    let stem = p
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .map(notes::slugify)
-        .unwrap_or_else(|| "attachment".to_string());
-    let stem = if stem.is_empty() {
-        "attachment".to_string()
-    } else {
-        stem
-    };
-    match p.extension().and_then(|e| e.to_str()) {
-        Some(ext) if !ext.trim().is_empty() => {
-            let ext = ext
-                .chars()
-                .filter(|c| c.is_ascii_alphanumeric())
-                .collect::<String>()
-                .to_ascii_lowercase();
-            if ext.is_empty() {
-                stem
-            } else {
-                format!("{stem}.{ext}")
-            }
-        }
-        _ => stem,
-    }
-}
-
-fn label_for(file_name: &str) -> String {
-    Path::new(file_name)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or(file_name)
-        .replace('-', " ")
-}
-
-fn extension_for_mime(mime: &str) -> Option<&'static str> {
-    match mime.to_ascii_lowercase().as_str() {
-        "image/png" => Some("png"),
-        "image/jpeg" | "image/jpg" => Some("jpg"),
-        "image/gif" => Some("gif"),
-        "image/webp" => Some("webp"),
-        "image/svg+xml" => Some("svg"),
-        "image/bmp" => Some("bmp"),
-        "image/avif" => Some("avif"),
-        "application/pdf" => Some("pdf"),
-        "audio/mpeg" => Some("mp3"),
-        "audio/mp4" | "audio/m4a" => Some("m4a"),
-        "audio/wav" | "audio/x-wav" => Some("wav"),
-        "video/mp4" => Some("mp4"),
-        "text/plain" => Some("txt"),
-        "text/html" => Some("html"),
-        "application/zip" => Some("zip"),
-        _ => None,
-    }
-}
-
-fn is_image_mime(mime: &str) -> bool {
-    mime.to_ascii_lowercase().starts_with("image/")
-}
-
-fn is_image_filename(file_name: &str) -> bool {
-    matches!(
-        Path::new(file_name)
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| e.to_ascii_lowercase())
-            .as_deref(),
-        Some("avif" | "bmp" | "gif" | "jpeg" | "jpg" | "png" | "svg" | "webp")
-    )
 }
 
 fn is_dropped_mime(mime: &str) -> bool {
