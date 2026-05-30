@@ -21,8 +21,8 @@ pub fn tags_list(index: tauri::State<'_, TagIndex>) -> Result<Vec<TagCount>, App
 
 fn tags_list_from_snapshot(snap: &TagSnapshot) -> Vec<TagCount> {
     let mut counts: HashMap<&str, u32> = HashMap::new();
-    for n in &snap.notes {
-        for tag in &n.tags {
+    for doc in &snap.notes {
+        for tag in &doc.meta.tags {
             *counts.entry(tag.as_str()).or_insert(0) += 1;
         }
     }
@@ -55,8 +55,8 @@ fn tags_notes_from_snapshot(snap: &TagSnapshot, tag: &str) -> Vec<NoteMeta> {
     let mut metas: Vec<NoteMeta> = snap
         .notes
         .iter()
-        .filter(|n| n.tags.iter().any(|t| t == tag))
-        .cloned()
+        .filter(|doc| doc.meta.tags.iter().any(|t| t == tag))
+        .map(|doc| doc.meta.clone())
         .collect();
     metas.sort_by_key(|m| std::cmp::Reverse(m.mtime));
     metas
