@@ -68,7 +68,9 @@ pub async fn notes_write(
     let lock = locks.for_vault(&vault_root);
     let _guard = lock.lock().await;
     let result = notes_write_impl(&vault_root, &rel_path, &content);
-    index.invalidate(&vault_root);
+    if result.is_ok() {
+        index.invalidate(&vault_root);
+    }
     result
 }
 
@@ -96,7 +98,9 @@ pub async fn notes_create(
     let lock = locks.for_vault(&vault_root);
     let _guard = lock.lock().await;
     let result = notes_create_impl(&vault_root, &rel_dir, &title);
-    index.invalidate(&vault_root);
+    if result.is_ok() {
+        index.invalidate(&vault_root);
+    }
     result
 }
 
@@ -140,7 +144,9 @@ pub async fn notes_delete(
     let lock = locks.for_vault(&vault_root);
     let _guard = lock.lock().await;
     let result = notes_delete_impl(&vault_root, &rel_path);
-    index.invalidate(&vault_root);
+    if result.is_ok() {
+        index.invalidate(&vault_root);
+    }
     result
 }
 
@@ -166,7 +172,9 @@ pub async fn notes_rename(
     let lock = locks.for_vault(&vault_root);
     let _guard = lock.lock().await;
     let result = notes_rename_impl(&vault_root, &from, &to);
-    index.invalidate(&vault_root);
+    if result.is_ok() {
+        index.invalidate(&vault_root);
+    }
     result
 }
 
@@ -201,7 +209,9 @@ pub async fn notes_set_pinned(
     let lock = locks.for_vault(&vault_root);
     let _guard = lock.lock().await;
     let result = notes_set_pinned_impl(&vault_root, &rel_path, pinned);
-    index.invalidate(&vault_root);
+    if result.is_ok() {
+        index.invalidate(&vault_root);
+    }
     result
 }
 

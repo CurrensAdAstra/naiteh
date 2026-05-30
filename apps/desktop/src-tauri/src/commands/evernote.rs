@@ -55,7 +55,10 @@ pub async fn evernote_import<R: Runtime>(
             }
         }
     }
-    index.invalidate(&vault_root);
+    // Import may partially succeed; invalidate if any note landed on disk.
+    if merged.imported_count > 0 {
+        index.invalidate(&vault_root);
+    }
     Ok(merged)
 }
 

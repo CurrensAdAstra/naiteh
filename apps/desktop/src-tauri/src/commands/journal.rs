@@ -31,7 +31,9 @@ pub async fn quick_create(
     let lock = locks.for_vault(&vault_root);
     let _guard = lock.lock().await;
     let result = quick_create_impl(&vault_root);
-    index.invalidate(&vault_root);
+    if result.is_ok() {
+        index.invalidate(&vault_root);
+    }
     result
 }
 
@@ -146,7 +148,9 @@ pub async fn journal_save(
     let lock = locks.for_vault(&vault_root);
     let _guard = lock.lock().await;
     let result = journal_save_impl(&vault_root, &date, &content);
-    index.invalidate(&vault_root);
+    if result.is_ok() {
+        index.invalidate(&vault_root);
+    }
     result
 }
 
