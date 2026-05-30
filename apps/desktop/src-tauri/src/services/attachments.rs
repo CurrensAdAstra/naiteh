@@ -9,12 +9,31 @@ use crate::services::notes;
 
 const DIR: &str = "attachments";
 
+/// Hard ceiling on a single imported attachment. Guards against both an
+/// accidental multi-GB file picked from disk and an unbounded clipboard
+/// paste that would otherwise be copied wholesale into the vault (and,
+/// for pastes, marshalled as a JSON int-array across the IPC boundary).
+/// 50 MiB comfortably covers screenshots, photos, and PDFs.
+const MAX_ATTACHMENT_BYTES: u64 = 50 * 1024 * 1024;
+
+fn too_large_err(len: u64) -> AppError {
+    AppError::InvalidPath(format!(
+        "attachment is {len} bytes; the limit is {MAX_ATTACHMENT_BYTES} bytes (50 MiB)"
+    ))
+}
+
 pub fn import(vault_root: &Path, source: &Path) -> Result<AttachmentImport, AppError> {
     if !source.is_file() {
         return Err(AppError::InvalidPath(format!(
             "not a file: {}",
             source.display()
         )));
+    }
+
+    // Check the size from metadata before reading the whole file in.
+    let len = std::fs::metadata(source)?.len();
+    if len > MAX_ATTACHMENT_BYTES {
+        return Err(too_large_err(len));
     }
 
     let file_name = source
@@ -42,6 +61,9 @@ pub fn import_bytes(
 ) -> Result<AttachmentImport, AppError> {
     if bytes.is_empty() {
         return Err(AppError::InvalidPath("empty attachment payload".into()));
+    }
+    if bytes.len() as u64 > MAX_ATTACHMENT_BYTES {
+        return Err(too_large_err(bytes.len() as u64));
     }
     let file_name = pick_paste_name(suggested_name, mime);
     write_and_describe(vault_root, &file_name, bytes)
@@ -243,6 +265,41 @@ mod tests {
         let err = import(vault.path(), source_dir.path()).unwrap_err();
 
         assert!(matches!(err, AppError::InvalidPath(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn import_bytes_rejects_payload_over_the_cap() {
+        let vault = tempdir().unwrap();
+        let oversize = vec![0u8; (MAX_ATTACHMENT_BYTES + 1) as usize];
+        let err = import_bytes(vault.path(), &oversize, "big.bin", None).unwrap_err();
+        assert!(matches!(err, AppError::InvalidPath(_)), "got {err:?}");
+        // Nothing should have been written.
+        assert!(!vault.path().join("attachments").exists());
+    }
+
+    #[test]
+    fn import_rejects_file_over_the_cap_without_reading_it() {
+        let vault = tempdir().unwrap();
+        let source_dir = tempdir().unwrap();
+        let big = source_dir.path().join("huge.bin");
+        // Create a sparse file larger than the cap without allocating it.
+        let f = std::fs::File::create(&big).unwrap();
+        f.set_len(MAX_ATTACHMENT_BYTES + 1).unwrap();
+
+        let err = import(vault.path(), &big).unwrap_err();
+        assert!(matches!(err, AppError::InvalidPath(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn import_bytes_accepts_payload_at_the_cap() {
+        let vault = tempdir().unwrap();
+        let at_limit = vec![7u8; MAX_ATTACHMENT_BYTES as usize];
+        let result =
+            import_bytes(vault.path(), &at_limit, "ok.bin", None).unwrap();
+        assert_eq!(
+            std::fs::metadata(vault.path().join(&result.rel_path)).unwrap().len(),
+            MAX_ATTACHMENT_BYTES
+        );
     }
 
     #[test]
