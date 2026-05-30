@@ -6,4 +6,4 @@ pub mod enml;
 pub mod import;
 pub mod parser;
 
-pub use import::import_enex;
+pub use import::import_enex_with_progress;

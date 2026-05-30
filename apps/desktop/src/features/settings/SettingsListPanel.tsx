@@ -5,7 +5,11 @@ import {
   authListUsers,
   authSetUserActive,
 } from "../../lib/api/auth";
-import { evernoteImport } from "../../lib/api/evernote";
+import {
+  evernoteImport,
+  listenEvernoteImportProgress,
+  type EvernoteImportProgress,
+} from "../../lib/api/evernote";
 import { appConfigSetAi, appConfigSetEditor } from "../../lib/api/settings";
 import {
   vaultInit,
@@ -71,6 +75,8 @@ export function SettingsListPanel() {
   >(null);
   const [lastImportReport, setLastImportReport] =
     useState<EvernoteImportReport | null>(null);
+  const [importProgress, setImportProgress] =
+    useState<EvernoteImportProgress | null>(null);
 
   // AI section local form state, synced from authoritative config below.
   const [aiKeyDraft, setAiKeyDraft] = useState("");
@@ -253,7 +259,10 @@ export function SettingsListPanel() {
   async function handleEvernoteImport() {
     setBusy("evernote");
     setError(null);
+    setImportProgress(null);
+    let unlisten: (() => void) | null = null;
     try {
+      unlisten = await listenEvernoteImportProgress(setImportProgress);
       const report = await evernoteImport();
       setLastImportReport(report);
       void logAction(
@@ -265,6 +274,8 @@ export function SettingsListPanel() {
       if (isAppError(e) && e.kind === "Cancelled") return;
       setError(formatAppError(e));
     } finally {
+      if (unlisten !== null) unlisten();
+      setImportProgress(null);
       setBusy(null);
     }
   }
@@ -466,6 +477,17 @@ export function SettingsListPanel() {
               {busy === "evernote" ? "Importing…" : "Choose .enex files…"}
             </button>
           </div>
+          {busy === "evernote" && importProgress !== null && (
+            <p
+              className={styles.helpText}
+              data-testid="evernote-import-progress"
+            >
+              Importing {importProgress.fileName} — {importProgress.noteDone}/
+              {importProgress.noteTotal} notes
+              {importProgress.totalFiles > 1 &&
+                ` · file ${importProgress.fileIndex + 1}/${importProgress.totalFiles}`}
+            </p>
+          )}
           {lastImportReport !== null && (
             <div data-testid="evernote-import-summary">
               <dl className={styles.metaRow}>
