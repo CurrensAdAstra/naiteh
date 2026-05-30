@@ -19,6 +19,15 @@ import { attachmentsImportBytes } from "./api/attachments";
 import { insertAtCursor } from "../state/editorStore";
 import { formatAppError } from "./types";
 
+/**
+ * Client-side ceiling, mirrors `MAX_ATTACHMENT_BYTES` in the Rust
+ * `attachments` service (50 MiB). Enforced here too so an oversized
+ * paste is rejected *before* we marshal it into a JSON int-array across
+ * the IPC boundary — the backend would reject it anyway, but only after
+ * the expensive serialization.
+ */
+export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
+
 export interface EditorAttachmentOptions {
   /** Surfaces upload failures (read-only state, IO errors, etc.). */
   onError: (message: string | null) => void;
@@ -83,6 +92,14 @@ export async function uploadAndInsert(
   onError(null);
   const snippets: string[] = [];
   for (const file of files) {
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      onError(
+        `"${file.name}" is too large (max ${Math.floor(
+          MAX_ATTACHMENT_BYTES / (1024 * 1024),
+        )} MB).`,
+      );
+      return;
+    }
     try {
       const buf = await file.arrayBuffer();
       const result = await attachmentsImportBytes(

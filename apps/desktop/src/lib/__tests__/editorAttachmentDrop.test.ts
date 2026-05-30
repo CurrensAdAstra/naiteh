@@ -11,6 +11,7 @@ import { attachmentsImportBytes } from "../api/attachments";
 import {
   eventHasFiles,
   filesFromClipboard,
+  MAX_ATTACHMENT_BYTES,
   uploadAndInsert,
 } from "../editorAttachmentDrop";
 import { insertAtCursor } from "../../state/editorStore";
@@ -20,6 +21,13 @@ const mockedInsert = vi.mocked(insertAtCursor);
 
 function makeFile(name: string, type: string, bytes = "hello"): File {
   return new File([bytes], name, { type });
+}
+
+function makeOversizeFile(name: string): File {
+  const f = makeFile(name, "image/png", "x");
+  // Faking size avoids allocating 50 MB in the test.
+  Object.defineProperty(f, "size", { value: MAX_ATTACHMENT_BYTES + 1 });
+  return f;
 }
 
 // jsdom doesn't ship DataTransfer/DataTransferItemList, so we hand-roll
@@ -75,6 +83,19 @@ describe("uploadAndInsert", () => {
     mockedImportBytes.mockReset();
     mockedInsert.mockReset();
     mockedInsert.mockReturnValue(true);
+  });
+
+  it("rejects an oversized file without calling the IPC", async () => {
+    const onError = vi.fn();
+    await uploadAndInsert([makeOversizeFile("huge.png")], onError);
+
+    expect(mockedImportBytes).not.toHaveBeenCalled();
+    expect(mockedInsert).not.toHaveBeenCalled();
+    const messages = onError.mock.calls
+      .map((c) => c[0])
+      .filter((m): m is string => typeof m === "string");
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatch(/too large/i);
   });
 
   it("uploads each file and inserts the joined markdown", async () => {
