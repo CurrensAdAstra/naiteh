@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 import type { EvernoteImportReport } from "../types";
 
@@ -13,4 +14,26 @@ import type { EvernoteImportReport } from "../types";
  */
 export function evernoteImport(): Promise<EvernoteImportReport> {
   return invoke<EvernoteImportReport>("evernote_import");
+}
+
+/** Per-note progress pushed by the backend during an import. */
+export interface EvernoteImportProgress {
+  fileIndex: number;
+  totalFiles: number;
+  fileName: string;
+  noteDone: number;
+  noteTotal: number;
+}
+
+/**
+ * Subscribe to import progress. The backend throttles to ~100 events
+ * per file. Returns the unlisten function — call it once the import
+ * settles.
+ */
+export function listenEvernoteImportProgress(
+  handler: (progress: EvernoteImportProgress) => void,
+): Promise<UnlistenFn> {
+  return listen<EvernoteImportProgress>("evernote-import-progress", (event) =>
+    handler(event.payload),
+  );
 }

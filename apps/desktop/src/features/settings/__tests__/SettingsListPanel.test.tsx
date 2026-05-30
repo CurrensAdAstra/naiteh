@@ -29,6 +29,9 @@ vi.mock("../../../lib/api/auth", () => ({
 }));
 vi.mock("../../../lib/api/evernote", () => ({
   evernoteImport: vi.fn(),
+  listenEvernoteImportProgress: vi
+    .fn()
+    .mockResolvedValue(() => {}),
 }));
 
 import {
@@ -36,7 +39,10 @@ import {
   authListUsers,
   authSetUserActive,
 } from "../../../lib/api/auth";
-import { evernoteImport } from "../../../lib/api/evernote";
+import {
+  evernoteImport,
+  listenEvernoteImportProgress,
+} from "../../../lib/api/evernote";
 import { appConfigSetEditor } from "../../../lib/api/settings";
 import {
   vaultInit,
@@ -55,6 +61,7 @@ const mockedAuthListUsers = vi.mocked(authListUsers);
 const mockedAuthListAuditLogs = vi.mocked(authListAuditLogs);
 const mockedAuthSetUserActive = vi.mocked(authSetUserActive);
 const mockedEvernoteImport = vi.mocked(evernoteImport);
+const mockedListenProgress = vi.mocked(listenEvernoteImportProgress);
 
 function vault(root: string, name: string, initialized = true): VaultInfo {
   return { root, name, initialized };
@@ -96,6 +103,8 @@ describe("SettingsListPanel", () => {
     mockedAuthListUsers.mockResolvedValue([]);
     mockedAuthListAuditLogs.mockResolvedValue([]);
     mockedEvernoteImport.mockReset();
+    mockedListenProgress.mockReset();
+    mockedListenProgress.mockResolvedValue(() => {});
   });
 
   it("renders known vaults with the active one badged", async () => {
@@ -264,6 +273,50 @@ describe("SettingsListPanel", () => {
     const summary = await screen.findByTestId("evernote-import-summary");
     expect(summary).toHaveTextContent("3"); // imported count
     expect(summary).toHaveTextContent(/import warnings/i);
+  });
+
+  it("shows per-note progress while an import is in flight", async () => {
+    mockedListKnown.mockResolvedValue([vault("/v", "v")]);
+    // The listener fires a progress payload as soon as it's registered.
+    mockedListenProgress.mockImplementation((handler) => {
+      handler({
+        fileIndex: 0,
+        totalFiles: 1,
+        fileName: "Books.enex",
+        noteDone: 3,
+        noteTotal: 10,
+      });
+      return Promise.resolve(() => {});
+    });
+    // Keep the import pending so the progress line stays mounted.
+    let resolveImport: (r: unknown) => void = () => {};
+    mockedEvernoteImport.mockReturnValue(
+      new Promise((res) => {
+        resolveImport = res as (r: unknown) => void;
+      }) as ReturnType<typeof evernoteImport>,
+    );
+
+    const user = userEvent.setup();
+    render(<SettingsListPanel />);
+    await user.click(await screen.findByTestId("evernote-import-button"));
+
+    const progress = await screen.findByTestId("evernote-import-progress");
+    expect(progress).toHaveTextContent(/Books\.enex/);
+    expect(progress).toHaveTextContent(/3\/10/);
+
+    // Settle the import; progress should disappear.
+    resolveImport({
+      importedCount: 10,
+      skippedCount: 0,
+      failedCount: 0,
+      notes: [],
+      errors: [],
+    });
+    await waitFor(() => {
+      expect(
+        screen.queryByTestId("evernote-import-progress"),
+      ).not.toBeInTheDocument();
+    });
   });
 
   it("Cancelled errors from the picker are swallowed silently", async () => {

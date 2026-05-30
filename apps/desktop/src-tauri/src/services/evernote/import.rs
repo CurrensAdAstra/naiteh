@@ -31,27 +31,43 @@ use crate::services::fs as fsx;
 use crate::services::fs_naming;
 use crate::services::notes;
 
-/// Import every note in `enex_path` into `vault_root`. The notebook
-/// name is taken from the file stem.
+/// Import every note in `enex_path` into `vault_root`, ignoring
+/// progress. The notebook name is taken from the file stem. The IPC
+/// command uses the `_with_progress` variant; this no-progress wrapper
+/// is the convenience entry point for tests and any future caller that
+/// doesn't need updates.
+#[allow(dead_code)]
 pub fn import_enex(
     vault_root: &Path,
     enex_path: &Path,
 ) -> Result<EvernoteImportReport, AppError> {
-    let notebook = notebook_from_filename(enex_path);
-    let notes = parse_enex(enex_path)?;
-    import_notes(vault_root, &notebook, notes)
+    import_enex_with_progress(vault_root, enex_path, |_, _| {})
 }
 
-/// Like `import_enex` but takes already-parsed notes. Used by tests
-/// and (in a later commit) by an "import multiple files" loop that
-/// reports progress between files.
-pub fn import_notes(
+/// Like `import_enex`, but invokes `on_progress(done, total)` after each
+/// note is written so callers can surface progress for a large `.enex`
+/// (which can hold thousands of notes). `total` is known once parsing
+/// completes; `on_progress(0, total)` fires before the first write.
+pub fn import_enex_with_progress(
+    vault_root: &Path,
+    enex_path: &Path,
+    on_progress: impl FnMut(usize, usize),
+) -> Result<EvernoteImportReport, AppError> {
+    let notebook = notebook_from_filename(enex_path);
+    let notes = parse_enex(enex_path)?;
+    import_notes_with_progress(vault_root, &notebook, notes, on_progress)
+}
+
+pub fn import_notes_with_progress(
     vault_root: &Path,
     notebook_slug: &str,
     notes_in: Vec<EvernoteNote>,
+    mut on_progress: impl FnMut(usize, usize),
 ) -> Result<EvernoteImportReport, AppError> {
     let mut report = EvernoteImportReport::default();
     let mut used_slugs: Vec<String> = Vec::new();
+    let total = notes_in.len();
+    on_progress(0, total);
 
     for (idx, note) in notes_in.into_iter().enumerate() {
         match import_one_note(vault_root, notebook_slug, idx, &note, &mut used_slugs) {
@@ -71,6 +87,7 @@ pub fn import_notes(
                 ));
             }
         }
+        on_progress(idx + 1, total);
     }
 
     Ok(report)
@@ -332,6 +349,32 @@ mod tests {
         assert!(body.contains("tags: [\"work\"]"));
         assert!(body.contains("imported_from: evernote"));
         assert!(body.contains("Body"));
+    }
+
+    #[test]
+    fn progress_callback_reports_zero_then_each_note() {
+        let vault = tempdir().unwrap();
+        let src = tempdir().unwrap();
+        let enex = write_enex(
+            src.path(),
+            "Notebook.enex",
+            r#"<?xml version="1.0"?>
+<en-export>
+  <note><title>A</title><content><![CDATA[<en-note/>]]></content></note>
+  <note><title>B</title><content><![CDATA[<en-note/>]]></content></note>
+  <note><title>C</title><content><![CDATA[<en-note/>]]></content></note>
+</en-export>"#,
+        );
+
+        let mut seen: Vec<(usize, usize)> = Vec::new();
+        let report = import_enex_with_progress(vault.path(), &enex, |done, total| {
+            seen.push((done, total));
+        })
+        .unwrap();
+
+        assert_eq!(report.imported_count, 3);
+        // First callback is (0, total); then one per written note.
+        assert_eq!(seen, vec![(0, 3), (1, 3), (2, 3), (3, 3)]);
     }
 
     #[test]
