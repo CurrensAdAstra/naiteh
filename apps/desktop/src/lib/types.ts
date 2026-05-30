@@ -181,6 +181,9 @@ export type AppError =
   | { kind: "Conflict"; message: string }
   | { kind: "ConfigCorrupt"; message: string }
   | { kind: "Unauthorized"; message: string }
+  | { kind: "Validation"; message: string }
+  | { kind: "Network"; message: string }
+  | { kind: "Upstream"; message: string }
   | { kind: "Cancelled" };
 
 export function isAppError(err: unknown): err is AppError {
@@ -193,6 +196,8 @@ export function isAppError(err: unknown): err is AppError {
 export function formatAppError(err: unknown): string {
   if (isAppError(err)) {
     if (err.kind === "Cancelled") return "Operation cancelled";
+    if (err.kind === "Network") return `Network error — ${err.message}`;
+    if (err.kind === "Upstream") return `Service error — ${err.message}`;
     return err.message;
   }
   if (err instanceof Error) return err.message;

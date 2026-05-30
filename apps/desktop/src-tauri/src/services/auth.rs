@@ -298,7 +298,7 @@ pub fn append_audit(
     let username = canonical_username(username);
     let action = action.trim();
     if username.is_empty() || action.is_empty() {
-        return Err(AppError::InvalidPath(
+        return Err(AppError::Validation(
             "audit username and action are required".into(),
         ));
     }
