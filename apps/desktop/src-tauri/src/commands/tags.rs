@@ -5,12 +5,10 @@
 //! Markdown file in the vault per call.
 
 use std::collections::HashMap;
-use std::path::Path;
 
 use crate::domain::{AppError, NoteMeta, TagCount};
 use crate::services::config;
 use crate::services::index::{TagIndex, TagSnapshot};
-use crate::services::notes;
 
 // ── tags_list ────────────────────────────────────────────────────────────
 
@@ -49,39 +47,36 @@ pub fn tags_notes(
 ) -> Result<Vec<NoteMeta>, AppError> {
     let vault_root = config::current_vault_root()?;
     let snap = index.get_or_build(&vault_root)?;
-    tags_notes_from_snapshot(&vault_root, &snap, &tag)
+    Ok(tags_notes_from_snapshot(&snap, &tag))
 }
 
-fn tags_notes_from_snapshot(
-    vault_root: &Path,
-    snap: &TagSnapshot,
-    tag: &str,
-) -> Result<Vec<NoteMeta>, AppError> {
-    let mut metas: Vec<NoteMeta> = Vec::new();
-    for n in &snap.notes {
-        if !n.tags.iter().any(|t| t == tag) {
-            continue;
-        }
-        if let Ok(meta) = notes::read_note_meta(vault_root, &n.abs_path) {
-            metas.push(meta);
-        }
-    }
+fn tags_notes_from_snapshot(snap: &TagSnapshot, tag: &str) -> Vec<NoteMeta> {
+    // Clone the cached NoteMeta for each match — no per-result file read.
+    let mut metas: Vec<NoteMeta> = snap
+        .notes
+        .iter()
+        .filter(|n| n.tags.iter().any(|t| t == tag))
+        .cloned()
+        .collect();
     metas.sort_by_key(|m| std::cmp::Reverse(m.mtime));
-    Ok(metas)
+    metas
 }
 
 #[cfg(test)]
-fn tags_list_impl(vault_root: &Path) -> Result<Vec<TagCount>, AppError> {
+fn tags_list_impl(vault_root: &std::path::Path) -> Result<Vec<TagCount>, AppError> {
     let idx = TagIndex::default();
     let snap = idx.get_or_build(vault_root)?;
     Ok(tags_list_from_snapshot(&snap))
 }
 
 #[cfg(test)]
-fn tags_notes_impl(vault_root: &Path, tag: &str) -> Result<Vec<NoteMeta>, AppError> {
+fn tags_notes_impl(
+    vault_root: &std::path::Path,
+    tag: &str,
+) -> Result<Vec<NoteMeta>, AppError> {
     let idx = TagIndex::default();
     let snap = idx.get_or_build(vault_root)?;
-    tags_notes_from_snapshot(vault_root, &snap, tag)
+    Ok(tags_notes_from_snapshot(&snap, tag))
 }
 
 #[cfg(test)]

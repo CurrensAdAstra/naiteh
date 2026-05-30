@@ -24,7 +24,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 
-use crate::domain::AppError;
+use crate::domain::{AppError, NoteMeta};
 use crate::services::notes;
 
 #[derive(Default)]
@@ -34,13 +34,10 @@ pub struct TagIndex {
 
 #[derive(Debug, Clone, Default)]
 pub struct TagSnapshot {
-    pub notes: Vec<IndexedNote>,
-}
-
-#[derive(Debug, Clone)]
-pub struct IndexedNote {
-    pub abs_path: PathBuf,
-    pub tags: Vec<String>,
+    /// Full `NoteMeta` for every taggable file, computed once at build
+    /// time. `tags_notes` clones from here instead of re-reading each
+    /// matching file from disk.
+    pub notes: Vec<NoteMeta>,
 }
 
 impl TagIndex {
@@ -80,14 +77,14 @@ impl TagIndex {
 }
 
 fn build(vault_root: &Path) -> Result<TagSnapshot, AppError> {
-    let mut notes_out: Vec<IndexedNote> = Vec::new();
+    let mut notes_out: Vec<NoteMeta> = Vec::new();
     for path in collect_taggable_files(vault_root)? {
+        // One read per file; `note_meta_from_content` reuses it and adds
+        // only a cheap metadata() syscall for mtime/size.
         let content = std::fs::read_to_string(&path).unwrap_or_default();
-        let (fm, _) = notes::parse_front_matter(&content);
-        notes_out.push(IndexedNote {
-            abs_path: path,
-            tags: fm.tags,
-        });
+        if let Ok(meta) = notes::note_meta_from_content(vault_root, &path, &content) {
+            notes_out.push(meta);
+        }
     }
     Ok(TagSnapshot { notes: notes_out })
 }
