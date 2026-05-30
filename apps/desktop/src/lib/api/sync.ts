@@ -38,10 +38,6 @@ export function syncResolveKeepOurs(
 
 export function syncResolveKeepTheirs(
   conflictRelPath: string,
-  relPath: string,
 ): Promise<void> {
-  return invoke<void>("sync_resolve_keep_theirs", {
-    conflictRelPath,
-    relPath,
-  });
+  return invoke<void>("sync_resolve_keep_theirs", { conflictRelPath });
 }

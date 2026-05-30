@@ -99,24 +99,38 @@ pub fn sync_list_conflicts() -> Result<Vec<ConflictPair>, AppError> {
 #[tauri::command]
 pub async fn sync_resolve_keep_ours(
     locks: tauri::State<'_, VaultLocks>,
+    index: tauri::State<'_, TagIndex>,
     conflict_rel_path: String,
 ) -> Result<(), AppError> {
     let vault_root = config::current_vault_root()?;
     let lock = locks.for_vault(&vault_root);
     let _guard = lock.lock().await;
-    conflicts::resolve_keep_ours(&vault_root, &conflict_rel_path)
+    let result = conflicts::resolve_keep_ours(&vault_root, &conflict_rel_path);
+    // Removing a sidecar can't change the live file's tags, but invalidate
+    // anyway to stay honest if the live file was edited out-of-band
+    // between list and resolve.
+    if result.is_ok() {
+        index.invalidate(&vault_root);
+    }
+    result
 }
 
 #[tauri::command]
 pub async fn sync_resolve_keep_theirs(
     locks: tauri::State<'_, VaultLocks>,
+    index: tauri::State<'_, TagIndex>,
     conflict_rel_path: String,
-    rel_path: String,
 ) -> Result<(), AppError> {
     let vault_root = config::current_vault_root()?;
     let lock = locks.for_vault(&vault_root);
     let _guard = lock.lock().await;
-    conflicts::resolve_keep_theirs(&vault_root, &conflict_rel_path, &rel_path)
+    // keep_theirs overwrites the live note's bytes, which can change its
+    // front-matter tags — invalidate so Tags reflects the new content.
+    let result = conflicts::resolve_keep_theirs(&vault_root, &conflict_rel_path);
+    if result.is_ok() {
+        index.invalidate(&vault_root);
+    }
+    result
 }
 
 fn record_sync(vault_root: &Path) -> Result<(), AppError> {
