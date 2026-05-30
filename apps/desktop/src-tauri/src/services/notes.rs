@@ -161,6 +161,53 @@ pub fn check_rel_path(rel_path: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Resolve a vault-relative path to an absolute path, refusing anything
+/// that would escape the vault — including via a **symlink** anywhere in
+/// the existing portion of the path.
+///
+/// `check_rel_path` only blocks lexical `..` / absolute paths; it can't
+/// catch a symlink (e.g. `notes/evil -> /`) that a malicious synced
+/// remote committed into the vault. This canonicalizes the deepest
+/// existing ancestor of the target (which resolves any symlinks in it)
+/// and asserts the result stays under the canonical vault root. The
+/// non-existent tail (a not-yet-created note + its dirs) carries no
+/// symlinks of its own, so checking the existing prefix is sufficient.
+///
+/// Returns the (lexically-joined, non-canonical) target path so atomic
+/// writes still land at the intended name rather than a resolved one.
+pub fn resolve_in_vault(vault_root: &Path, rel_path: &str) -> Result<PathBuf, AppError> {
+    check_rel_path(rel_path)?;
+    let canon_root = vault_root
+        .canonicalize()
+        .map_err(|e| AppError::Io(format!("vault root unavailable: {e}")))?;
+    // Build the target on the *original* root so the returned path keeps
+    // the spelling callers expect (read_note_meta strips `vault_root`).
+    // The containment check below uses the canonical form.
+    let target = vault_root.join(rel_path);
+
+    let mut existing = target.as_path();
+    let canon_existing = loop {
+        match existing.canonicalize() {
+            Ok(c) => break c,
+            Err(_) => match existing.parent() {
+                Some(parent) => existing = parent,
+                None => {
+                    return Err(AppError::InvalidPath(format!(
+                        "cannot resolve path: {rel_path}"
+                    )))
+                }
+            },
+        }
+    };
+
+    if !canon_existing.starts_with(&canon_root) {
+        return Err(AppError::InvalidPath(format!(
+            "path escapes the vault: {rel_path}"
+        )));
+    }
+    Ok(target)
+}
+
 /// Convert a free-form title into a filesystem-safe slug. Returns
 /// `"untitled"` when the title contains no alphanumerics.
 pub fn slugify(title: &str) -> String {
@@ -411,6 +458,54 @@ mod tests {
     fn check_rel_path_accepts_normal_paths() {
         assert!(check_rel_path("notes/work/standup.md").is_ok());
         assert!(check_rel_path("notes/_inbox/quick.md").is_ok());
+    }
+
+    #[test]
+    fn resolve_in_vault_accepts_in_vault_paths_and_keeps_original_root() {
+        let v = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(v.path().join("notes")).unwrap();
+        let resolved = resolve_in_vault(v.path(), "notes/a.md").unwrap();
+        // Returned path is rooted at the (possibly symlinked) input root,
+        // so strip_prefix(vault_root) still yields the rel path.
+        assert_eq!(
+            resolved.strip_prefix(v.path()).unwrap(),
+            Path::new("notes/a.md")
+        );
+    }
+
+    #[test]
+    fn resolve_in_vault_allows_creating_a_new_nested_file() {
+        let v = tempfile::tempdir().unwrap();
+        // notes/ doesn't exist yet; the tail is non-existent but carries
+        // no symlink, so it should resolve fine.
+        let resolved = resolve_in_vault(v.path(), "notes/new/deep.md").unwrap();
+        assert!(resolved.ends_with("notes/new/deep.md"));
+    }
+
+    #[test]
+    fn resolve_in_vault_rejects_parent_traversal() {
+        let v = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            resolve_in_vault(v.path(), "../escape.md"),
+            Err(AppError::InvalidPath(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn resolve_in_vault_rejects_symlink_escape() {
+        use std::os::unix::fs::symlink;
+        let v = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        std::fs::write(outside.path().join("secret.md"), b"top secret").unwrap();
+        // notes/evil -> <outside dir>
+        std::fs::create_dir_all(v.path().join("notes")).unwrap();
+        symlink(outside.path(), v.path().join("notes/evil")).unwrap();
+
+        // Reading through the symlink must be refused even though the
+        // lexical path has no `..`.
+        let err = resolve_in_vault(v.path(), "notes/evil/secret.md").unwrap_err();
+        assert!(matches!(err, AppError::InvalidPath(_)), "got {err:?}");
     }
 
     #[test]

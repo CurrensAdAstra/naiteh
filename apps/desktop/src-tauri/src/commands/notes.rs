@@ -47,8 +47,7 @@ pub fn notes_read(rel_path: String) -> Result<String, AppError> {
 }
 
 fn notes_read_impl(vault_root: &Path, rel_path: &str) -> Result<String, AppError> {
-    notes::check_rel_path(rel_path)?;
-    let abs = vault_root.join(rel_path);
+    let abs = notes::resolve_in_vault(vault_root, rel_path)?;
     std::fs::read_to_string(&abs).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => AppError::NotFound(rel_path.to_string()),
         _ => AppError::Io(e.to_string()),
@@ -79,8 +78,7 @@ fn notes_write_impl(
     rel_path: &str,
     content: &str,
 ) -> Result<NoteMeta, AppError> {
-    notes::check_rel_path(rel_path)?;
-    let abs = vault_root.join(rel_path);
+    let abs = notes::resolve_in_vault(vault_root, rel_path)?;
     fsx::atomic_write(&abs, content.as_bytes())?;
     notes::read_note_meta(vault_root, &abs)
 }
@@ -105,8 +103,7 @@ pub async fn notes_create(
 }
 
 fn notes_create_impl(vault_root: &Path, rel_dir: &str, title: &str) -> Result<NoteMeta, AppError> {
-    notes::check_rel_path(rel_dir)?;
-    let dir = vault_root.join(rel_dir);
+    let dir = notes::resolve_in_vault(vault_root, rel_dir)?;
     fsx::ensure_dir(&dir)?;
     let stem = notes::slugify(title);
     let target = unique_path(&dir, &stem);
@@ -151,8 +148,7 @@ pub async fn notes_delete(
 }
 
 fn notes_delete_impl(vault_root: &Path, rel_path: &str) -> Result<(), AppError> {
-    notes::check_rel_path(rel_path)?;
-    let abs = vault_root.join(rel_path);
+    let abs = notes::resolve_in_vault(vault_root, rel_path)?;
     std::fs::remove_file(&abs).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => AppError::NotFound(rel_path.to_string()),
         _ => AppError::Io(e.to_string()),
@@ -179,10 +175,8 @@ pub async fn notes_rename(
 }
 
 fn notes_rename_impl(vault_root: &Path, from: &str, to: &str) -> Result<NoteMeta, AppError> {
-    notes::check_rel_path(from)?;
-    notes::check_rel_path(to)?;
-    let from_abs = vault_root.join(from);
-    let to_abs = vault_root.join(to);
+    let from_abs = notes::resolve_in_vault(vault_root, from)?;
+    let to_abs = notes::resolve_in_vault(vault_root, to)?;
     if !from_abs.is_file() {
         return Err(AppError::NotFound(from.to_string()));
     }
@@ -220,8 +214,7 @@ fn notes_set_pinned_impl(
     rel_path: &str,
     pinned: bool,
 ) -> Result<NoteMeta, AppError> {
-    notes::check_rel_path(rel_path)?;
-    let abs = vault_root.join(rel_path);
+    let abs = notes::resolve_in_vault(vault_root, rel_path)?;
     let content = std::fs::read_to_string(&abs).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => AppError::NotFound(rel_path.to_string()),
         _ => AppError::Io(e.to_string()),
