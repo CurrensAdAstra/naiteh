@@ -21,7 +21,7 @@
 
 use std::collections::HashMap;
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex as StdMutex;
 
@@ -37,6 +37,10 @@ use crate::services::fs as fsx;
 
 const AUTH_FILE: &str = "auth.json";
 const AUDIT_FILE: &str = "audit-log.jsonl";
+const AUDIT_FILE_ROTATED: &str = "audit-log.1.jsonl";
+/// Rotate the audit log once it crosses this size. Single-level
+/// rotation bounds total audit history to ~2× this.
+const MAX_AUDIT_BYTES: u64 = 5 * 1024 * 1024;
 const ADMIN_USERNAME: &str = "admin";
 /// Legacy hash pepper, retained only for migrating older `auth.json`
 /// files to Argon2. New hashes ignore it entirely.
@@ -309,31 +313,41 @@ pub fn append_audit(
     };
     let json = serde_json::to_string(&entry)
         .map_err(|e| AppError::Io(format!("serialize audit entry: {e}")))?;
+
+    let path = audit_path(config_dir);
+    rotate_audit_if_needed(config_dir, &path);
+
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
-        .open(audit_path(config_dir))?;
+        .open(&path)?;
     writeln!(file, "{json}")?;
     Ok(())
+}
+
+/// When the active log reaches the size cap, move it to
+/// `audit-log.1.jsonl` (overwriting any prior rotation) so the next
+/// append starts a fresh file. Best-effort: a failed rename just means
+/// the file keeps growing a bit longer.
+fn rotate_audit_if_needed(config_dir: &Path, path: &Path) {
+    if let Ok(meta) = std::fs::metadata(path) {
+        if meta.len() >= MAX_AUDIT_BYTES {
+            let rotated = config_dir.join(AUDIT_FILE_ROTATED);
+            let _ = std::fs::rename(path, rotated);
+        }
+    }
 }
 
 pub fn read_audit(
     config_dir: &Path,
     limit: u32,
 ) -> Result<Vec<AuditLogEntry>, AppError> {
-    let path = audit_path(config_dir);
-    let text = match std::fs::read_to_string(&path) {
-        Ok(text) => text,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(AppError::Io(e.to_string())),
-    };
-
     let limit = limit.clamp(1, 500) as usize;
-    let mut entries = Vec::new();
-    for line in text.lines().rev() {
-        if entries.len() >= limit {
-            break;
-        }
+    // Read only the file's tail rather than slurping the whole thing —
+    // the active log can be multiple MB before rotation kicks in.
+    let lines = read_last_lines(&audit_path(config_dir), limit)?;
+    let mut entries = Vec::with_capacity(limit);
+    for line in lines.iter().rev() {
         if line.trim().is_empty() {
             continue;
         }
@@ -342,6 +356,46 @@ pub fn read_audit(
         }
     }
     Ok(entries)
+}
+
+/// Read the last `n` newline-delimited lines of a file by seeking from
+/// the end in chunks, without loading the whole file. Returns lines in
+/// file order (oldest first); caller reverses for newest-first.
+fn read_last_lines(path: &Path, n: usize) -> Result<Vec<String>, AppError> {
+    let mut file = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(AppError::Io(e.to_string())),
+    };
+    let len = file.metadata()?.len();
+    if len == 0 {
+        return Ok(Vec::new());
+    }
+
+    const CHUNK: u64 = 8192;
+    let mut pos = len;
+    let mut buf: Vec<u8> = Vec::new();
+    // Read backwards until we've seen more than `n` newlines (so we're
+    // sure to have `n` complete lines) or reached the start of the file.
+    while pos > 0 {
+        let read_size = CHUNK.min(pos);
+        pos -= read_size;
+        file.seek(SeekFrom::Start(pos))?;
+        let mut chunk = vec![0u8; read_size as usize];
+        file.read_exact(&mut chunk)?;
+        chunk.extend_from_slice(&buf);
+        buf = chunk;
+        if buf.iter().filter(|&&b| b == b'\n').count() > n {
+            break;
+        }
+    }
+
+    let text = String::from_utf8_lossy(&buf);
+    let mut lines: Vec<String> = text.lines().map(|l| l.to_string()).collect();
+    if lines.len() > n {
+        lines = lines.split_off(lines.len() - n);
+    }
+    Ok(lines)
 }
 
 // ── SessionStore ─────────────────────────────────────────────────────
@@ -527,6 +581,64 @@ mod tests {
         let entries = read_audit(dir.path(), 10).unwrap();
         assert_eq!(entries[0].action, "second");
         assert_eq!(entries[1].action, "first");
+    }
+
+    #[test]
+    fn read_audit_returns_only_the_requested_tail() {
+        let dir = tempdir().unwrap();
+        for i in 0..50 {
+            append_audit(dir.path(), "admin", &format!("action-{i}"), None).unwrap();
+        }
+        let entries = read_audit(dir.path(), 3).unwrap();
+        assert_eq!(entries.len(), 3);
+        // Newest first: action-49, -48, -47.
+        assert_eq!(entries[0].action, "action-49");
+        assert_eq!(entries[1].action, "action-48");
+        assert_eq!(entries[2].action, "action-47");
+    }
+
+    #[test]
+    fn read_last_lines_spans_multiple_chunks() {
+        // Write enough lines that the tail crosses the 8 KiB read chunk.
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("big.jsonl");
+        let mut content = String::new();
+        for i in 0..2000 {
+            content.push_str(&format!("line-{i}\n"));
+        }
+        std::fs::write(&path, content).unwrap();
+
+        let lines = read_last_lines(&path, 2).unwrap();
+        assert_eq!(lines, vec!["line-1998".to_string(), "line-1999".to_string()]);
+    }
+
+    #[test]
+    fn read_last_lines_handles_missing_and_empty_files() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("nope.jsonl");
+        assert!(read_last_lines(&missing, 5).unwrap().is_empty());
+
+        let empty = dir.path().join("empty.jsonl");
+        std::fs::write(&empty, b"").unwrap();
+        assert!(read_last_lines(&empty, 5).unwrap().is_empty());
+    }
+
+    #[test]
+    fn append_audit_rotates_when_over_the_cap() {
+        let dir = tempdir().unwrap();
+        let path = audit_path(dir.path());
+        // Seed the active log just over the cap.
+        fsx::ensure_dir(dir.path()).unwrap();
+        std::fs::write(&path, vec![b'x'; (MAX_AUDIT_BYTES + 1) as usize]).unwrap();
+
+        append_audit(dir.path(), "admin", "after-rotate", None).unwrap();
+
+        // The oversized file moved to the .1 rotation; the active file now
+        // holds just the new entry.
+        assert!(dir.path().join(AUDIT_FILE_ROTATED).exists());
+        let active = std::fs::read_to_string(&path).unwrap();
+        assert!(active.contains("after-rotate"));
+        assert!(active.len() < 1024, "active log should be small after rotation");
     }
 
     // ── SessionStore ─────────────────────────────────────────────────
