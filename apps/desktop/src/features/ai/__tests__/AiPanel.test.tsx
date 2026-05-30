@@ -185,7 +185,10 @@ describe("AiPanel", () => {
     setOpenWithView(
       makeFakeView({ doc: "doc body", selFrom: 0, selTo: 0 }).view,
     );
-    mockedImprove.mockRejectedValue({ kind: "Io", message: "rate limited" });
+    mockedImprove.mockRejectedValue({
+      kind: "Upstream",
+      message: "ai request returned 429: rate limited",
+    });
 
     const user = userEvent.setup();
     render(<AiPanel />);
@@ -193,7 +196,9 @@ describe("AiPanel", () => {
       target: { value: "anything" },
     });
     await user.click(screen.getByTestId("ai-run"));
-    expect(await screen.findByTestId("ai-error")).toHaveTextContent(/rate limited/i);
+    const error = await screen.findByTestId("ai-error");
+    expect(error).toHaveTextContent(/rate limited/i);
+    expect(error).toHaveTextContent(/service error/i);
   });
 
   it("close button toggles aiPanelOpen off", async () => {

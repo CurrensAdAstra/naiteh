@@ -55,10 +55,10 @@ pub async fn ai_improve(text: String, instruction: String) -> Result<String, App
         .clone()
         .ok_or_else(|| AppError::NotFound("AI Assist API key not configured".into()))?;
     if text.trim().is_empty() {
-        return Err(AppError::InvalidPath("nothing to improve".into()));
+        return Err(AppError::Validation("nothing to improve".into()));
     }
     if instruction.trim().is_empty() {
-        return Err(AppError::InvalidPath("instruction is required".into()));
+        return Err(AppError::Validation("instruction is required".into()));
     }
 
     let prompt = build_user_prompt(&text, &instruction);
@@ -81,7 +81,7 @@ pub async fn ai_improve(text: String, instruction: String) -> Result<String, App
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECS))
         .build()
-        .map_err(|e| AppError::Io(format!("http client: {e}")))?;
+        .map_err(|e| AppError::Network(format!("http client: {e}")))?;
 
     let resp = client
         .post(&url)
@@ -89,12 +89,12 @@ pub async fn ai_improve(text: String, instruction: String) -> Result<String, App
         .json(&body)
         .send()
         .await
-        .map_err(|e| AppError::Io(format!("ai request failed: {e}")))?;
+        .map_err(|e| AppError::Network(format!("ai request failed: {e}")))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
         let body_text = resp.text().await.unwrap_or_default();
-        return Err(AppError::Io(format!(
+        return Err(AppError::Upstream(format!(
             "ai request returned {status}: {}",
             truncate(&body_text, 400)
         )));
@@ -103,13 +103,13 @@ pub async fn ai_improve(text: String, instruction: String) -> Result<String, App
     let parsed: ChatResponse = resp
         .json()
         .await
-        .map_err(|e| AppError::Io(format!("ai response parse: {e}")))?;
+        .map_err(|e| AppError::Upstream(format!("ai response parse: {e}")))?;
     parsed
         .choices
         .into_iter()
         .next()
         .map(|c| c.message.content.trim().to_string())
-        .ok_or_else(|| AppError::Io("ai response had no choices".into()))
+        .ok_or_else(|| AppError::Upstream("ai response had no choices".into()))
 }
 
 fn build_user_prompt(text: &str, instruction: &str) -> String {

@@ -66,7 +66,7 @@ fn app_config_set_ai_impl(
         .filter(|k| !k.is_empty());
     let trimmed_model = model.trim().to_string();
     if trimmed_model.is_empty() {
-        return Err(AppError::InvalidPath("model is required".into()));
+        return Err(AppError::Validation("model is required".into()));
     }
     cfg.ai = AiConfig {
         api_key: trimmed_key,
@@ -142,7 +142,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let err = app_config_set_ai_impl(dir.path(), Some("sk-test".into()), "   ".into(), None)
             .unwrap_err();
-        assert!(matches!(err, AppError::InvalidPath(_)));
+        assert!(matches!(err, AppError::Validation(_)));
     }
 
     #[test]
