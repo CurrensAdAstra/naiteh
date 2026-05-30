@@ -125,14 +125,23 @@ pub fn resolve_keep_ours(
 
 /// Replace the live file with the conflict sidecar's bytes, then drop
 /// the sidecar.
+///
+/// The destination is **derived from the sidecar name**, not taken from
+/// the caller — `<dir>/<stem>.conflict-<ts>.<ext>` always resolves to
+/// `<dir>/<stem>.<ext>`. This keeps a forged/buggy frontend call from
+/// writing one note's bytes over an unrelated file.
 pub fn resolve_keep_theirs(
     vault_root: &Path,
     conflict_rel_path: &str,
-    rel_path: &str,
 ) -> Result<(), AppError> {
     let conflict_abs = guard_conflict(vault_root, conflict_rel_path)?;
-    notes::check_rel_path(rel_path)?;
-    let live_abs = vault_root.join(rel_path);
+    let original_rel = derive_original_rel(conflict_rel_path).ok_or_else(|| {
+        AppError::InvalidPath(format!(
+            "cannot derive original path from sidecar: {conflict_rel_path}"
+        ))
+    })?;
+    notes::check_rel_path(&original_rel)?;
+    let live_abs = vault_root.join(&original_rel);
 
     let bytes = std::fs::read(&conflict_abs).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => {
@@ -145,6 +154,28 @@ pub fn resolve_keep_theirs(
     // correct so we still return Ok.
     let _ = std::fs::remove_file(&conflict_abs);
     Ok(())
+}
+
+/// `<dir>/<stem>.conflict-<ts>.<ext>` → `<dir>/<stem>.<ext>`.
+/// Returns `None` if the path doesn't carry the conflict marker.
+fn derive_original_rel(conflict_rel: &str) -> Option<String> {
+    let (dir, name) = match conflict_rel.rsplit_once('/') {
+        Some((d, n)) => (Some(d), n),
+        None => (None, conflict_rel),
+    };
+    let marker_pos = name.find(CONFLICT_MARKER)?;
+    let stem = &name[..marker_pos];
+    let rest = &name[marker_pos + CONFLICT_MARKER.len()..];
+    // `rest` is "<timestamp>.<ext>" or just "<timestamp>".
+    let ext = rest.rsplit_once('.').map(|(_, e)| e);
+    let original_name = match ext {
+        Some(e) => format!("{stem}.{e}"),
+        None => stem.to_string(),
+    };
+    Some(match dir {
+        Some(d) => format!("{d}/{original_name}"),
+        None => original_name,
+    })
 }
 
 fn guard_conflict(vault_root: &Path, rel: &str) -> Result<PathBuf, AppError> {
@@ -238,17 +269,61 @@ mod tests {
         touch(v.path(), "notes/a.md", b"ours");
         touch(v.path(), "notes/a.conflict-ts.md", b"theirs");
 
-        resolve_keep_theirs(
-            v.path(),
-            "notes/a.conflict-ts.md",
-            "notes/a.md",
-        )
-        .unwrap();
+        resolve_keep_theirs(v.path(), "notes/a.conflict-ts.md").unwrap();
         assert_eq!(
             std::fs::read_to_string(v.path().join("notes/a.md")).unwrap(),
             "theirs"
         );
         assert!(!v.path().join("notes/a.conflict-ts.md").exists());
+    }
+
+    #[test]
+    fn keep_theirs_derives_destination_from_sidecar_in_subdir() {
+        let v = tempdir().unwrap();
+        touch(v.path(), "notes/work/plan.md", b"ours");
+        touch(
+            v.path(),
+            "notes/work/plan.conflict-2026-05-09T10-00-00.md",
+            b"theirs",
+        );
+
+        resolve_keep_theirs(
+            v.path(),
+            "notes/work/plan.conflict-2026-05-09T10-00-00.md",
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(v.path().join("notes/work/plan.md")).unwrap(),
+            "theirs"
+        );
+    }
+
+    #[test]
+    fn keep_theirs_does_not_touch_an_unrelated_note() {
+        // Even though both files exist, keep_theirs must only write to the
+        // sidecar's own original, never some other note.
+        let v = tempdir().unwrap();
+        touch(v.path(), "notes/a.md", b"a-ours");
+        touch(v.path(), "notes/a.conflict-ts.md", b"a-theirs");
+        touch(v.path(), "notes/b.md", b"b-untouched");
+
+        resolve_keep_theirs(v.path(), "notes/a.conflict-ts.md").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(v.path().join("notes/b.md")).unwrap(),
+            "b-untouched"
+        );
+    }
+
+    #[test]
+    fn keep_theirs_extensionless_original() {
+        let v = tempdir().unwrap();
+        touch(v.path(), "README", b"ours");
+        touch(v.path(), "README.conflict-ts", b"theirs");
+        resolve_keep_theirs(v.path(), "README.conflict-ts").unwrap();
+        assert_eq!(
+            std::fs::read_to_string(v.path().join("README")).unwrap(),
+            "theirs"
+        );
     }
 
     #[test]

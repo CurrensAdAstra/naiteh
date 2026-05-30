@@ -263,7 +263,6 @@ describe("SyncListPanel", () => {
     await waitFor(() => {
       expect(mockedKeepTheirs).toHaveBeenCalledWith(
         "notes/a.conflict-2026-05-09T10-00-00.md",
-        "notes/a.md",
       );
     });
   });

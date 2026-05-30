@@ -132,7 +132,7 @@ export function SyncListPanel() {
     setBusy("resolve");
     setError(null);
     try {
-      await syncResolveKeepTheirs(pair.conflictRelPath, pair.relPath);
+      await syncResolveKeepTheirs(pair.conflictRelPath);
       await refreshConflicts();
     } catch (e) {
       setError(formatAppError(e));
