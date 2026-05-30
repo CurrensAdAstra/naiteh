@@ -10,5 +10,6 @@ pub mod git;
 pub mod index;
 pub mod notes;
 pub mod sync_state;
+pub mod timeline;
 pub mod vault_lock;
 pub mod workspace;

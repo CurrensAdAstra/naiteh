@@ -4,10 +4,9 @@
 //! and delegates to a `*_impl` taking the vault root explicitly so it can be
 //! unit-tested against a tempdir.
 
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use chrono::{DateTime, Local, NaiveDate};
+use chrono::{Local, NaiveDate};
 
 use crate::domain::{
     AppError, DayMeta, JournalOpenResult, JournalSaveResult, NoteMeta, TimelineDay, TimelineItem,
@@ -16,6 +15,7 @@ use crate::services::config;
 use crate::services::fs as fsx;
 use crate::services::index::TagIndex;
 use crate::services::notes;
+use crate::services::timeline;
 use crate::services::vault_lock::VaultLocks;
 
 const INBOX_DIR: &str = "_inbox";
@@ -88,24 +88,13 @@ fn quick_list_impl(vault_root: &Path, limit: u32) -> Result<Vec<NoteMeta>, AppEr
 // ── activity_recent ──────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn activity_recent(limit: u32) -> Result<Vec<TimelineItem>, AppError> {
+pub fn activity_recent(
+    index: tauri::State<'_, TagIndex>,
+    limit: u32,
+) -> Result<Vec<TimelineItem>, AppError> {
     let vault_root = config::current_vault_root()?;
-    activity_recent_impl(&vault_root, limit)
-}
-
-fn activity_recent_impl(vault_root: &Path, limit: u32) -> Result<Vec<TimelineItem>, AppError> {
-    let mut items: Vec<TimelineItem> = Vec::new();
-
-    for path in notes::collect_md_files(&vault_root.join("journal"))? {
-        items.push(build_journal_item(&path));
-    }
-    for path in notes::collect_md_files(&vault_root.join("notes"))? {
-        items.push(build_note_item(vault_root, &path));
-    }
-
-    items.sort_by_key(|i| std::cmp::Reverse(i.mtime()));
-    items.truncate(limit as usize);
-    Ok(items)
+    let snap = index.get_or_build(&vault_root)?;
+    Ok(timeline::recent(&snap.notes, limit as usize))
 }
 
 // ── journal_open ─────────────────────────────────────────────────────────
@@ -228,97 +217,30 @@ fn journal_month_meta_impl(
 // ── timeline_range ───────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn timeline_range(from: String, to: String) -> Result<Vec<TimelineDay>, AppError> {
-    let vault_root = config::current_vault_root()?;
-    timeline_range_impl(&vault_root, &from, &to)
-}
-
-fn timeline_range_impl(
-    vault_root: &Path,
-    from: &str,
-    to: &str,
+pub fn timeline_range(
+    index: tauri::State<'_, TagIndex>,
+    from: String,
+    to: String,
 ) -> Result<Vec<TimelineDay>, AppError> {
-    let from_d = parse_date(from)?;
-    let to_d = parse_date(to)?;
+    let from_d = parse_date(&from)?;
+    let to_d = parse_date(&to)?;
     if from_d > to_d {
         return Err(AppError::InvalidPath(format!("from > to: {from} > {to}")));
     }
-
-    let mut journal_by_date: HashMap<String, TimelineItem> = HashMap::new();
-    for path in notes::collect_md_files(&vault_root.join("journal"))? {
-        let stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_string();
-        if validate_date(&stem).is_err() {
-            continue;
-        }
-        journal_by_date.insert(stem, build_journal_item(&path));
-    }
-
-    let mut notes_by_date: HashMap<String, Vec<TimelineItem>> = HashMap::new();
-    for path in notes::collect_md_files(&vault_root.join("notes"))? {
-        let item = build_note_item(vault_root, &path);
-        let date = mtime_to_local_date(item.mtime());
-        notes_by_date.entry(date).or_default().push(item);
-    }
-
-    let mut days = Vec::new();
-    let mut cursor = from_d;
-    loop {
-        let date_str = cursor.format("%Y-%m-%d").to_string();
-        let mut items: Vec<TimelineItem> = Vec::new();
-        if let Some(je) = journal_by_date.remove(&date_str) {
-            items.push(je);
-        }
-        if let Some(mut day_notes) = notes_by_date.remove(&date_str) {
-            day_notes.sort_by_key(|i| std::cmp::Reverse(i.mtime()));
-            items.extend(day_notes);
-        }
-        days.push(TimelineDay {
-            date: date_str,
-            items,
-        });
-        if cursor == to_d {
-            break;
-        }
-        cursor = cursor
-            .succ_opt()
-            .ok_or_else(|| AppError::InvalidPath("date overflow".into()))?;
-    }
-    days.reverse();
-    Ok(days)
+    let vault_root = config::current_vault_root()?;
+    let snap = index.get_or_build(&vault_root)?;
+    Ok(timeline::range(&snap.notes, from_d, to_d))
 }
 
 // ── timeline_pinned ──────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn timeline_pinned() -> Result<Vec<TimelineItem>, AppError> {
+pub fn timeline_pinned(
+    index: tauri::State<'_, TagIndex>,
+) -> Result<Vec<TimelineItem>, AppError> {
     let vault_root = config::current_vault_root()?;
-    timeline_pinned_impl(&vault_root)
-}
-
-fn timeline_pinned_impl(vault_root: &Path) -> Result<Vec<TimelineItem>, AppError> {
-    let mut items: Vec<TimelineItem> = Vec::new();
-    for path in notes::collect_md_files(&vault_root.join("notes"))? {
-        let content = std::fs::read_to_string(&path).unwrap_or_default();
-        let (fm, _) = notes::parse_front_matter(&content);
-        if !fm.pinned {
-            continue;
-        }
-        items.push(build_note_item(vault_root, &path));
-    }
-    for path in notes::collect_md_files(&vault_root.join("journal"))? {
-        let content = std::fs::read_to_string(&path).unwrap_or_default();
-        let (fm, _) = notes::parse_front_matter(&content);
-        if !fm.pinned {
-            continue;
-        }
-        items.push(build_journal_item(&path));
-    }
-    items.sort_by_key(|i| std::cmp::Reverse(i.mtime()));
-    Ok(items)
+    let snap = index.get_or_build(&vault_root)?;
+    Ok(timeline::pinned(&snap.notes))
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────
@@ -357,60 +279,6 @@ fn journal_path_for(vault_root: &Path, date: &str) -> PathBuf {
         .join(format!("{date}.md"))
 }
 
-fn mtime_to_local_date(secs: i64) -> String {
-    DateTime::from_timestamp(secs, 0)
-        .map(|d| d.with_timezone(&Local).format("%Y-%m-%d").to_string())
-        .unwrap_or_else(|| "1970-01-01".to_string())
-}
-
-fn build_journal_item(abs_path: &Path) -> TimelineItem {
-    let mtime = notes::mtime_secs(abs_path);
-    let date = abs_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("")
-        .to_string();
-    let content = std::fs::read_to_string(abs_path).unwrap_or_default();
-    let (fm, body) = notes::parse_front_matter(&content);
-    let title = fm
-        .title
-        .or_else(|| notes::first_h1(body))
-        .unwrap_or_else(|| date.clone());
-    TimelineItem::JournalEntry {
-        date,
-        path: abs_path.to_string_lossy().to_string(),
-        mtime,
-        title,
-        snippet: notes::make_snippet(body),
-    }
-}
-
-fn build_note_item(vault_root: &Path, abs_path: &Path) -> TimelineItem {
-    let mtime = notes::mtime_secs(abs_path);
-    let rel_path = abs_path
-        .strip_prefix(vault_root)
-        .map(|p| p.to_string_lossy().replace('\\', "/"))
-        .unwrap_or_else(|_| abs_path.to_string_lossy().to_string());
-    let content = std::fs::read_to_string(abs_path).unwrap_or_default();
-    let (fm, body) = notes::parse_front_matter(&content);
-    let title = fm
-        .title
-        .or_else(|| notes::first_h1(body))
-        .unwrap_or_else(|| {
-            abs_path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_string()
-        });
-    TimelineItem::Note {
-        rel_path,
-        title,
-        mtime,
-        snippet: notes::make_snippet(body),
-        pinned: fm.pinned,
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -421,6 +289,36 @@ mod tests {
         fsx::atomic_write(path, contents).unwrap();
         let f = std::fs::File::open(path).unwrap();
         f.set_modified(mtime).unwrap();
+    }
+
+    // Integration helpers: drive the real index → timeline path against
+    // on-disk fixtures (the timeline classification/sorting itself has
+    // unit tests in services::timeline).
+    fn recent(vault: &Path, limit: u32) -> Vec<TimelineItem> {
+        let idx = TagIndex::default();
+        let snap = idx.get_or_build(vault).unwrap();
+        timeline::recent(&snap.notes, limit as usize)
+    }
+
+    fn range(
+        vault: &Path,
+        from: &str,
+        to: &str,
+    ) -> Result<Vec<TimelineDay>, AppError> {
+        let from_d = parse_date(from)?;
+        let to_d = parse_date(to)?;
+        if from_d > to_d {
+            return Err(AppError::InvalidPath(format!("from > to: {from} > {to}")));
+        }
+        let idx = TagIndex::default();
+        let snap = idx.get_or_build(vault).unwrap();
+        Ok(timeline::range(&snap.notes, from_d, to_d))
+    }
+
+    fn pinned(vault: &Path) -> Vec<TimelineItem> {
+        let idx = TagIndex::default();
+        let snap = idx.get_or_build(vault).unwrap();
+        timeline::pinned(&snap.notes)
     }
 
     #[test]
@@ -494,7 +392,7 @@ mod tests {
             now - Duration::from_secs(30),
         );
 
-        let items = activity_recent_impl(vault.path(), 10).unwrap();
+        let items = recent(vault.path(), 10);
         assert_eq!(items.len(), 3);
 
         match &items[0] {
@@ -541,7 +439,7 @@ mod tests {
                 now - Duration::from_secs(i * 10),
             );
         }
-        let items = activity_recent_impl(vault.path(), 3).unwrap();
+        let items = recent(vault.path(), 3);
         assert_eq!(items.len(), 3);
     }
 
@@ -550,7 +448,7 @@ mod tests {
         let vault = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(vault.path().join("journal")).unwrap();
         std::fs::create_dir_all(vault.path().join("notes")).unwrap();
-        let items = activity_recent_impl(vault.path(), 50).unwrap();
+        let items = recent(vault.path(), 50);
         assert!(items.is_empty());
     }
 
@@ -675,7 +573,7 @@ mod tests {
     #[test]
     fn timeline_range_returns_one_day_per_date_in_range_newest_first() {
         let vault = tempfile::tempdir().unwrap();
-        let days = timeline_range_impl(vault.path(), "2026-05-01", "2026-05-03").unwrap();
+        let days = range(vault.path(), "2026-05-01", "2026-05-03").unwrap();
         assert_eq!(days.len(), 3);
         assert_eq!(days[0].date, "2026-05-03");
         assert_eq!(days[1].date, "2026-05-02");
@@ -693,7 +591,7 @@ mod tests {
             b"# Tue",
         )
         .unwrap();
-        let days = timeline_range_impl(vault.path(), "2026-05-01", "2026-05-03").unwrap();
+        let days = range(vault.path(), "2026-05-01", "2026-05-03").unwrap();
         let tue = days.iter().find(|d| d.date == "2026-05-02").unwrap();
         assert_eq!(tue.items.len(), 1);
         match &tue.items[0] {
@@ -716,7 +614,7 @@ mod tests {
             b"---\ntitle: \"Standup\"\n---\nbody",
             now,
         );
-        let days = timeline_range_impl(vault.path(), &today, &today).unwrap();
+        let days = range(vault.path(), &today, &today).unwrap();
         assert_eq!(days.len(), 1);
         assert_eq!(days[0].items.len(), 1);
         match &days[0].items[0] {
@@ -730,7 +628,7 @@ mod tests {
     #[test]
     fn timeline_range_rejects_inverted_range() {
         let vault = tempfile::tempdir().unwrap();
-        let err = timeline_range_impl(vault.path(), "2026-05-10", "2026-05-01").unwrap_err();
+        let err = range(vault.path(), "2026-05-10", "2026-05-01").unwrap_err();
         assert!(matches!(err, AppError::InvalidPath(_)));
     }
 
@@ -755,7 +653,7 @@ mod tests {
             b"---\ntitle: \"Day\"\npinned: true\n---\nbody",
             now,
         );
-        let pinned = timeline_pinned_impl(vault.path()).unwrap();
+        let pinned = pinned(vault.path());
         assert_eq!(pinned.len(), 2);
         match &pinned[0] {
             TimelineItem::JournalEntry { title, .. } => assert_eq!(title, "Day"),
@@ -780,7 +678,7 @@ mod tests {
             b"---\ntitle: \"Work\"\n---\nbody",
         )
         .unwrap();
-        let pinned = timeline_pinned_impl(vault.path()).unwrap();
+        let pinned = pinned(vault.path());
         assert!(pinned.is_empty());
     }
 }

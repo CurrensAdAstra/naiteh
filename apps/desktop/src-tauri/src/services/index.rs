@@ -34,10 +34,19 @@ pub struct TagIndex {
 
 #[derive(Debug, Clone, Default)]
 pub struct TagSnapshot {
-    /// Full `NoteMeta` for every taggable file, computed once at build
-    /// time. `tags_notes` clones from here instead of re-reading each
-    /// matching file from disk.
-    pub notes: Vec<NoteMeta>,
+    /// One entry per taggable file (under `notes/` or `journal/`),
+    /// computed once at build time. Backs `tags_*` **and** the
+    /// timeline/activity commands (`services::timeline`), so neither
+    /// re-reads the vault per call.
+    pub notes: Vec<IndexedDoc>,
+}
+
+/// A cached document: its full `NoteMeta` plus a body snippet, both
+/// derived from a single read at build time.
+#[derive(Debug, Clone)]
+pub struct IndexedDoc {
+    pub meta: NoteMeta,
+    pub snippet: String,
 }
 
 impl TagIndex {
@@ -77,13 +86,14 @@ impl TagIndex {
 }
 
 fn build(vault_root: &Path) -> Result<TagSnapshot, AppError> {
-    let mut notes_out: Vec<NoteMeta> = Vec::new();
+    let mut notes_out: Vec<IndexedDoc> = Vec::new();
     for path in collect_taggable_files(vault_root)? {
-        // One read per file; `note_meta_from_content` reuses it and adds
-        // only a cheap metadata() syscall for mtime/size.
+        // One read per file; reused for both the meta and the snippet.
         let content = std::fs::read_to_string(&path).unwrap_or_default();
         if let Ok(meta) = notes::note_meta_from_content(vault_root, &path, &content) {
-            notes_out.push(meta);
+            let (_, body) = notes::parse_front_matter(&content);
+            let snippet = notes::make_snippet(body);
+            notes_out.push(IndexedDoc { meta, snippet });
         }
     }
     Ok(TagSnapshot { notes: notes_out })
