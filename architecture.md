@@ -92,6 +92,8 @@ naiteh/
 │       │   ├── App.tsx
 │       │   ├── shell/                 ← AppShell, ActivityBar, panels
 │       │   ├── features/
+│       │   │   ├── ai/                 ← AI Assist side panel
+│       │   │   ├── auth/               ← login screen, admin dashboard
 │       │   │   ├── journal/
 │       │   │   ├── notes/
 │       │   │   ├── calendar/
@@ -109,22 +111,39 @@ naiteh/
 │           ├── tauri.conf.json
 │           └── src/
 │               ├── main.rs
-│               ├── lib.rs
-│               ├── commands/
+│               ├── lib.rs              ← Tauri builder, managed state, IPC registry
+│               ├── commands/           ← thin IPC wrappers, one module per area
 │               │   ├── mod.rs
+│               │   ├── ai.rs
+│               │   ├── attachments.rs
+│               │   ├── auth.rs
+│               │   ├── evernote.rs
 │               │   ├── journal.rs
 │               │   ├── notes.rs
-│               │   ├── vault.rs
 │               │   ├── search.rs
+│               │   ├── settings.rs
+│               │   ├── sync.rs
 │               │   ├── tags.rs
-│               │   └── sync.rs
-│               ├── domain/             ← pure domain types
+│               │   ├── vault.rs
+│               │   └── workspace.rs
+│               ├── domain/             ← pure domain types + AppError
 │               │   ├── mod.rs
+│               │   ├── error.rs
 │               │   └── types.rs
-│               └── services/           ← filesystem, git, etc.
+│               └── services/           ← side-effectful logic
 │                   ├── mod.rs
-│                   ├── fs.rs
-│                   └── git.rs
+│                   ├── attachments.rs
+│                   ├── auth.rs         ← Argon2 accounts + SessionStore + audit log
+│                   ├── config.rs
+│                   ├── conflicts.rs    ← sync-conflict discovery + resolution
+│                   ├── evernote/       ← .enex parser, ENML→MD, importer
+│                   ├── fs.rs           ← atomic writes
+│                   ├── git.rs
+│                   ├── index.rs        ← in-memory tag index (invalidated by writes)
+│                   ├── notes.rs        ← front matter, slugify, resolve_in_vault
+│                   ├── sync_state.rs
+│                   ├── vault_lock.rs   ← per-vault write/sync mutex
+│                   └── workspace.rs    ← per-vault last-opened state
 └── README.md
 ```
 
@@ -152,11 +171,16 @@ journal entries, and metadata. naiteh never stores notes anywhere else.
 
 ```
 <vault-root>/
-├── .naiteh/                  ← app metadata (committed to Git)
-│   └── config.json           ← per-vault settings
-                              ↑ a future on-disk tag cache may live here;
-                                v1 keeps the index in memory only and
-                                rebuilds on vault open / after any write
+├── .naiteh/                  ← app metadata
+│   ├── config.json           ← per-vault settings (synced)
+│   ├── sync-state.json       ← last-sync timestamp (machine-local, gitignored)
+│   └── workspace.json        ← last-opened file (machine-local, gitignored)
+                              ↑ a future on-disk tag cache (tags.json) may
+                                live here too; v1 keeps the tag index in
+                                memory only (services/index.rs) and rebuilds
+                                on vault open / after any write. The Sync
+                                feature writes a `.gitignore` covering the
+                                machine-local files above.
 ├── .git/                     ← managed by Sync feature, hidden from UI
 ├── journal/
 │   └── YYYY/
@@ -555,6 +579,15 @@ pub struct SyncStatus {
     pub dirty: bool,
     pub last_sync: Option<i64>,
 }
+
+// One per `<file>.conflict-<timestamp>.<ext>` sidecar (see §9).
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConflictPair {
+    pub rel_path: String,           // the live ("ours") file
+    pub conflict_rel_path: String,  // the sidecar holding "theirs"
+    pub timestamp: String,
+}
 ```
 
 ### 6.7 AI Assist
@@ -598,6 +631,15 @@ pub struct AuthSession {
     pub role: UserRole,
 }
 
+// Returned by auth_login; the token is the bearer credential for all
+// subsequent auth IPC.
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoginResult {
+    pub token: String,
+    pub session: AuthSession,
+}
+
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuditLogEntry {
@@ -609,10 +651,54 @@ pub struct AuditLogEntry {
 ```
 
 The local account store lives in the app-config directory. Passwords are
-never exposed to the frontend; only `AuthUser` records cross the IPC
-boundary. The audit log is append-only JSONL at
-`<app-config-dir>/audit-log.jsonl` so it can grow independently of
-`config.json`.
+Argon2id-hashed and never exposed to the frontend; only `AuthUser`
+records cross the IPC boundary. The audit log is append-only JSONL at
+`<app-config-dir>/audit-log.jsonl`, rotated to `audit-log.1.jsonl` at
+5 MiB so it can grow independently of `config.json`.
+
+### 6.9 Attachments, Workspace, Evernote import
+
+```rust
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AttachmentImport {
+    pub rel_path: String,    // vault-relative path of the stored file
+    pub file_name: String,
+    pub markdown: String,    // snippet inserted at the editor cursor
+}
+
+// Machine-local last-opened file (.naiteh/workspace.json).
+#[derive(Serialize, Deserialize)]
+#[serde(tag = "kind")]
+pub enum LastOpened {
+    Note { rel_path: String },
+    Journal { date: String },
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceState {
+    pub last_opened: Option<LastOpened>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvernoteImportReport {
+    pub imported_count: u32,
+    pub skipped_count: u32,
+    pub failed_count: u32,
+    pub notes: Vec<EvernoteImportedNote>,
+    pub errors: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EvernoteImportedNote {
+    pub source_title: String,
+    pub rel_path: String,
+    pub warnings: Vec<String>,  // e.g. dropped ink resources
+}
+```
 
 ---
 
@@ -683,6 +769,11 @@ tags_list() -> Result<Vec<TagCount>, AppError>
 tags_notes(tag: String) -> Result<Vec<NoteMeta>, AppError>
 ```
 
+`tags_list` / `tags_notes` read from the in-memory tag index
+(`services/index.rs`), which is built lazily on first read and
+invalidated by every write command. `search_text` still scans the
+vault per call (a future index extension).
+
 ### 7.7 Sync (Git-backed, exposed as Sync/Backup)
 
 ```rust
@@ -692,6 +783,12 @@ sync_init() -> Result<(), AppError>
 sync_pull() -> Result<SyncStatus, AppError>
 sync_push() -> Result<SyncStatus, AppError>
 sync_now() -> Result<SyncStatus, AppError>
+
+// Conflict resolution (see §9). `keep_theirs` derives the original
+// path from the sidecar name, so it takes only the sidecar path.
+sync_list_conflicts() -> Result<Vec<ConflictPair>, AppError>
+sync_resolve_keep_ours(conflict_rel_path: String) -> Result<(), AppError>
+sync_resolve_keep_theirs(conflict_rel_path: String) -> Result<(), AppError>
 ```
 
 The UI never exposes the words "git", "commit", "rebase", or "remote URL"
@@ -741,6 +838,47 @@ frontend impersonate a user by passing a name string.
 Account-management and audit-log reads require an admin token;
 `auth_log_action` accepts any live token. `auth_set_user_active`
 refuses to deactivate the `admin` account.
+
+### 7.10 Attachments
+
+```rust
+attachments_import() -> Result<AttachmentImport, AppError>
+// Opens a native file picker, copies the chosen file into attachments/.
+
+attachments_import_bytes(bytes: Vec<u8>, suggested_name: String, mime: Option<String>)
+    -> Result<AttachmentImport, AppError>
+// For editor clipboard paste / drag-and-drop. Empty suggested_name →
+// a synthesized `paste-<timestamp>.<ext>` name.
+```
+
+Both enforce a 50 MiB ceiling. `AttachmentImport { rel_path, file_name,
+markdown }` carries the snippet the editor inserts at the cursor.
+
+### 7.11 Workspace (machine-local last-opened)
+
+```rust
+workspace_get() -> Result<WorkspaceState, AppError>
+workspace_set_last_opened(last_opened: Option<LastOpened>) -> Result<WorkspaceState, AppError>
+```
+
+Persisted to the gitignored `.naiteh/workspace.json` so each machine
+reopens the file it last had open in that vault.
+
+### 7.12 Evernote Import
+
+```rust
+evernote_import() -> Result<EvernoteImportReport, AppError>
+// Native multi-file `.enex` picker → converts each note to Markdown
+// under notes/<notebook>/<slug>/index.md with attachments alongside.
+```
+
+### Concurrency note
+
+Every IPC that mutates the vault — the `notes_*` writers, `journal_save`,
+`quick_create`, `attachments_*`, `evernote_import`, the `sync_*`
+commands, and the conflict-resolution commands — acquires the per-vault
+mutex (`services/vault_lock.rs`) before touching files, and invalidates
+the tag index on success. See §9.
 
 ---
 
@@ -801,15 +939,23 @@ are logged by the backend; user work events are logged through
 ## 9. Concurrency & Safety
 
 - **Atomic writes**: every file write goes via temp-file + rename.
-- **No write while syncing**: every IPC that touches files
-  (`notes_write` / `notes_create` / `notes_delete` / `notes_rename` /
-  `notes_set_pinned`, `journal_save` / `quick_create`,
+- **No write while syncing**: every IPC that mutates the vault — the
+  `notes_*` writers, `journal_save` / `quick_create`,
   `attachments_import` / `attachments_import_bytes`, `evernote_import`,
-  and all five `sync_*` commands) acquires a `tokio::sync::Mutex`
-  keyed on the canonical vault root before doing any work. Read-only
-  commands (`notes_read` / `notes_list`, `journal_open`, `tags_*`,
-  `search_text`, `sync_status`) do not lock; atomic-write semantics
-  mean they may observe the previous version, never a torn write.
+  the mutating `sync_*` commands (`init` / `set_remote` / `pull` /
+  `push` / `now`), and the conflict-resolution commands — acquires a
+  `tokio::sync::Mutex` keyed on the canonical vault root
+  (`services/vault_lock.rs`) before doing any work. Read-only commands
+  (`notes_read` / `notes_list`, `journal_open`, `tags_*`, `search_text`,
+  `sync_status`, `sync_list_conflicts`) do not lock; atomic-write
+  semantics mean they may observe the previous version, never a torn write.
+- **Tag index**: write commands invalidate the in-memory tag index
+  (`services/index.rs`) on success, so `tags_*` reflects the latest
+  content without re-scanning the vault on every read.
+- **Path containment**: note paths are resolved with
+  `notes::resolve_in_vault`, which canonicalizes the deepest existing
+  ancestor and refuses anything escaping the vault — including via a
+  symlink committed by a malicious synced remote.
 - **Pull refuses dirty trees**: `sync_pull` errors with `AppError::Conflict`
   if the working tree has uncommitted changes, since the underlying
   fast-forward force-checkout would otherwise silently clobber them.
@@ -818,8 +964,9 @@ are logged by the backend; user work events are logged through
   Ctrl/Cmd-S.
 - **Conflict handling**: if `sync_pull` produces a Git conflict, naiteh
   keeps both versions as `<file>.md` and `<file>.conflict-<timestamp>.md`
-  and surfaces a "resolve conflicts" UI in the Sync panel. v1 does not
-  auto-merge.
+  and surfaces them in the Sync panel's Conflicts section, where the user
+  picks "Keep mine" (`sync_resolve_keep_ours`) or "Keep theirs"
+  (`sync_resolve_keep_theirs`). v1 does not auto-merge.
 - **Privacy boundary**: Sync (§7.7) sends note bytes to the user's chosen
   Git remote; AI Assist (§7.8) sends the selected passage to the user's
   configured Chat Completions endpoint. These are the only two outbound
@@ -828,6 +975,7 @@ are logged by the backend; user work events are logged through
 - **Audit trail**: login attempts and selected work events are recorded in
   append-only local JSONL. The audit log is local-only and visible to admin
   users from Settings.
+
 ---
 
 ## 10. Roadmap
@@ -849,13 +997,22 @@ are logged by the backend; user work events are logged through
 - AI Assist side panel (opt-in; OpenAI Chat Completions by default)
 - Light theme (VS Code Light Modern)
 
+### Shipped since v1.0
+
+- Markdown editor keymap + read-only toggle + inline tag editor
+- Attachment handling: file picker, clipboard paste, drag-and-drop
+  (50 MiB cap), stored under `attachments/`
+- Evernote `.enex` import (notebook → folder, ENML → Markdown)
+- Sync conflict-resolution UI (keep mine / keep theirs)
+- Auth hardening: Argon2id passwords + in-memory session tokens
+- In-memory tag index; per-vault write/sync mutex; CSP
+
 ### v1.5
 
 - Front matter `date: YYYY-MM-DD` for explicit date assignment
   (true Agenda-style plan-ahead notes on the timeline)
 - Better editor UX (preview pane, slash commands)
-- Attachment handling (drag-drop images)
-- Improved search (indexed)
+- Improved search (indexed — extend `services/index.rs` beyond tags)
 - Dark theme
 - Mobile feasibility study (Tauri v2 mobile target)
 
