@@ -28,8 +28,8 @@ import {
   type EvernoteImportReport,
   type VaultInfo,
 } from "../../lib/types";
+import { activateVault } from "../../lib/activateVault";
 import { useAuthStore } from "../../state/authStore";
-import { useEditorStore } from "../../state/editorStore";
 import {
   selectEditorConfig,
   useSettingsStore,
@@ -57,8 +57,6 @@ export function SettingsListPanel() {
   const refreshSettings = useSettingsStore((s) => s.refresh);
   const setSettings = useSettingsStore((s) => s.setConfig);
   const activeVault = useVaultStore((s) => s.active);
-  const setActiveVault = useVaultStore((s) => s.setActive);
-  const closeOpenNote = useEditorStore((s) => s.closeNote);
 
   const [knownVaults, setKnownVaults] = useState<VaultInfo[]>([]);
   const [users, setUsers] = useState<AuthUser[]>([]);
@@ -130,9 +128,9 @@ export function SettingsListPanel() {
       setError(null);
       try {
         const next = await vaultSetActive(root);
-        // Editor's open file points into the previous vault; clear it.
-        closeOpenNote();
-        setActiveVault(next);
+        // Switching vaults closes the editor (its file is in the old
+        // vault) and updates the active-vault store, atomically.
+        activateVault(next);
         void logAction("vault_switch", root).catch(() => {});
       } catch (e) {
         setError(formatAppError(e));
@@ -140,7 +138,7 @@ export function SettingsListPanel() {
         setBusy(null);
       }
     },
-    [activeVault?.root, closeOpenNote, logAction, setActiveVault],
+    [activeVault?.root, logAction],
   );
 
   async function handleAddVault(intent: "existing" | "new") {
@@ -164,8 +162,7 @@ export function SettingsListPanel() {
         ? picked
         : await vaultInit(picked.root);
       const next = await vaultSetActive(initialized.root);
-      closeOpenNote();
-      setActiveVault(next);
+      activateVault(next);
       void logAction("vault_switch", initialized.root).catch(() => {});
       await refreshKnown();
     } catch (e) {
