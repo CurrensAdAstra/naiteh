@@ -3,6 +3,7 @@ import {
   ChevronRight,
   FileText,
   Folder,
+  FolderPlus,
   Pencil,
   Trash2,
 } from "lucide-react";
@@ -10,10 +11,14 @@ import { useCallback, useEffect, useState } from "react";
 
 import {
   notesCreate,
+  notesCreateDir,
   notesDelete,
+  notesDeleteDir,
   notesList,
+  notesListDirs,
   notesRead,
   notesRename,
+  notesRenameDir,
 } from "../../lib/api/notes";
 import { formatAppError } from "../../lib/types";
 import type { NoteMeta } from "../../lib/types";
@@ -29,8 +34,15 @@ interface ContextActions {
   remove: (note: NoteMeta) => void;
 }
 
+interface FolderActions {
+  newSubfolder: (folder: FolderNode) => void;
+  rename: (folder: FolderNode) => void;
+  remove: (folder: FolderNode) => void;
+}
+
 export function NotesListPanel() {
   const [notes, setNotes] = useState<NoteMeta[]>([]);
+  const [dirs, setDirs] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const openNote = useEditorStore((s) => s.openNote);
@@ -44,13 +56,24 @@ export function NotesListPanel() {
 
   const refresh = useCallback(async () => {
     try {
-      const list = await notesList(null);
+      const [list, folders] = await Promise.all([
+        notesList(null),
+        notesListDirs(),
+      ]);
       setNotes(list);
+      setDirs(folders);
       setError(null);
     } catch (e) {
       setError(formatAppError(e));
     }
   }, []);
+
+  // True when the editor's open note lives inside `folderPath`.
+  const openNoteInside = useCallback(
+    (folderPath: string) =>
+      openRelPath !== null && openRelPath.startsWith(`${folderPath}/`),
+    [openRelPath],
+  );
 
   useEffect(() => {
     void refresh();
@@ -134,21 +157,101 @@ export function NotesListPanel() {
     [closeNote, logAction, openRelPath, refresh],
   );
 
-  const tree = buildTree(notes);
+  function folderNameFrom(prompt: string): string | null {
+    const next = window.prompt(prompt);
+    if (next === null) return null;
+    const trimmed = next.trim();
+    if (trimmed === "" || trimmed.includes("/")) return null;
+    return trimmed;
+  }
+
+  const handleNewFolder = useCallback(
+    async (parentPath: string) => {
+      const name = folderNameFrom("New folder name:");
+      if (name === null) return;
+      try {
+        await notesCreateDir(`${parentPath}/${name}`);
+        void logAction("notes_create_dir", `${parentPath}/${name}`).catch(
+          () => {},
+        );
+        await refresh();
+      } catch (e) {
+        setError(formatAppError(e));
+      }
+    },
+    [logAction, refresh],
+  );
+
+  const handleRenameFolder = useCallback(
+    async (folder: FolderNode) => {
+      const name = folderNameFrom(`Rename folder "${folder.name}" to:`);
+      if (name === null || name === folder.name) return;
+      const parent = folder.path.split("/").slice(0, -1).join("/");
+      const target = `${parent}/${name}`;
+      try {
+        await notesRenameDir(folder.path, target);
+        void logAction(
+          "notes_rename_dir",
+          `${folder.path} -> ${target}`,
+        ).catch(() => {});
+        // The open note's path may have moved with the folder.
+        if (openNoteInside(folder.path)) closeNote();
+        await refresh();
+      } catch (e) {
+        setError(formatAppError(e));
+      }
+    },
+    [closeNote, logAction, openNoteInside, refresh],
+  );
+
+  const handleDeleteFolder = useCallback(
+    async (folder: FolderNode) => {
+      const ok = window.confirm(
+        `Delete folder "${folder.name}" and everything inside it?\n\n${folder.path}\nThis cannot be undone from naiteh.`,
+      );
+      if (!ok) return;
+      try {
+        await notesDeleteDir(folder.path);
+        void logAction("notes_delete_dir", folder.path).catch(() => {});
+        if (openNoteInside(folder.path)) closeNote();
+        await refresh();
+      } catch (e) {
+        setError(formatAppError(e));
+      }
+    },
+    [closeNote, logAction, openNoteInside, refresh],
+  );
+
+  const tree = buildTree(notes, "notes", dirs);
   const isEmpty = tree.children.length === 0 && tree.files.length === 0;
+  const folderActions: FolderActions = {
+    newSubfolder: (f) => void handleNewFolder(f.path),
+    rename: (f) => void handleRenameFolder(f),
+    remove: (f) => void handleDeleteFolder(f),
+  };
 
   return (
     <div className={styles.panel} data-testid="list-panel-notes">
       <header className={styles.header}>
         <h2 className={styles.title}>Notes</h2>
-        <button
-          type="button"
-          className={styles.newButton}
-          onClick={() => void handleNewNote()}
-          disabled={creating}
-        >
-          + New note
-        </button>
+        <div className={styles.headerActions}>
+          <button
+            type="button"
+            className={styles.newButton}
+            onClick={() => void handleNewFolder("notes")}
+            data-testid="notes-new-folder"
+          >
+            + Folder
+          </button>
+          <button
+            type="button"
+            className={styles.newButton}
+            onClick={() => void handleNewNote()}
+            disabled={creating}
+          >
+            + New note
+          </button>
+        </div>
       </header>
       <div className={styles.body}>
         {error !== null && <p className={styles.error}>{error}</p>}
@@ -168,6 +271,7 @@ export function NotesListPanel() {
               rename: (n) => void handleRename(n),
               remove: (n) => void handleDelete(n),
             }}
+            folderActions={folderActions}
           />
         )}
       </div>
@@ -182,6 +286,7 @@ interface FolderRowsProps {
   activePath: string | null;
   onOpen: (note: NoteMeta) => void;
   actions: ContextActions;
+  folderActions: FolderActions;
 }
 
 function FolderRows({
@@ -191,6 +296,7 @@ function FolderRows({
   activePath,
   onOpen,
   actions,
+  folderActions,
 }: FolderRowsProps) {
   const [expanded, setExpanded] = useState(true);
 
@@ -205,6 +311,7 @@ function FolderRows({
           activePath={activePath}
           onOpen={onOpen}
           actions={actions}
+          folderActions={folderActions}
         />
       ))}
       {node.files.map((file) => {
@@ -273,19 +380,63 @@ function FolderRows({
 
   return (
     <>
-      <button
-        type="button"
-        className={styles.row}
-        style={{ paddingLeft: depth * INDENT_PX }}
-        onClick={() => setExpanded((e) => !e)}
-        aria-expanded={expanded}
-      >
-        <span className={styles.caret} aria-hidden="true">
-          {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-        </span>
-        <Folder size={14} className={styles.icon} aria-hidden="true" />
-        <span className={styles.label}>{node.name}</span>
-      </button>
+      <div className={styles.fileRowWrap}>
+        <button
+          type="button"
+          className={`${styles.row} ${styles.folderRow}`}
+          style={{ paddingLeft: depth * INDENT_PX }}
+          onClick={() => setExpanded((e) => !e)}
+          aria-expanded={expanded}
+          data-testid={`notes-folder-${node.path}`}
+        >
+          <span className={styles.caret} aria-hidden="true">
+            {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          </span>
+          <Folder size={14} className={styles.icon} aria-hidden="true" />
+          <span className={styles.label}>{node.name}</span>
+        </button>
+        <div className={styles.fileActions}>
+          <button
+            type="button"
+            className={styles.iconButton}
+            aria-label={`New folder in ${node.name}`}
+            title="New subfolder"
+            onClick={(e) => {
+              e.stopPropagation();
+              folderActions.newSubfolder(node);
+            }}
+            data-testid={`notes-folder-new-${node.path}`}
+          >
+            <FolderPlus size={12} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className={styles.iconButton}
+            aria-label={`Rename folder ${node.name}`}
+            title="Rename folder"
+            onClick={(e) => {
+              e.stopPropagation();
+              folderActions.rename(node);
+            }}
+            data-testid={`notes-folder-rename-${node.path}`}
+          >
+            <Pencil size={12} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className={`${styles.iconButton} ${styles.iconButtonDanger}`}
+            aria-label={`Delete folder ${node.name}`}
+            title="Delete folder"
+            onClick={(e) => {
+              e.stopPropagation();
+              folderActions.remove(node);
+            }}
+            data-testid={`notes-folder-delete-${node.path}`}
+          >
+            <Trash2 size={12} aria-hidden="true" />
+          </button>
+        </div>
+      </div>
       {expanded && childContent}
     </>
   );

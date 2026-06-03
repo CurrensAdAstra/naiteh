@@ -224,6 +224,153 @@ fn notes_set_pinned_impl(
     notes::read_note_meta(vault_root, &abs)
 }
 
+// ── folders (directory management under notes/) ───────────────────────────
+
+const INBOX_DIR: &str = "notes/_inbox";
+
+/// List every folder under `notes/` (vault-relative, forward slashes),
+/// including empty ones — the note tree alone can't surface a folder
+/// with no files in it.
+#[tauri::command]
+pub fn notes_list_dirs() -> Result<Vec<String>, AppError> {
+    let vault_root = config::current_vault_root()?;
+    notes_list_dirs_impl(&vault_root)
+}
+
+fn notes_list_dirs_impl(vault_root: &Path) -> Result<Vec<String>, AppError> {
+    let root = vault_root.join("notes");
+    let mut out = Vec::new();
+    if root.is_dir() {
+        collect_dirs(vault_root, &root, &mut out)?;
+    }
+    out.sort();
+    Ok(out)
+}
+
+fn collect_dirs(vault_root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<(), AppError> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let p = entry.path();
+        if !p.is_dir() {
+            continue;
+        }
+        let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if name.starts_with('.') {
+            continue;
+        }
+        if let Ok(rel) = p.strip_prefix(vault_root) {
+            out.push(rel.to_string_lossy().replace('\\', "/"));
+        }
+        collect_dirs(vault_root, &p, out)?;
+    }
+    Ok(())
+}
+
+/// A managed folder must live strictly under `notes/` — never the
+/// `notes/` root itself, never another top-level dir.
+fn ensure_notes_subdir(rel: &str) -> Result<(), AppError> {
+    let trimmed = rel.trim_end_matches('/');
+    if trimmed.starts_with("notes/") && trimmed.len() > "notes/".len() {
+        Ok(())
+    } else {
+        Err(AppError::InvalidPath(format!(
+            "folder must be under notes/: {rel}"
+        )))
+    }
+}
+
+fn ensure_not_reserved(rel: &str) -> Result<(), AppError> {
+    if rel.trim_end_matches('/') == INBOX_DIR {
+        return Err(AppError::Conflict(
+            "the _inbox folder is reserved and can't be moved or deleted".into(),
+        ));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn notes_create_dir(
+    locks: tauri::State<'_, VaultLocks>,
+    rel_dir: String,
+) -> Result<(), AppError> {
+    let vault_root = config::current_vault_root()?;
+    let lock = locks.for_vault(&vault_root);
+    let _guard = lock.lock().await;
+    notes_create_dir_impl(&vault_root, &rel_dir)
+}
+
+fn notes_create_dir_impl(vault_root: &Path, rel_dir: &str) -> Result<(), AppError> {
+    ensure_notes_subdir(rel_dir)?;
+    let abs = notes::resolve_in_vault(vault_root, rel_dir)?;
+    if abs.exists() {
+        return Err(AppError::Conflict(format!(
+            "folder already exists: {rel_dir}"
+        )));
+    }
+    fsx::ensure_dir(&abs)
+}
+
+#[tauri::command]
+pub async fn notes_delete_dir(
+    locks: tauri::State<'_, VaultLocks>,
+    index: tauri::State<'_, TagIndex>,
+    rel_dir: String,
+) -> Result<(), AppError> {
+    let vault_root = config::current_vault_root()?;
+    let lock = locks.for_vault(&vault_root);
+    let _guard = lock.lock().await;
+    let result = notes_delete_dir_impl(&vault_root, &rel_dir);
+    if result.is_ok() {
+        index.invalidate(&vault_root);
+    }
+    result
+}
+
+fn notes_delete_dir_impl(vault_root: &Path, rel_dir: &str) -> Result<(), AppError> {
+    ensure_notes_subdir(rel_dir)?;
+    ensure_not_reserved(rel_dir)?;
+    let abs = notes::resolve_in_vault(vault_root, rel_dir)?;
+    if !abs.is_dir() {
+        return Err(AppError::NotFound(rel_dir.to_string()));
+    }
+    std::fs::remove_dir_all(&abs).map_err(|e| AppError::Io(e.to_string()))
+}
+
+#[tauri::command]
+pub async fn notes_rename_dir(
+    locks: tauri::State<'_, VaultLocks>,
+    index: tauri::State<'_, TagIndex>,
+    from: String,
+    to: String,
+) -> Result<(), AppError> {
+    let vault_root = config::current_vault_root()?;
+    let lock = locks.for_vault(&vault_root);
+    let _guard = lock.lock().await;
+    let result = notes_rename_dir_impl(&vault_root, &from, &to);
+    if result.is_ok() {
+        index.invalidate(&vault_root);
+    }
+    result
+}
+
+fn notes_rename_dir_impl(vault_root: &Path, from: &str, to: &str) -> Result<(), AppError> {
+    ensure_notes_subdir(from)?;
+    ensure_notes_subdir(to)?;
+    ensure_not_reserved(from)?;
+    let from_abs = notes::resolve_in_vault(vault_root, from)?;
+    let to_abs = notes::resolve_in_vault(vault_root, to)?;
+    if !from_abs.is_dir() {
+        return Err(AppError::NotFound(from.to_string()));
+    }
+    if to_abs.exists() {
+        return Err(AppError::Conflict(format!("target already exists: {to}")));
+    }
+    if let Some(parent) = to_abs.parent() {
+        fsx::ensure_dir(parent)?;
+    }
+    std::fs::rename(&from_abs, &to_abs).map_err(|e| AppError::Io(e.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,6 +387,84 @@ mod tests {
         let v = vault();
         let list = notes_list_impl(v.path(), None).unwrap();
         assert!(list.is_empty());
+    }
+
+    // ── folder management ─────────────────────────────────────────────
+
+    #[test]
+    fn list_dirs_includes_empty_folders_recursively() {
+        let v = vault();
+        std::fs::create_dir_all(v.path().join("notes/work/q1")).unwrap();
+        std::fs::create_dir_all(v.path().join("notes/personal")).unwrap();
+        let dirs = notes_list_dirs_impl(v.path()).unwrap();
+        assert!(dirs.contains(&"notes/_inbox".to_string()));
+        assert!(dirs.contains(&"notes/work".to_string()));
+        assert!(dirs.contains(&"notes/work/q1".to_string()));
+        assert!(dirs.contains(&"notes/personal".to_string()));
+    }
+
+    #[test]
+    fn create_dir_makes_the_folder() {
+        let v = vault();
+        notes_create_dir_impl(v.path(), "notes/projects").unwrap();
+        assert!(v.path().join("notes/projects").is_dir());
+    }
+
+    #[test]
+    fn create_dir_rejects_existing_and_out_of_scope() {
+        let v = vault();
+        notes_create_dir_impl(v.path(), "notes/x").unwrap();
+        assert!(matches!(
+            notes_create_dir_impl(v.path(), "notes/x"),
+            Err(AppError::Conflict(_))
+        ));
+        // Can't create a folder at the notes root or outside notes/.
+        assert!(matches!(
+            notes_create_dir_impl(v.path(), "notes"),
+            Err(AppError::InvalidPath(_))
+        ));
+        assert!(matches!(
+            notes_create_dir_impl(v.path(), "journal/2026"),
+            Err(AppError::InvalidPath(_))
+        ));
+    }
+
+    #[test]
+    fn delete_dir_removes_folder_and_contents() {
+        let v = vault();
+        fsx::atomic_write(&v.path().join("notes/work/a.md"), b"# A").unwrap();
+        notes_delete_dir_impl(v.path(), "notes/work").unwrap();
+        assert!(!v.path().join("notes/work").exists());
+    }
+
+    #[test]
+    fn delete_dir_refuses_reserved_inbox() {
+        let v = vault();
+        assert!(matches!(
+            notes_delete_dir_impl(v.path(), "notes/_inbox"),
+            Err(AppError::Conflict(_))
+        ));
+        assert!(v.path().join("notes/_inbox").is_dir());
+    }
+
+    #[test]
+    fn rename_dir_moves_folder_with_contents() {
+        let v = vault();
+        fsx::atomic_write(&v.path().join("notes/work/a.md"), b"# A").unwrap();
+        notes_rename_dir_impl(v.path(), "notes/work", "notes/office").unwrap();
+        assert!(!v.path().join("notes/work").exists());
+        assert!(v.path().join("notes/office/a.md").is_file());
+    }
+
+    #[test]
+    fn rename_dir_rejects_existing_target() {
+        let v = vault();
+        std::fs::create_dir_all(v.path().join("notes/a")).unwrap();
+        std::fs::create_dir_all(v.path().join("notes/b")).unwrap();
+        assert!(matches!(
+            notes_rename_dir_impl(v.path(), "notes/a", "notes/b"),
+            Err(AppError::Conflict(_))
+        ));
     }
 
     #[test]
