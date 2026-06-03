@@ -6,6 +6,7 @@ import { FirstRunSetup } from "./features/settings/FirstRunSetup";
 import { vaultCurrent } from "./lib/api/vault";
 import { formatAppError } from "./lib/types";
 import { AppShell } from "./shell/AppShell";
+import { useMenuEvents } from "./shell/useMenuEvents";
 import { useAuthStore } from "./state/authStore";
 import { useSettingsStore } from "./state/settingsStore";
 import { useVaultStore } from "./state/vaultStore";
@@ -26,6 +27,7 @@ export function App() {
   const setActive = useVaultStore((s) => s.setActive);
   const refreshSettings = useSettingsStore((s) => s.refresh);
   const adminPath = isAdminPath();
+  useMenuEvents();
 
   useEffect(() => {
     if (session === null) {

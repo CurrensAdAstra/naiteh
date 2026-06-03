@@ -9,6 +9,7 @@ import {
 } from "../../../lib/types";
 import { useEditorStore } from "../../../state/editorStore";
 import { useSettingsStore } from "../../../state/settingsStore";
+import { useUIStore } from "../../../state/uiStore";
 import { useVaultStore } from "../../../state/vaultStore";
 import { SettingsListPanel } from "../SettingsListPanel";
 
@@ -100,6 +101,7 @@ describe("SettingsListPanel", () => {
       loading: false,
     });
     useEditorStore.setState({ open: null });
+    useUIStore.setState({ pendingAction: null });
     mockedAuthListUsers.mockResolvedValue([]);
     mockedAuthListAuditLogs.mockResolvedValue([]);
     mockedEvernoteImport.mockReset();
@@ -335,6 +337,27 @@ describe("SettingsListPanel", () => {
     });
     // No summary, no error banner — the section just goes back to idle.
     expect(screen.queryByTestId("evernote-import-summary")).toBeNull();
+  });
+
+  it("runs the import when uiStore queues it (from the File menu)", async () => {
+    mockedListKnown.mockResolvedValue([vault("/v", "v")]);
+    mockedEvernoteImport.mockResolvedValue({
+      importedCount: 1,
+      skippedCount: 0,
+      failedCount: 0,
+      notes: [{ sourceTitle: "A", relPath: "notes/x/a/index.md", warnings: [] }],
+      errors: [],
+    });
+    // Simulate the File ▸ Import menu having queued the action.
+    useUIStore.setState({ pendingAction: "evernoteImport" });
+
+    render(<SettingsListPanel />);
+
+    await waitFor(() => {
+      expect(mockedEvernoteImport).toHaveBeenCalled();
+    });
+    // The one-shot flag is consumed so it doesn't re-fire.
+    expect(useUIStore.getState().pendingAction).toBeNull();
   });
 
   it("shows admin account management and audit logs", async () => {

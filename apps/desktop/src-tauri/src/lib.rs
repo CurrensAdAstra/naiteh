@@ -2,10 +2,65 @@ mod commands;
 mod domain;
 mod services;
 
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::{AppHandle, Emitter, Runtime};
+
+const MENU_IMPORT_EVERNOTE: &str = "import_evernote";
+
+/// Native application menu. Keeps the standard app / Edit items (so the
+/// editor's cut/copy/paste/select-all work from the menu bar) and adds
+/// a File menu with the Evernote import entry. Clicking it emits
+/// `menu:import-evernote`, which the frontend turns into the Settings
+/// import flow.
+fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
+    let import = MenuItem::with_id(
+        handle,
+        MENU_IMPORT_EVERNOTE,
+        "Import from Evernote…",
+        true,
+        None::<&str>,
+    )?;
+
+    let app_menu = Submenu::with_items(
+        handle,
+        "naiteh",
+        true,
+        &[
+            &PredefinedMenuItem::about(handle, None, None)?,
+            &PredefinedMenuItem::separator(handle)?,
+            &PredefinedMenuItem::hide(handle, None)?,
+            &PredefinedMenuItem::quit(handle, None)?,
+        ],
+    )?;
+    let file_menu = Submenu::with_items(handle, "File", true, &[&import])?;
+    let edit_menu = Submenu::with_items(
+        handle,
+        "Edit",
+        true,
+        &[
+            &PredefinedMenuItem::undo(handle, None)?,
+            &PredefinedMenuItem::redo(handle, None)?,
+            &PredefinedMenuItem::separator(handle)?,
+            &PredefinedMenuItem::cut(handle, None)?,
+            &PredefinedMenuItem::copy(handle, None)?,
+            &PredefinedMenuItem::paste(handle, None)?,
+            &PredefinedMenuItem::select_all(handle, None)?,
+        ],
+    )?;
+
+    Menu::with_items(handle, &[&app_menu, &file_menu, &edit_menu])
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .menu(build_menu)
+        .on_menu_event(|app, event| {
+            if event.id().as_ref() == MENU_IMPORT_EVERNOTE {
+                let _ = app.emit("menu:import-evernote", ());
+            }
+        })
         // Per-vault mutex shared across all write + sync commands; see
         // services::vault_lock and architecture.md §9.
         .manage(services::vault_lock::VaultLocks::default())
