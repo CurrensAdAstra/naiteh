@@ -34,6 +34,7 @@ import {
   selectEditorConfig,
   useSettingsStore,
 } from "../../state/settingsStore";
+import { useUIStore } from "../../state/uiStore";
 import { useVaultStore } from "../../state/vaultStore";
 import styles from "./SettingsListPanel.module.css";
 
@@ -253,7 +254,7 @@ export function SettingsListPanel() {
     }
   }
 
-  async function handleEvernoteImport() {
+  const handleEvernoteImport = useCallback(async () => {
     setBusy("evernote");
     setError(null);
     setImportProgress(null);
@@ -275,7 +276,17 @@ export function SettingsListPanel() {
       setImportProgress(null);
       setBusy(null);
     }
-  }
+  }, [logAction]);
+
+  // The native File ▸ Import menu routes here via uiStore.
+  const pendingAction = useUIStore((s) => s.pendingAction);
+  const clearPendingAction = useUIStore((s) => s.clearPendingAction);
+  useEffect(() => {
+    if (pendingAction === "evernoteImport") {
+      clearPendingAction();
+      void handleEvernoteImport();
+    }
+  }, [pendingAction, clearPendingAction, handleEvernoteImport]);
 
   const aiKeyConfigured =
     config !== null &&

@@ -23,6 +23,13 @@ export const JOURNAL_SPLIT_DEFAULT = 0.5;
 const clamp = (n: number, min: number, max: number): number =>
   Math.min(max, Math.max(min, n));
 
+/**
+ * A one-shot action requested from outside the React tree (e.g. a
+ * native menu click) that a panel performs once it's mounted. The
+ * requester also switches `viewMode` so the relevant panel is on screen.
+ */
+export type PendingAction = "evernoteImport";
+
 interface UIState {
   viewMode: ViewMode;
   listPanelWidth: number;
@@ -30,6 +37,7 @@ interface UIState {
   aiPanelOpen: boolean;
   commandPaletteOpen: boolean;
   editorReadOnly: boolean;
+  pendingAction: PendingAction | null;
   setViewMode: (mode: ViewMode) => void;
   setListPanelWidth: (px: number) => void;
   setJournalSplitRatio: (ratio: number) => void;
@@ -39,6 +47,9 @@ interface UIState {
   toggleCommandPalette: () => void;
   setEditorReadOnly: (readOnly: boolean) => void;
   toggleEditorReadOnly: () => void;
+  /** Navigate to Settings and queue the Evernote import flow there. */
+  requestEvernoteImport: () => void;
+  clearPendingAction: () => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
@@ -48,6 +59,7 @@ export const useUIStore = create<UIState>((set) => ({
   aiPanelOpen: false,
   commandPaletteOpen: false,
   editorReadOnly: false,
+  pendingAction: null,
   setViewMode: (mode) => set({ viewMode: mode }),
   setListPanelWidth: (px) =>
     set({ listPanelWidth: clamp(px, LIST_PANEL_MIN, LIST_PANEL_MAX) }),
@@ -63,4 +75,7 @@ export const useUIStore = create<UIState>((set) => ({
   setEditorReadOnly: (readOnly) => set({ editorReadOnly: readOnly }),
   toggleEditorReadOnly: () =>
     set((s) => ({ editorReadOnly: !s.editorReadOnly })),
+  requestEvernoteImport: () =>
+    set({ viewMode: "settings", pendingAction: "evernoteImport" }),
+  clearPendingAction: () => set({ pendingAction: null }),
 }));

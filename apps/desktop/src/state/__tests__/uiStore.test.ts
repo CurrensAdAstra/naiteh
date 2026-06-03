@@ -74,4 +74,13 @@ describe("uiStore", () => {
     useUIStore.getState().toggleCommandPalette();
     expect(useUIStore.getState().commandPaletteOpen).toBe(false);
   });
+
+  it("requestEvernoteImport navigates to Settings and queues the action", () => {
+    useUIStore.getState().requestEvernoteImport();
+    expect(useUIStore.getState().viewMode).toBe("settings");
+    expect(useUIStore.getState().pendingAction).toBe("evernoteImport");
+
+    useUIStore.getState().clearPendingAction();
+    expect(useUIStore.getState().pendingAction).toBeNull();
+  });
 });
