@@ -60,4 +60,23 @@ describe("buildTree", () => {
     expect(tree.children).toEqual([]);
     expect(tree.files).toEqual([]);
   });
+
+  it("surfaces empty folders supplied via the dirs argument", () => {
+    const tree = buildTree([], "notes", ["notes/work", "notes/work/q1"]);
+    const work = tree.children.find((c) => c.name === "work");
+    expect(work).toBeDefined();
+    expect(work!.files).toEqual([]);
+    expect(work!.children.map((c) => c.name)).toEqual(["q1"]);
+  });
+
+  it("merges dir folders with note-derived ones without duplicating", () => {
+    const tree = buildTree(
+      [note("notes/work/a.md", "A")],
+      "notes",
+      ["notes/work", "notes/empty"],
+    );
+    expect(tree.children.map((c) => c.name)).toEqual(["empty", "work"]);
+    const work = tree.children.find((c) => c.name === "work")!;
+    expect(work.files.map((f) => f.title)).toEqual(["A"]);
+  });
 });

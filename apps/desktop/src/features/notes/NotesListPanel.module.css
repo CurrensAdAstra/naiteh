@@ -23,6 +23,12 @@
   text-transform: uppercase;
 }
 
+.headerActions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .newButton {
   font-size: var(--font-size-ui);
   color: var(--color-accent);
@@ -89,6 +95,13 @@
 .fileRow {
   flex: 1;
   padding-right: 56px;
+}
+
+.folderRow {
+  flex: 1;
+  /* three actions (new / rename / delete) need a touch more room */
+  padding-right: 80px;
+  font-weight: 500;
 }
 
 .fileActions {

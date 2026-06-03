@@ -12,14 +12,22 @@ vi.mock("../../../lib/api/notes", () => ({
   notesCreate: vi.fn(),
   notesDelete: vi.fn(),
   notesRename: vi.fn(),
+  notesListDirs: vi.fn(),
+  notesCreateDir: vi.fn(),
+  notesDeleteDir: vi.fn(),
+  notesRenameDir: vi.fn(),
 }));
 
 import {
   notesCreate,
+  notesCreateDir,
   notesDelete,
+  notesDeleteDir,
   notesList,
+  notesListDirs,
   notesRead,
   notesRename,
+  notesRenameDir,
 } from "../../../lib/api/notes";
 
 const mockedList = vi.mocked(notesList);
@@ -27,6 +35,10 @@ const mockedRead = vi.mocked(notesRead);
 const mockedCreate = vi.mocked(notesCreate);
 const mockedDelete = vi.mocked(notesDelete);
 const mockedRename = vi.mocked(notesRename);
+const mockedListDirs = vi.mocked(notesListDirs);
+const mockedCreateDir = vi.mocked(notesCreateDir);
+const mockedDeleteDir = vi.mocked(notesDeleteDir);
+const mockedRenameDir = vi.mocked(notesRenameDir);
 
 function note(relPath: string, title: string): NoteMeta {
   return {
@@ -47,6 +59,14 @@ describe("NotesListPanel", () => {
     mockedCreate.mockReset();
     mockedDelete.mockReset();
     mockedRename.mockReset();
+    mockedListDirs.mockReset();
+    mockedListDirs.mockResolvedValue([]);
+    mockedCreateDir.mockReset();
+    mockedCreateDir.mockResolvedValue(undefined);
+    mockedDeleteDir.mockReset();
+    mockedDeleteDir.mockResolvedValue(undefined);
+    mockedRenameDir.mockReset();
+    mockedRenameDir.mockResolvedValue(undefined);
     useEditorStore.setState({ open: null });
   });
 
@@ -231,5 +251,62 @@ describe("NotesListPanel", () => {
     );
     expect(mockedDelete).not.toHaveBeenCalled();
     confirmSpy.mockRestore();
+  });
+
+  // ── folders ──────────────────────────────────────────────────────────
+
+  it("shows an empty folder from notes_list_dirs", async () => {
+    mockedList.mockResolvedValue([]);
+    mockedListDirs.mockResolvedValue(["notes/work"]);
+    render(<NotesListPanel />);
+    expect(
+      await screen.findByTestId("notes-folder-notes/work"),
+    ).toBeInTheDocument();
+  });
+
+  it("New folder button creates a folder under notes/", async () => {
+    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("Projects");
+    mockedList.mockResolvedValue([]);
+    mockedListDirs.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      "notes/Projects",
+    ]);
+    const user = userEvent.setup();
+    render(<NotesListPanel />);
+    await screen.findByText(/no notes yet/i);
+    await user.click(screen.getByTestId("notes-new-folder"));
+    await waitFor(() => {
+      expect(mockedCreateDir).toHaveBeenCalledWith("notes/Projects");
+    });
+    promptSpy.mockRestore();
+  });
+
+  it("deletes a folder after confirm", async () => {
+    mockedList.mockResolvedValue([]);
+    mockedListDirs.mockResolvedValue(["notes/work"]);
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    render(<NotesListPanel />);
+    await user.click(
+      await screen.findByTestId("notes-folder-delete-notes/work"),
+    );
+    await waitFor(() => {
+      expect(mockedDeleteDir).toHaveBeenCalledWith("notes/work");
+    });
+    confirmSpy.mockRestore();
+  });
+
+  it("renames a folder, keeping it in the same parent", async () => {
+    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("office");
+    mockedList.mockResolvedValue([]);
+    mockedListDirs.mockResolvedValue(["notes/work"]);
+    const user = userEvent.setup();
+    render(<NotesListPanel />);
+    await user.click(
+      await screen.findByTestId("notes-folder-rename-notes/work"),
+    );
+    await waitFor(() => {
+      expect(mockedRenameDir).toHaveBeenCalledWith("notes/work", "notes/office");
+    });
+    promptSpy.mockRestore();
   });
 });
