@@ -116,6 +116,7 @@ pub fn run() {
             commands::settings::app_config_set_editor,
             commands::settings::app_config_set_ai,
             commands::ai::ai_improve,
+            commands::ai::ai_list_models,
             commands::attachments::attachments_import,
             commands::attachments::attachments_import_bytes,
             commands::evernote::evernote_import,

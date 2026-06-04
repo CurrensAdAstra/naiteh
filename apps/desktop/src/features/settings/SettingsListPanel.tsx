@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 
+import { aiListModels } from "../../lib/api/ai";
 import {
   authListAuditLogs,
   authListUsers,
@@ -11,6 +12,11 @@ import {
   type EvernoteImportProgress,
 } from "../../lib/api/evernote";
 import { appConfigSetAi, appConfigSetEditor } from "../../lib/api/settings";
+import {
+  aiBaseIsLocal,
+  OLLAMA_BASE_URL,
+  OPENAI_BASE_URL,
+} from "../../lib/aiProvider";
 import {
   vaultInit,
   vaultListKnown,
@@ -80,8 +86,12 @@ export function SettingsListPanel() {
   // AI section local form state, synced from authoritative config below.
   const [aiKeyDraft, setAiKeyDraft] = useState("");
   const [aiModelDraft, setAiModelDraft] = useState("");
+  const [aiModelOptions, setAiModelOptions] = useState<string[]>([]);
+  const [loadingModels, setLoadingModels] = useState(false);
   const aiKeyFromConfig = config?.ai.apiKey ?? null;
   const aiModelFromConfig = config?.ai.model ?? null;
+  const aiBaseUrl = config?.ai.baseUrl ?? OPENAI_BASE_URL;
+  const aiUsingLocal = aiBaseIsLocal(aiBaseUrl);
   useEffect(() => {
     if (aiKeyFromConfig !== null) setAiKeyDraft(aiKeyFromConfig);
     if (aiModelFromConfig !== null) setAiModelDraft(aiModelFromConfig);
@@ -235,6 +245,42 @@ export function SettingsListPanel() {
       setError(formatAppError(e));
     } finally {
       setBusy(null);
+    }
+  }
+
+  // Switch endpoint to a preset. Keeps the current key/model unless the
+  // model is empty, in which case it seeds a sensible default so the
+  // (required) model field is valid.
+  async function handleUseProvider(baseUrl: string, fallbackModel: string) {
+    setBusy("ai");
+    setError(null);
+    try {
+      const model =
+        aiModelDraft.trim() === "" ? fallbackModel : aiModelDraft.trim();
+      const next = await appConfigSetAi(
+        aiKeyDraft.trim() === "" ? null : aiKeyDraft,
+        model,
+        baseUrl,
+      );
+      setSettings(next);
+      setAiModelDraft(model);
+      setAiModelOptions([]);
+    } catch (e) {
+      setError(formatAppError(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleLoadModels() {
+    setLoadingModels(true);
+    setError(null);
+    try {
+      setAiModelOptions(await aiListModels());
+    } catch (e) {
+      setError(formatAppError(e));
+    } finally {
+      setLoadingModels(false);
     }
   }
 
@@ -402,21 +448,66 @@ export function SettingsListPanel() {
         <section className={styles.section} data-testid="settings-ai">
           <h3 className={styles.sectionTitle}>AI Assist</h3>
           <p className={styles.helpText}>
-            naiteh stays local-first. AI Assist is the one feature that
-            sends note text to a third-party provider — only when you
-            explicitly trigger it, using the API key you store here.
-            Default endpoint is OpenAI&rsquo;s Chat Completions API.
+            AI Assist is the one feature that sends note text out of the
+            app — only when you trigger it. Use a hosted API (OpenAI) with
+            a key, or run a model locally with{" "}
+            <a
+              href="https://ollama.com"
+              target="_blank"
+              rel="noreferrer"
+            >
+              Ollama
+            </a>{" "}
+            for fully local, key-free, no-network AI.
           </p>
+
+          <div className={styles.fieldRow}>
+            <span className={styles.fieldLabel}>Provider</span>
+            <div className={styles.actionGroupRow}>
+              <button
+                type="button"
+                className={styles.button}
+                onClick={() =>
+                  void handleUseProvider(OLLAMA_BASE_URL, "llama3.2")
+                }
+                disabled={busy === "ai"}
+                aria-pressed={aiUsingLocal}
+                data-testid="ai-use-ollama"
+              >
+                {aiUsingLocal ? "✓ Local Ollama" : "Use local Ollama"}
+              </button>
+              <button
+                type="button"
+                className={styles.button}
+                onClick={() =>
+                  void handleUseProvider(OPENAI_BASE_URL, "gpt-4o-mini")
+                }
+                disabled={busy === "ai"}
+                aria-pressed={!aiUsingLocal}
+                data-testid="ai-use-openai"
+              >
+                {!aiUsingLocal ? "✓ OpenAI" : "Use OpenAI"}
+              </button>
+            </div>
+          </div>
+          <p className={styles.helpText} data-testid="ai-endpoint">
+            Endpoint: <code>{aiBaseUrl}</code>
+            {aiUsingLocal &&
+              " — make sure Ollama is running (ollama serve) and you've pulled a model (e.g. ollama pull llama3.2)."}
+          </p>
+
           <div className={styles.fieldRow}>
             <label className={styles.fieldLabel} htmlFor="ai-key-input">
-              API key
+              API key{aiUsingLocal ? " (not needed for Ollama)" : ""}
             </label>
             <input
               id="ai-key-input"
               type="password"
               className={styles.numberInput}
               style={{ width: "180px", textAlign: "left" }}
-              placeholder={aiKeyConfigured ? "••••••••" : "sk-…"}
+              placeholder={
+                aiUsingLocal ? "—" : aiKeyConfigured ? "••••••••" : "sk-…"
+              }
               value={aiKeyDraft}
               onChange={(e) => setAiKeyDraft(e.target.value)}
               disabled={busy === "ai"}
@@ -431,6 +522,7 @@ export function SettingsListPanel() {
             <input
               id="ai-model-input"
               type="text"
+              list="ai-model-options"
               className={styles.numberInput}
               style={{ width: "180px", textAlign: "left" }}
               value={aiModelDraft}
@@ -438,7 +530,13 @@ export function SettingsListPanel() {
               disabled={busy === "ai"}
               data-testid="ai-model-input"
             />
+            <datalist id="ai-model-options">
+              {aiModelOptions.map((m) => (
+                <option key={m} value={m} />
+              ))}
+            </datalist>
           </div>
+
           <div className={styles.actionGroup}>
             <button
               type="button"
@@ -448,6 +546,15 @@ export function SettingsListPanel() {
               data-testid="ai-save"
             >
               {busy === "ai" ? "Saving…" : "Save AI settings"}
+            </button>
+            <button
+              type="button"
+              className={styles.button}
+              onClick={() => void handleLoadModels()}
+              disabled={loadingModels || busy === "ai"}
+              data-testid="ai-load-models"
+            >
+              {loadingModels ? "Loading…" : "Load models"}
             </button>
             {aiKeyConfigured && (
               <button
@@ -461,6 +568,13 @@ export function SettingsListPanel() {
               </button>
             )}
           </div>
+          {aiModelOptions.length > 0 && (
+            <p className={styles.helpText}>
+              {aiModelOptions.length} model
+              {aiModelOptions.length === 1 ? "" : "s"} available — pick one
+              in the Model field.
+            </p>
+          )}
         </section>
 
         <section

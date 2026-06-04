@@ -44,16 +44,24 @@ struct ChatChoiceMessage {
     content: String,
 }
 
+/// Attach a bearer token only when a non-empty key is configured. Local
+/// providers like Ollama accept (and need) no key, so requiring one
+/// would lock them out.
+fn with_optional_auth(
+    req: reqwest::RequestBuilder,
+    api_key: Option<&str>,
+) -> reqwest::RequestBuilder {
+    match api_key.map(str::trim).filter(|k| !k.is_empty()) {
+        Some(key) => req.bearer_auth(key),
+        None => req,
+    }
+}
+
 #[tauri::command]
 pub async fn ai_improve(text: String, instruction: String) -> Result<String, AppError> {
     let dir = config::default_app_config_dir()?;
     crate::services::fs::ensure_dir(&dir)?;
     let cfg = config::load(&dir)?;
-    let api_key = cfg
-        .ai
-        .api_key
-        .clone()
-        .ok_or_else(|| AppError::NotFound("AI Assist API key not configured".into()))?;
     if text.trim().is_empty() {
         return Err(AppError::Validation("nothing to improve".into()));
     }
@@ -83,9 +91,7 @@ pub async fn ai_improve(text: String, instruction: String) -> Result<String, App
         .build()
         .map_err(|e| AppError::Network(format!("http client: {e}")))?;
 
-    let resp = client
-        .post(&url)
-        .bearer_auth(api_key)
+    let resp = with_optional_auth(client.post(&url), cfg.ai.api_key.as_deref())
         .json(&body)
         .send()
         .await
@@ -110,6 +116,55 @@ pub async fn ai_improve(text: String, instruction: String) -> Result<String, App
         .next()
         .map(|c| c.message.content.trim().to_string())
         .ok_or_else(|| AppError::Upstream("ai response had no choices".into()))
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelsResponse {
+    data: Vec<ModelEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelEntry {
+    id: String,
+}
+
+/// List the models available at the configured endpoint via the
+/// OpenAI-compatible `GET {base_url}/models`. Works for Ollama (returns
+/// locally-pulled models) and OpenAI alike. Lets the Settings UI offer
+/// a picker instead of a free-text model field.
+#[tauri::command]
+pub async fn ai_list_models() -> Result<Vec<String>, AppError> {
+    let dir = config::default_app_config_dir()?;
+    crate::services::fs::ensure_dir(&dir)?;
+    let cfg = config::load(&dir)?;
+
+    let url = format!("{}/models", cfg.ai.base_url.trim_end_matches('/'));
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECS))
+        .build()
+        .map_err(|e| AppError::Network(format!("http client: {e}")))?;
+
+    let resp = with_optional_auth(client.get(&url), cfg.ai.api_key.as_deref())
+        .send()
+        .await
+        .map_err(|e| AppError::Network(format!("model list request failed: {e}")))?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+        return Err(AppError::Upstream(format!(
+            "model list returned {status}: {}",
+            truncate(&body_text, 400)
+        )));
+    }
+
+    let parsed: ModelsResponse = resp
+        .json()
+        .await
+        .map_err(|e| AppError::Upstream(format!("model list parse: {e}")))?;
+    let mut ids: Vec<String> = parsed.data.into_iter().map(|m| m.id).collect();
+    ids.sort();
+    Ok(ids)
 }
 
 fn build_user_prompt(text: &str, instruction: &str) -> String {
