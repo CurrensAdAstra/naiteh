@@ -2,6 +2,7 @@ import { X } from "lucide-react";
 import { useState } from "react";
 
 import { aiImprove } from "../../lib/api/ai";
+import { aiReady } from "../../lib/aiProvider";
 import { formatAppError } from "../../lib/types";
 import {
   readCurrentSelection,
@@ -46,9 +47,9 @@ export function AiPanel() {
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<PendingResult | null>(null);
 
-  const apiKeyMissing =
-    config !== null &&
-    (config.ai.apiKey === null || config.ai.apiKey.trim() === "");
+  // AI is unusable until a provider is configured: a hosted API needs a
+  // key + model; a local provider (Ollama) just needs a model.
+  const aiNotReady = config !== null && !aiReady(config.ai);
 
   function pickRange(): CurrentSelection | null {
     if (scope === "document" && open !== null) {
@@ -121,9 +122,11 @@ export function AiPanel() {
           everywhere else — this panel is the one exception.
         </p>
 
-        {apiKeyMissing && (
+        {aiNotReady && (
           <p className={styles.error} data-testid="ai-panel-key-missing">
-            No API key configured. Open Settings → AI Assist to add one.
+            AI Assist isn&rsquo;t configured. Open Settings → AI Assist to
+            set a model (and an API key for hosted providers, or pick local
+            Ollama).
           </p>
         )}
 
@@ -194,7 +197,7 @@ export function AiPanel() {
           type="button"
           className={styles.runButton}
           onClick={() => void handleRun()}
-          disabled={busy || apiKeyMissing}
+          disabled={busy || aiNotReady}
           data-testid="ai-run"
         >
           {busy ? "Working…" : "Improve with AI"}

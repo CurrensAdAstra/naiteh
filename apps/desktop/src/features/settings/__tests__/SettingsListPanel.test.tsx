@@ -23,6 +23,10 @@ vi.mock("../../../lib/api/settings", () => ({
   appConfigSetAi: vi.fn(),
   appConfigSetEditor: vi.fn(),
 }));
+vi.mock("../../../lib/api/ai", () => ({
+  aiImprove: vi.fn(),
+  aiListModels: vi.fn(),
+}));
 vi.mock("../../../lib/api/auth", () => ({
   authListAuditLogs: vi.fn(),
   authListUsers: vi.fn(),
@@ -44,7 +48,11 @@ import {
   evernoteImport,
   listenEvernoteImportProgress,
 } from "../../../lib/api/evernote";
-import { appConfigSetEditor } from "../../../lib/api/settings";
+import { aiListModels } from "../../../lib/api/ai";
+import {
+  appConfigSetAi,
+  appConfigSetEditor,
+} from "../../../lib/api/settings";
 import {
   vaultInit,
   vaultListKnown,
@@ -53,6 +61,8 @@ import {
 } from "../../../lib/api/vault";
 import { useAuthStore } from "../../../state/authStore";
 
+const mockedSetAi = vi.mocked(appConfigSetAi);
+const mockedListModels = vi.mocked(aiListModels);
 const mockedListKnown = vi.mocked(vaultListKnown);
 const mockedPick = vi.mocked(vaultPickFolder);
 const mockedInit = vi.mocked(vaultInit);
@@ -104,6 +114,12 @@ describe("SettingsListPanel", () => {
     useUIStore.setState({ pendingAction: null });
     mockedAuthListUsers.mockResolvedValue([]);
     mockedAuthListAuditLogs.mockResolvedValue([]);
+    mockedSetAi.mockReset();
+    mockedSetAi.mockResolvedValue(
+      configWithEditor(EDITOR_FONT_DEFAULT, true),
+    );
+    mockedListModels.mockReset();
+    mockedListModels.mockResolvedValue([]);
     mockedEvernoteImport.mockReset();
     mockedListenProgress.mockReset();
     mockedListenProgress.mockResolvedValue(() => {});
@@ -228,6 +244,36 @@ describe("SettingsListPanel", () => {
       expect(mockedSetEditor).toHaveBeenCalledWith(EDITOR_FONT_DEFAULT, false);
       expect(useSettingsStore.getState().config?.editor.lineWrapping).toBe(false);
     });
+  });
+
+  it("'Use local Ollama' switches the endpoint to the Ollama URL", async () => {
+    mockedListKnown.mockResolvedValue([vault("/v", "v")]);
+    const user = userEvent.setup();
+    render(<SettingsListPanel />);
+
+    await user.click(await screen.findByTestId("ai-use-ollama"));
+
+    await waitFor(() => {
+      expect(mockedSetAi).toHaveBeenCalledWith(
+        null,
+        "gpt-4o-mini", // keeps the existing model (non-empty)
+        "http://localhost:11434/v1",
+      );
+    });
+  });
+
+  it("'Load models' populates the model picker options", async () => {
+    mockedListKnown.mockResolvedValue([vault("/v", "v")]);
+    mockedListModels.mockResolvedValue(["llama3.2", "qwen2.5"]);
+    const user = userEvent.setup();
+    render(<SettingsListPanel />);
+
+    await user.click(await screen.findByTestId("ai-load-models"));
+
+    await waitFor(() => {
+      expect(mockedListModels).toHaveBeenCalled();
+    });
+    expect(await screen.findByText(/2 models available/i)).toBeInTheDocument();
   });
 
   it("surfaces errors from vault_list_known", async () => {
