@@ -596,11 +596,17 @@ pub struct ConflictPair {
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiConfig {
-    pub api_key: Option<String>,   // None disables the feature in the UI
-    pub model: String,             // e.g. "gpt-4o-mini"
+    pub api_key: Option<String>,   // optional — local providers need none
+    pub model: String,             // e.g. "gpt-4o-mini" or "llama3.2"
     pub base_url: String,          // OpenAI-compatible base URL
 }
 ```
+
+The endpoint can be a hosted API (OpenAI, key required) or a local
+OpenAI-compatible server such as **Ollama**
+(`http://localhost:11434/v1`), in which case no key is needed and no
+note text leaves the machine. The feature is "ready" when a model is
+set and either a key is configured or the endpoint is local.
 
 `AiConfig` is part of the app-level config (§8). The `api_key` is stored
 in plaintext under the user's app-config directory; OS-level user-account
@@ -799,16 +805,18 @@ users can see Git terms in advanced settings.
 
 ```rust
 ai_improve(text: String, instruction: String) -> Result<String, AppError>
+ai_list_models() -> Result<Vec<String>, AppError>
 ```
 
-The only naiteh command that issues outbound HTTP outside the Sync
-feature. Reads `AiConfig` (§6.7) from app config, calls the configured
-Chat Completions endpoint with the user's API key, returns the model's
-revised text. Errors when no API key is configured, when `text` or
-`instruction` is empty, when the upstream returns a non-2xx status, or
-when the request times out (60 s). The system prompt instructs the model
-to return revised text only — no preamble or commentary — but third-party
-providers are explicitly outside naiteh's trust boundary.
+`ai_improve` reads `AiConfig` (§6.7), calls the configured Chat
+Completions endpoint, and returns the model's revised text. The API key
+is attached only when configured (local providers send none). Errors
+when `text`/`instruction` is empty, the upstream returns a non-2xx
+status, or the request times out (60 s). `ai_list_models` queries
+`GET {base_url}/models` so the UI can offer a model picker (for Ollama,
+the locally-pulled models). The system prompt instructs the model to
+return revised text only. Hosted third-party providers are outside
+naiteh's trust boundary; a local provider keeps everything on-device.
 
 App-config setters live alongside the rest of the settings IPC:
 
@@ -969,9 +977,10 @@ are logged by the backend; user work events are logged through
   (`sync_resolve_keep_theirs`). v1 does not auto-merge.
 - **Privacy boundary**: Sync (§7.7) sends note bytes to the user's chosen
   Git remote; AI Assist (§7.8) sends the selected passage to the user's
-  configured Chat Completions endpoint. These are the only two outbound
-  network paths in v1, and both are user-initiated. No telemetry, no
-  background calls, no implicit AI rewriting.
+  configured Chat Completions endpoint — unless that endpoint is a local
+  provider (Ollama), in which case nothing leaves the machine. These are
+  the only outbound network paths in v1, and both are user-initiated. No
+  telemetry, no background calls, no implicit AI rewriting.
 - **Audit trail**: login attempts and selected work events are recorded in
   append-only local JSONL. The audit log is local-only and visible to admin
   users from Settings.
