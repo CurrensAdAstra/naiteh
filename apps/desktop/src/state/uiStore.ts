@@ -28,7 +28,7 @@ const clamp = (n: number, min: number, max: number): number =>
  * native menu click) that a panel performs once it's mounted. The
  * requester also switches `viewMode` so the relevant panel is on screen.
  */
-export type PendingAction = "evernoteImport";
+export type PendingAction = "evernoteImport" | "newNote" | "newFolder";
 
 interface UIState {
   viewMode: ViewMode;
@@ -49,6 +49,9 @@ interface UIState {
   toggleEditorReadOnly: () => void;
   /** Navigate to Settings and queue the Evernote import flow there. */
   requestEvernoteImport: () => void;
+  /** Navigate to Notes and queue a new-note / new-folder prompt there. */
+  requestNewNote: () => void;
+  requestNewFolder: () => void;
   clearPendingAction: () => void;
 }
 
@@ -77,5 +80,9 @@ export const useUIStore = create<UIState>((set) => ({
     set((s) => ({ editorReadOnly: !s.editorReadOnly })),
   requestEvernoteImport: () =>
     set({ viewMode: "settings", pendingAction: "evernoteImport" }),
+  requestNewNote: () =>
+    set({ viewMode: "notes", pendingAction: "newNote" }),
+  requestNewFolder: () =>
+    set({ viewMode: "notes", pendingAction: "newFolder" }),
   clearPendingAction: () => set({ pendingAction: null }),
 }));

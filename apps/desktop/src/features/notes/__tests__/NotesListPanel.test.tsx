@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { NoteMeta } from "../../../lib/types";
 import { useEditorStore } from "../../../state/editorStore";
+import { useUIStore } from "../../../state/uiStore";
 import { NotesListPanel } from "../NotesListPanel";
 
 vi.mock("../../../lib/api/notes", () => ({
@@ -68,6 +69,7 @@ describe("NotesListPanel", () => {
     mockedRenameDir.mockReset();
     mockedRenameDir.mockResolvedValue(undefined);
     useEditorStore.setState({ open: null });
+    useUIStore.setState({ pendingAction: null });
   });
 
   it("renders the empty state when the vault has no notes", async () => {
@@ -307,6 +309,36 @@ describe("NotesListPanel", () => {
     await waitFor(() => {
       expect(mockedRenameDir).toHaveBeenCalledWith("notes/work", "notes/office");
     });
+    promptSpy.mockRestore();
+  });
+
+  // ── menu-triggered (File ▸ New Note / New Folder) ────────────────────
+
+  it("runs the new-note prompt when uiStore queues it (Cmd+N)", async () => {
+    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("From Menu");
+    mockedList.mockResolvedValue([]);
+    mockedCreate.mockResolvedValue(note("notes/from-menu.md", "From Menu"));
+    mockedRead.mockResolvedValue("body");
+    useUIStore.setState({ pendingAction: "newNote" });
+
+    render(<NotesListPanel />);
+    await waitFor(() => {
+      expect(mockedCreate).toHaveBeenCalledWith("notes", "From Menu");
+    });
+    expect(useUIStore.getState().pendingAction).toBeNull();
+    promptSpy.mockRestore();
+  });
+
+  it("runs the new-folder prompt when uiStore queues it (Shift+Cmd+N)", async () => {
+    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("Inbox2");
+    mockedList.mockResolvedValue([]);
+    useUIStore.setState({ pendingAction: "newFolder" });
+
+    render(<NotesListPanel />);
+    await waitFor(() => {
+      expect(mockedCreateDir).toHaveBeenCalledWith("notes/Inbox2");
+    });
+    expect(useUIStore.getState().pendingAction).toBeNull();
     promptSpy.mockRestore();
   });
 });

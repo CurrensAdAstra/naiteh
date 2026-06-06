@@ -6,21 +6,31 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Emitter, Runtime};
 
 const MENU_IMPORT_EVERNOTE: &str = "import_evernote";
+const MENU_NEW_NOTE: &str = "new_note";
+const MENU_NEW_FOLDER: &str = "new_folder";
+const MENU_COMMAND_PALETTE: &str = "command_palette";
+const MENU_TOGGLE_AI: &str = "toggle_ai";
+const VIEW_ID_PREFIX: &str = "view:";
 
-/// Native application menu. Keeps the standard app / Edit items (so the
-/// editor's cut/copy/paste/select-all work from the menu bar) and adds
-/// a File menu with the Evernote import entry. Clicking it emits
-/// `menu:import-evernote`, which the frontend turns into the Settings
-/// import flow.
+/// (id-suffix, label, accelerator) for the seven view-switch entries.
+/// Order + shortcuts match the Activity Bar.
+const VIEW_ITEMS: &[(&str, &str, &str)] = &[
+    ("journal", "Journal", "CmdOrCtrl+1"),
+    ("notes", "Notes", "CmdOrCtrl+2"),
+    ("calendar", "Calendar", "CmdOrCtrl+3"),
+    ("search", "Search", "CmdOrCtrl+4"),
+    ("tags", "Tags", "CmdOrCtrl+5"),
+    ("sync", "Sync", "CmdOrCtrl+6"),
+    ("settings", "Settings", "CmdOrCtrl+7"),
+];
+
+/// Native application menu. Standard App / Edit submenus (so the editor's
+/// undo/cut/copy/paste/select-all work from the menu bar with their usual
+/// shortcuts), a File menu (new note/folder + Evernote import), and a
+/// View menu that switches panels and toggles the palette / AI panel.
+/// Custom items carry accelerators and emit `menu:*` events the frontend
+/// routes to store actions.
 fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
-    let import = MenuItem::with_id(
-        handle,
-        MENU_IMPORT_EVERNOTE,
-        "Import from Evernote…",
-        true,
-        None::<&str>,
-    )?;
-
     let app_menu = Submenu::with_items(
         handle,
         "naiteh",
@@ -32,7 +42,40 @@ fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             &PredefinedMenuItem::quit(handle, None)?,
         ],
     )?;
-    let file_menu = Submenu::with_items(handle, "File", true, &[&import])?;
+
+    let new_note = MenuItem::with_id(
+        handle,
+        MENU_NEW_NOTE,
+        "New Note",
+        true,
+        Some("CmdOrCtrl+N"),
+    )?;
+    let new_folder = MenuItem::with_id(
+        handle,
+        MENU_NEW_FOLDER,
+        "New Folder",
+        true,
+        Some("CmdOrCtrl+Shift+N"),
+    )?;
+    let import = MenuItem::with_id(
+        handle,
+        MENU_IMPORT_EVERNOTE,
+        "Import from Evernote…",
+        true,
+        None::<&str>,
+    )?;
+    let file_menu = Submenu::with_items(
+        handle,
+        "File",
+        true,
+        &[
+            &new_note,
+            &new_folder,
+            &PredefinedMenuItem::separator(handle)?,
+            &import,
+        ],
+    )?;
+
     let edit_menu = Submenu::with_items(
         handle,
         "Edit",
@@ -48,7 +91,59 @@ fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         ],
     )?;
 
-    Menu::with_items(handle, &[&app_menu, &file_menu, &edit_menu])
+    // View menu: the seven panels, then palette + AI toggle.
+    let view_items: Vec<MenuItem<R>> = VIEW_ITEMS
+        .iter()
+        .map(|(id, label, accel)| {
+            MenuItem::with_id(
+                handle,
+                format!("{VIEW_ID_PREFIX}{id}"),
+                *label,
+                true,
+                Some(*accel),
+            )
+        })
+        .collect::<tauri::Result<_>>()?;
+    let command_palette = MenuItem::with_id(
+        handle,
+        MENU_COMMAND_PALETTE,
+        "Command Palette…",
+        true,
+        Some("CmdOrCtrl+P"),
+    )?;
+    let toggle_ai = MenuItem::with_id(
+        handle,
+        MENU_TOGGLE_AI,
+        "Toggle AI Assist",
+        true,
+        Some("CmdOrCtrl+E"),
+    )?;
+    let separator = PredefinedMenuItem::separator(handle)?;
+    let mut view_refs: Vec<&dyn tauri::menu::IsMenuItem<R>> =
+        view_items.iter().map(|i| i as &dyn tauri::menu::IsMenuItem<R>).collect();
+    view_refs.push(&separator);
+    view_refs.push(&command_palette);
+    view_refs.push(&toggle_ai);
+    let view_menu = Submenu::with_items(handle, "View", true, &view_refs)?;
+
+    Menu::with_items(handle, &[&app_menu, &file_menu, &edit_menu, &view_menu])
+}
+
+/// Translate a menu click into a frontend `menu:*` event.
+fn emit_menu_event<R: Runtime>(app: &AppHandle<R>, id: &str) {
+    if let Some(mode) = id.strip_prefix(VIEW_ID_PREFIX) {
+        let _ = app.emit("menu:view", mode.to_string());
+        return;
+    }
+    let event = match id {
+        MENU_NEW_NOTE => "menu:new-note",
+        MENU_NEW_FOLDER => "menu:new-folder",
+        MENU_COMMAND_PALETTE => "menu:command-palette",
+        MENU_TOGGLE_AI => "menu:toggle-ai",
+        MENU_IMPORT_EVERNOTE => "menu:import-evernote",
+        _ => return,
+    };
+    let _ = app.emit(event, ());
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -57,9 +152,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .menu(build_menu)
         .on_menu_event(|app, event| {
-            if event.id().as_ref() == MENU_IMPORT_EVERNOTE {
-                let _ = app.emit("menu:import-evernote", ());
-            }
+            emit_menu_event(app, event.id().as_ref());
         })
         // Per-vault mutex shared across all write + sync commands; see
         // services::vault_lock and architecture.md §9.

@@ -83,4 +83,14 @@ describe("uiStore", () => {
     useUIStore.getState().clearPendingAction();
     expect(useUIStore.getState().pendingAction).toBeNull();
   });
+
+  it("requestNewNote / requestNewFolder navigate to Notes and queue", () => {
+    useUIStore.getState().requestNewNote();
+    expect(useUIStore.getState().viewMode).toBe("notes");
+    expect(useUIStore.getState().pendingAction).toBe("newNote");
+
+    useUIStore.getState().requestNewFolder();
+    expect(useUIStore.getState().viewMode).toBe("notes");
+    expect(useUIStore.getState().pendingAction).toBe("newFolder");
+  });
 });
