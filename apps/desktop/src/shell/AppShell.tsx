@@ -8,7 +8,6 @@ import { EditorPanel } from "./EditorPanel";
 import { ListPanelResizer } from "./ListPanelResizer";
 import { PanelRouter } from "./PanelRouter";
 import { StatusBar } from "./StatusBar";
-import { useKeyboardShortcuts } from "./useKeyboardShortcuts";
 import { useWorkspaceLifecycle } from "./useWorkspaceLifecycle";
 import styles from "./AppShell.module.css";
 
@@ -18,7 +17,6 @@ export function AppShell() {
   const viewMode = useUIStore((s) => s.viewMode);
   const listPanelWidth = useUIStore((s) => s.listPanelWidth);
   const aiPanelOpen = useUIStore((s) => s.aiPanelOpen);
-  useKeyboardShortcuts();
   // Per-vault sync refresh + last-opened restore/persist coordination.
   useWorkspaceLifecycle();
 

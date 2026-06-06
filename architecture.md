@@ -362,6 +362,28 @@ Behavior:
 - The **Editor Panel** preserves the currently open note across mode
   switches whenever possible.
 
+#### Application menu & keyboard shortcuts
+
+The native menu (`src-tauri` `build_menu`) is the single source of the
+global shortcuts. Custom items carry accelerators and emit `menu:*`
+events that `shell/useMenuEvents` routes to store actions:
+
+| Menu          | Item                | Shortcut          | Action |
+|---------------|---------------------|-------------------|--------|
+| File          | New Note            | Cmd/Ctrl+N        | Notes panel new-note prompt |
+| File          | New Folder          | Cmd/Ctrl+Shift+N  | Notes panel new-folder prompt |
+| File          | Import from Evernote… | —               | Settings import flow |
+| View          | Journal … Settings  | Cmd/Ctrl+1 … 7    | Switch `ViewMode` |
+| View          | Command Palette…    | Cmd/Ctrl+P        | Open the palette |
+| View          | Toggle AI Assist    | Cmd/Ctrl+E        | Toggle the AI panel |
+
+The Edit menu uses the standard predefined items (undo/redo/cut/copy/
+paste/select-all) with their usual shortcuts. The editor keeps its own
+CodeMirror bindings (Cmd/Ctrl+B/I/`/Shift+X for formatting, Cmd/Ctrl+K
+for link insertion, Cmd/Ctrl+S for save) — the palette deliberately
+lives on Cmd/Ctrl+P so it doesn't collide with the editor's link
+shortcut.
+
 ### 5.4 Per-mode list panel
 
 | ViewMode  | List Panel content                                                  |

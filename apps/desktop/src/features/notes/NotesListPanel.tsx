@@ -24,6 +24,7 @@ import { formatAppError } from "../../lib/types";
 import type { NoteMeta } from "../../lib/types";
 import { useAuthStore } from "../../state/authStore";
 import { useEditorStore } from "../../state/editorStore";
+import { useUIStore } from "../../state/uiStore";
 import { buildTree, type FolderNode } from "./buildTree";
 import styles from "./NotesListPanel.module.css";
 
@@ -92,7 +93,7 @@ export function NotesListPanel() {
     [logAction, openNote],
   );
 
-  async function handleNewNote() {
+  const handleNewNote = useCallback(async () => {
     const title = window.prompt("New note title:");
     if (title === null) return;
     setCreating(true);
@@ -106,7 +107,7 @@ export function NotesListPanel() {
     } finally {
       setCreating(false);
     }
-  }
+  }, [handleOpen, logAction, refresh]);
 
   const handleRename = useCallback(
     async (note: NoteMeta) => {
@@ -221,6 +222,19 @@ export function NotesListPanel() {
     },
     [closeNote, logAction, openNoteInside, refresh],
   );
+
+  // The native File ▸ New Note / New Folder menu items route here.
+  const pendingAction = useUIStore((s) => s.pendingAction);
+  const clearPendingAction = useUIStore((s) => s.clearPendingAction);
+  useEffect(() => {
+    if (pendingAction === "newNote") {
+      clearPendingAction();
+      void handleNewNote();
+    } else if (pendingAction === "newFolder") {
+      clearPendingAction();
+      void handleNewFolder("notes");
+    }
+  }, [pendingAction, clearPendingAction, handleNewNote, handleNewFolder]);
 
   const tree = buildTree(notes, "notes", dirs);
   const isEmpty = tree.children.length === 0 && tree.files.length === 0;
