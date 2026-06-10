@@ -138,10 +138,12 @@ naiteh/
 │                   ├── conflicts.rs    ← sync-conflict discovery + resolution
 │                   ├── evernote/       ← .enex parser, ENML→MD, importer
 │                   ├── fs.rs           ← atomic writes
+│                   ├── fs_naming.rs    ← shared sanitize/MIME/label helpers
 │                   ├── git.rs
 │                   ├── index.rs        ← in-memory tag index (invalidated by writes)
 │                   ├── notes.rs        ← front matter, slugify, resolve_in_vault
 │                   ├── sync_state.rs
+│                   ├── timeline.rs     ← activity/timeline items from the index
 │                   ├── vault_lock.rs   ← per-vault write/sync mutex
 │                   └── workspace.rs    ← per-vault last-opened state
 └── README.md
@@ -777,6 +779,9 @@ timeline_pinned() -> Result<Vec<TimelineItem>, AppError>
 // For "On the Agenda" pin area.
 ```
 
+All three read from the in-memory index snapshot (`services/index.rs` →
+`services/timeline.rs`) rather than re-scanning the vault per call.
+
 ### 7.5 Notes
 
 ```rust
@@ -787,6 +792,14 @@ notes_create(rel_dir: String, title: String) -> Result<NoteMeta, AppError>
 notes_delete(rel_path: String) -> Result<(), AppError>
 notes_rename(from: String, to: String) -> Result<NoteMeta, AppError>
 notes_set_pinned(rel_path: String, pinned: bool) -> Result<NoteMeta, AppError>
+
+// Folder management. All folder paths are vault-relative, must live
+// strictly under notes/, and are symlink-safe via resolve_in_vault.
+// The reserved notes/_inbox cannot be renamed or deleted.
+notes_list_dirs() -> Result<Vec<String>, AppError>   // includes empty dirs
+notes_create_dir(rel_dir: String) -> Result<(), AppError>
+notes_delete_dir(rel_dir: String) -> Result<(), AppError>   // recursive
+notes_rename_dir(from: String, to: String) -> Result<(), AppError>
 ```
 
 ### 7.6 Search & Tags
@@ -1033,10 +1046,15 @@ are logged by the backend; user work events are logged through
 - Markdown editor keymap + read-only toggle + inline tag editor
 - Attachment handling: file picker, clipboard paste, drag-and-drop
   (50 MiB cap), stored under `attachments/`
-- Evernote `.enex` import (notebook → folder, ENML → Markdown)
+- Evernote `.enex` import (notebook → folder, ENML → Markdown) with
+  per-note progress events, reachable from File ▸ Import
+- Notes folder management (create / rename / delete, empty dirs shown)
 - Sync conflict-resolution UI (keep mine / keep theirs)
 - Auth hardening: Argon2id passwords + in-memory session tokens
-- In-memory tag index; per-vault write/sync mutex; CSP
+- In-memory tag index serving tags **and** timeline/activity;
+  per-vault write/sync mutex; CSP
+- Local AI providers (Ollama) — key-free, on-device AI Assist
+- Native application menu with global shortcuts (§5.3)
 
 ### v1.5
 
