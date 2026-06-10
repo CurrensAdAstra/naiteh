@@ -62,6 +62,16 @@ pub async fn ai_improve(text: String, instruction: String) -> Result<String, App
     let dir = config::default_app_config_dir()?;
     crate::services::fs::ensure_dir(&dir)?;
     let cfg = config::load(&dir)?;
+    ai_improve_impl(&cfg.ai, &text, &instruction).await
+}
+
+/// Testable core: takes the AI config explicitly so tests can point it
+/// at a mock HTTP server instead of the user's app config.
+async fn ai_improve_impl(
+    ai: &crate::services::config::AiConfig,
+    text: &str,
+    instruction: &str,
+) -> Result<String, AppError> {
     if text.trim().is_empty() {
         return Err(AppError::Validation("nothing to improve".into()));
     }
@@ -69,9 +79,9 @@ pub async fn ai_improve(text: String, instruction: String) -> Result<String, App
         return Err(AppError::Validation("instruction is required".into()));
     }
 
-    let prompt = build_user_prompt(&text, &instruction);
+    let prompt = build_user_prompt(text, instruction);
     let body = ChatRequest {
-        model: &cfg.ai.model,
+        model: &ai.model,
         messages: vec![
             ChatMessage {
                 role: "system",
@@ -85,13 +95,13 @@ pub async fn ai_improve(text: String, instruction: String) -> Result<String, App
         temperature: 0.4,
     };
 
-    let url = format!("{}/chat/completions", cfg.ai.base_url.trim_end_matches('/'));
+    let url = format!("{}/chat/completions", ai.base_url.trim_end_matches('/'));
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECS))
         .build()
         .map_err(|e| AppError::Network(format!("http client: {e}")))?;
 
-    let resp = with_optional_auth(client.post(&url), cfg.ai.api_key.as_deref())
+    let resp = with_optional_auth(client.post(&url), ai.api_key.as_deref())
         .json(&body)
         .send()
         .await
@@ -137,14 +147,19 @@ pub async fn ai_list_models() -> Result<Vec<String>, AppError> {
     let dir = config::default_app_config_dir()?;
     crate::services::fs::ensure_dir(&dir)?;
     let cfg = config::load(&dir)?;
+    ai_list_models_impl(&cfg.ai).await
+}
 
-    let url = format!("{}/models", cfg.ai.base_url.trim_end_matches('/'));
+async fn ai_list_models_impl(
+    ai: &crate::services::config::AiConfig,
+) -> Result<Vec<String>, AppError> {
+    let url = format!("{}/models", ai.base_url.trim_end_matches('/'));
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECS))
         .build()
         .map_err(|e| AppError::Network(format!("http client: {e}")))?;
 
-    let resp = with_optional_auth(client.get(&url), cfg.ai.api_key.as_deref())
+    let resp = with_optional_auth(client.get(&url), ai.api_key.as_deref())
         .send()
         .await
         .map_err(|e| AppError::Network(format!("model list request failed: {e}")))?;
@@ -207,5 +222,121 @@ mod tests {
     fn truncate_passes_short_strings_through() {
         let out = truncate("short", 100);
         assert_eq!(out, "short");
+    }
+
+    // ── HTTP behaviour against a mock OpenAI-compatible server ───────
+
+    use crate::services::config::AiConfig;
+    use httpmock::prelude::*;
+
+    fn ai_config(base_url: &str, api_key: Option<&str>) -> AiConfig {
+        AiConfig {
+            api_key: api_key.map(str::to_string),
+            model: "test-model".into(),
+            base_url: base_url.to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn improve_returns_trimmed_choice_and_sends_bearer_key() {
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/chat/completions")
+                .header("authorization", "Bearer sk-test")
+                .body_contains("test-model")
+                .body_contains("make it shorter");
+            then.status(200).json_body(serde_json::json!({
+                "choices": [{ "message": { "content": "  improved text  " } }]
+            }));
+        });
+
+        let cfg = ai_config(&format!("{}/v1", server.base_url()), Some("sk-test"));
+        let out = ai_improve_impl(&cfg, "original", "make it shorter")
+            .await
+            .unwrap();
+        assert_eq!(out, "improved text");
+        mock.assert();
+    }
+
+    #[tokio::test]
+    async fn improve_sends_no_auth_header_for_keyless_local_provider() {
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/v1/chat/completions")
+                .matches(|req| {
+                    !req.headers
+                        .iter()
+                        .flatten()
+                        .any(|(k, _)| k.eq_ignore_ascii_case("authorization"))
+                });
+            then.status(200).json_body(serde_json::json!({
+                "choices": [{ "message": { "content": "local result" } }]
+            }));
+        });
+
+        let cfg = ai_config(&format!("{}/v1", server.base_url()), None);
+        let out = ai_improve_impl(&cfg, "original", "fix").await.unwrap();
+        assert_eq!(out, "local result");
+        mock.assert();
+    }
+
+    #[tokio::test]
+    async fn improve_maps_non_2xx_to_upstream_error() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(POST).path("/v1/chat/completions");
+            then.status(429).body("rate limited");
+        });
+
+        let cfg = ai_config(&format!("{}/v1", server.base_url()), Some("sk"));
+        let err = ai_improve_impl(&cfg, "x", "y").await.unwrap_err();
+        match err {
+            AppError::Upstream(msg) => {
+                assert!(msg.contains("429"), "got: {msg}");
+                assert!(msg.contains("rate limited"), "got: {msg}");
+            }
+            other => panic!("expected Upstream, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn improve_maps_connection_failure_to_network_error() {
+        // Nothing listens on this port.
+        let cfg = ai_config("http://127.0.0.1:1/v1", None);
+        let err = ai_improve_impl(&cfg, "x", "y").await.unwrap_err();
+        assert!(matches!(err, AppError::Network(_)), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn improve_rejects_empty_inputs_before_any_request() {
+        let cfg = ai_config("http://127.0.0.1:1/v1", None);
+        assert!(matches!(
+            ai_improve_impl(&cfg, "  ", "fix").await.unwrap_err(),
+            AppError::Validation(_)
+        ));
+        assert!(matches!(
+            ai_improve_impl(&cfg, "text", " ").await.unwrap_err(),
+            AppError::Validation(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn list_models_returns_sorted_ids() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(GET).path("/v1/models");
+            then.status(200).json_body(serde_json::json!({
+                "data": [
+                    { "id": "qwen2.5" },
+                    { "id": "llama3.2" }
+                ]
+            }));
+        });
+
+        let cfg = ai_config(&format!("{}/v1", server.base_url()), None);
+        let models = ai_list_models_impl(&cfg).await.unwrap();
+        assert_eq!(models, vec!["llama3.2".to_string(), "qwen2.5".to_string()]);
     }
 }
