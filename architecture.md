@@ -734,8 +734,27 @@ pub struct EvernoteImportedNote {
 
 ## 7. Tauri Commands (IPC API)
 
-All commands return `Result<T, AppError>`. `AppError` serializes to a
-tagged union for the frontend.
+All commands return `Result<T, AppError>`. `AppError` serializes to the
+frontend as a tagged union (`{ kind, message }`):
+
+```rust
+pub enum AppError {
+    Io(String),                 // filesystem / process I/O
+    NotFound(String),
+    InvalidPath(String),        // lexical path-traversal / shape rejection
+    AlreadyInitialized(String), // vault init re-run on an existing vault
+    Conflict(String),           // dirty-tree pull, sync conflict, etc.
+    ConfigCorrupt(String),
+    Unauthorized(String),       // auth / session-token failures
+    Validation(String),         // semantic input check (empty field, …)
+    Network(String),            // transport didn't reach the remote
+    Upstream(String),           // remote replied with error / bad body
+    Cancelled,                  // user dismissed a picker / dialog
+}
+```
+
+The frontend's `formatAppError` (`src/lib/types.ts`) renders these
+distinctly so a network failure isn't mislabelled as I/O.
 
 ### 7.1 Vault
 
@@ -914,6 +933,38 @@ evernote_import() -> Result<EvernoteImportReport, AppError>
 // Native multi-file `.enex` picker → converts each note to Markdown
 // under notes/<notebook>/<slug>/index.md with attachments alongside.
 ```
+
+During the import the backend emits per-note progress on the
+`evernote-import-progress` event channel (throttled to ~100 events per
+file). Payload:
+
+```rust
+struct ImportProgress {
+    file_index: usize,    // 0-based, current file
+    total_files: usize,
+    file_name: String,
+    note_done: usize,
+    note_total: usize,
+}
+```
+
+The Settings panel subscribes for the duration of an import and shows a
+live "Importing <file> — n/total" line.
+
+### 7.13 Native menu events
+
+Custom items in the native application menu (§5.3) emit `menu:*` events
+that `shell/useMenuEvents` routes to store actions, rather than
+invoking IPC commands directly:
+
+| Event | Action |
+|---|---|
+| `menu:view` (payload: ViewMode) | Switch panel (Cmd+1..7) |
+| `menu:command-palette` | Open the palette (Cmd+P) |
+| `menu:toggle-ai` | Toggle the AI Assist panel (Cmd+E) |
+| `menu:new-note` | Notes panel new-note prompt (Cmd+N) |
+| `menu:new-folder` | Notes panel new-folder prompt (Shift+Cmd+N) |
+| `menu:import-evernote` | Settings ▸ Evernote import flow |
 
 ### Concurrency note
 
