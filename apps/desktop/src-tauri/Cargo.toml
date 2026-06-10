@@ -33,6 +33,7 @@ getrandom = "0.2"
 
 [dev-dependencies]
 tempfile = "3"
+httpmock = "0.7"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
