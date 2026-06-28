@@ -396,7 +396,16 @@ fn capture_their_versions(
             Err(_) => continue,
         };
 
-        let target = conflict_path(vault_root, &path, &timestamp);
+        // Probe for an unused name so two conflicts on the same path within
+        // the same second don't clobber each other (rare, but possible
+        // across separate pulls). The `-N` lands before the extension so the
+        // sidecar parser still recovers the original path.
+        let mut target = conflict_path(vault_root, &path, &timestamp, None);
+        let mut n = 1usize;
+        while target.exists() {
+            target = conflict_path(vault_root, &path, &timestamp, Some(n));
+            n += 1;
+        }
         if let Some(parent) = target.parent() {
             crate::services::fs::ensure_dir(parent)?;
         }
@@ -406,9 +415,16 @@ fn capture_their_versions(
     Ok(written)
 }
 
-/// Build `<stem>.conflict-<ts>.<ext>` next to the original path, falling
-/// back to appending the suffix when there is no extension.
-fn conflict_path(vault_root: &Path, rel_path: &str, timestamp: &str) -> std::path::PathBuf {
+/// Build `<stem>.conflict-<ts>[-N].<ext>` next to the original path, falling
+/// back to appending the suffix when there is no extension. `n` adds a `-N`
+/// disambiguator (before the extension, so the parser still recovers the
+/// original path) when a sidecar of the same name already exists.
+fn conflict_path(
+    vault_root: &Path,
+    rel_path: &str,
+    timestamp: &str,
+    n: Option<usize>,
+) -> std::path::PathBuf {
     let original = vault_root.join(rel_path);
     let stem = original
         .file_stem()
@@ -418,9 +434,13 @@ fn conflict_path(vault_root: &Path, rel_path: &str, timestamp: &str) -> std::pat
         .extension()
         .map(|s| s.to_string_lossy().into_owned());
     let parent = original.parent().unwrap_or(vault_root);
+    let suffix = match n {
+        Some(n) => format!("-{n}"),
+        None => String::new(),
+    };
     let new_name = match ext {
-        Some(e) => format!("{stem}.conflict-{timestamp}.{e}"),
-        None => format!("{stem}.conflict-{timestamp}"),
+        Some(e) => format!("{stem}.conflict-{timestamp}{suffix}.{e}"),
+        None => format!("{stem}.conflict-{timestamp}{suffix}"),
     };
     parent.join(new_name)
 }
@@ -725,7 +745,7 @@ mod tests {
     #[test]
     fn conflict_path_keeps_extension_and_directory() {
         let v = tempdir().unwrap();
-        let p = conflict_path(v.path(), "notes/work/standup.md", "2026-05-09T10-00-00");
+        let p = conflict_path(v.path(), "notes/work/standup.md", "2026-05-09T10-00-00", None);
         assert_eq!(
             p.strip_prefix(v.path()).unwrap().to_string_lossy(),
             "notes/work/standup.conflict-2026-05-09T10-00-00.md"
@@ -735,10 +755,22 @@ mod tests {
     #[test]
     fn conflict_path_handles_extension_less_files() {
         let v = tempdir().unwrap();
-        let p = conflict_path(v.path(), "notes/README", "ts");
+        let p = conflict_path(v.path(), "notes/README", "ts", None);
         assert_eq!(
             p.strip_prefix(v.path()).unwrap().to_string_lossy(),
             "notes/README.conflict-ts"
+        );
+    }
+
+    #[test]
+    fn conflict_path_inserts_collision_suffix_before_extension() {
+        let v = tempdir().unwrap();
+        // `-N` lands before the extension so the sidecar parser still
+        // recovers `standup.md` as the original (timestamp is opaque).
+        let p = conflict_path(v.path(), "notes/work/standup.md", "ts", Some(2));
+        assert_eq!(
+            p.strip_prefix(v.path()).unwrap().to_string_lossy(),
+            "notes/work/standup.conflict-ts-2.md"
         );
     }
 }
