@@ -1,10 +1,21 @@
 # naiteh — Architecture
 
-> Local-first, Markdown-based note-taking and journaling app.
-> Hybrid of Obsidian (local Markdown vault) and Agenda (date-focused timeline).
+This is the **implementation reference** for naiteh: how the app is built,
+structured, and evolves. It is the human/developer-facing surface and lives with
+the code.
 
-This document is the **single source of truth** for naiteh's design.
-All implementation tasks reference this file.
+> **The canonical data lives in the LLM wiki, not here.**
+> The *facts* an LLM or developer reasons over — domain model, IPC command
+> spec, entity schemas, vault layout, config keys, glossary — are maintained as
+> a single source of truth in the **LLM wiki** at `vault/wiki/` (start at
+> [vault/wiki/index.md](vault/wiki/index.md)). This document does **not**
+> duplicate them; see [§6](#6-data--api-reference). When a fact here disagrees
+> with the wiki, the wiki wins.
+>
+> | Surface | Audience | Holds |
+> |---------|----------|-------|
+> | `architecture.md`, `docs/` | developer | how it's built, run, maintained — narrative, rationale, structure, roadmap |
+> | `vault/wiki/` | LLM + developer | data/facts — schemas, IPC spec, config, glossary |
 
 ---
 
@@ -34,6 +45,9 @@ All implementation tasks reference this file.
    token; the frontend passes that token, never a plain username, to
    every IPC that needs to know who is asking.
 
+The canonical feature list and non-goals are mirrored in the wiki's
+[product-overview.md](vault/wiki/product-overview.md).
+
 ### Non-goals (for v1)
 
 - WYSIWYG editing (source-mode Markdown only)
@@ -59,7 +73,7 @@ All implementation tasks reference this file.
 | Styling           | **CSS Modules**                                           |
 | Editor            | **CodeMirror 6** (added in a later task)                  |
 | Git integration   | **`git2` crate** (libgit2 bindings)                       |
-| AI HTTP client    | **`reqwest` (rustls-tls)** — used only by AI Assist (§7.8)|
+| AI HTTP client    | **`reqwest` (rustls-tls)** — used only by AI Assist       |
 | Package manager   | **pnpm**                                                  |
 | Target OS (v1)    | Windows, macOS, Linux                                     |
 
@@ -78,7 +92,14 @@ All implementation tasks reference this file.
 
 ```
 naiteh/
-├── architecture.md            ← this file (do not edit during tasks)
+├── CLAUDE.md                  ← agent entry point (points to the LLM wiki)
+├── architecture.md            ← this file — implementation reference
+├── vault/                     ← documentation vault (a naiteh-shaped store)
+│   ├── journal/
+│   ├── note/
+│   └── wiki/                  ← LLM wiki: canonical data/facts (see §6)
+├── docs/
+│   └── sessions/              ← dated work-session summaries
 ├── package.json               ← pnpm workspace root
 ├── pnpm-workspace.yaml
 ├── apps/
@@ -126,10 +147,21 @@ naiteh/
 │               │   ├── tags.rs
 │               │   ├── vault.rs
 │               │   └── workspace.rs
-│               ├── domain/             ← pure domain types + AppError
+│               ├── domain/             ← pure domain types + AppError,
+│               │   │                      grouped by area, re-exported flat
+│               │   │                      as crate::domain::Foo (mod.rs)
 │               │   ├── mod.rs
-│               │   ├── error.rs
-│               │   └── types.rs
+│               │   ├── error.rs         ← AppError
+│               │   ├── attachment.rs    ← AttachmentImport
+│               │   ├── auth.rs          ← UserRole, AuthUser, AuthSession,
+│               │   │                      LoginResult, AuditLogEntry
+│               │   ├── evernote.rs      ← EvernoteImportReport, …Note
+│               │   ├── journal.rs       ← DayMeta, Journal*Result,
+│               │   │                      TimelineItem, TimelineDay
+│               │   ├── note.rs          ← NoteMeta
+│               │   ├── search.rs        ← SearchHit, TagCount
+│               │   ├── sync.rs          ← SyncStatus
+│               │   └── vault.rs         ← VaultInfo
 │               └── services/           ← side-effectful logic
 │                   ├── mod.rs
 │                   ├── attachments.rs
@@ -150,90 +182,16 @@ naiteh/
 ```
 
 The `apps/` prefix is used so we can later add `apps/mobile/` without
-restructuring.
+restructuring. The mapping from these `domain/` and `services/` modules to the
+types and commands they expose is documented in the wiki
+([domain-model.md](vault/wiki/domain-model.md),
+[ipc-api.md](vault/wiki/ipc-api.md)).
 
 ---
 
-## 4. Vault
+## 4. UI Architecture
 
-### 4.1 What is the vault?
-
-A **vault** is a directory on the user's disk that contains all their notes,
-journal entries, and metadata. naiteh never stores notes anywhere else.
-
-### 4.2 Vault location
-
-- **First run**: the app shows a setup screen asking the user to either
-  (a) pick an existing folder, or (b) create a new folder.
-- The chosen path is stored in app config (see §8).
-- The user can change the active vault from Settings later.
-- naiteh can remember **multiple vaults**, but only one is active at a time.
-
-### 4.3 Vault layout
-
-```
-<vault-root>/
-├── .naiteh/                  ← app metadata
-│   ├── config.json           ← per-vault settings (synced)
-│   ├── sync-state.json       ← last-sync timestamp (machine-local, gitignored)
-│   └── workspace.json        ← last-opened file (machine-local, gitignored)
-                              ↑ a future on-disk tag cache (tags.json) may
-                                live here too; v1 keeps the tag index in
-                                memory only (services/index.rs) and rebuilds
-                                on vault open / after any write. The Sync
-                                feature writes a `.gitignore` covering the
-                                machine-local files above.
-├── .git/                     ← managed by Sync feature, hidden from UI
-├── journal/
-│   └── YYYY/
-│       └── MM/
-│           └── YYYY-MM-DD.md
-├── notes/                    ← free-form notes; subfolders = "projects"
-│   ├── _inbox/               ← quick notes captured in journal mode
-│   ├── <project-A>/
-│   ├── <project-B>/
-│   └── ...
-└── attachments/              ← images, PDFs etc. referenced from notes
-```
-
-Rules:
-
-- One **journal entry** per calendar day. Filename is the local date in
-  `YYYY-MM-DD.md`.
-- A **"project"** in naiteh is simply a user-defined folder under `notes/`.
-  There is no separate `projects/` directory and no project metadata file.
-- `notes/_inbox/` is a reserved folder for quick captures from journal mode.
-  The leading underscore keeps it sorted to the top and signals "system".
-  Filenames are `YYYY-MM-DDTHH-MM-SS.md`.
-- Folders inside `notes/` can be nested freely; naiteh does not impose
-  structure beyond `_inbox/`.
-- All files are UTF-8 Markdown. Front matter is optional but supported (YAML).
-
-### 4.4 Front matter schema (optional)
-
-```yaml
----
-title: "Optional human title"
-tags: [work, idea]
-created: 2026-05-09T10:30:00+09:00
-updated: 2026-05-09T11:00:00+09:00
-pinned: false                # used by calendar's "On the Agenda" pin area
----
-```
-
-When front matter is absent, `title` falls back to the first H1 or the
-filename, and timestamps fall back to filesystem mtime.
-
-A future field `date: YYYY-MM-DD` is reserved for v1.5 to allow assigning
-arbitrary notes to specific calendar days (Agenda-style). v1 does not
-implement this — only journal entries and notes with `created`/`mtime` on
-that date show up on the timeline.
-
----
-
-## 5. UI Architecture
-
-### 5.1 Layout (desktop, v1)
+### 4.1 Layout (desktop, v1)
 
 #### Authentication gate
 
@@ -274,7 +232,7 @@ VS Code-like 3-column shell:
 - **Status Bar**: optional, 22px tall. Shows vault name, sync status,
   word count.
 
-### 5.2 Theme
+### 4.2 Theme
 
 naiteh ships with a **light theme** by default, inspired by **VS Code's
 "Light Modern"** theme (the default light theme in VS Code 1.80+).
@@ -328,7 +286,7 @@ properties:
 
 A dark theme may be added later but is **not** part of v1.
 
-### 5.3 ViewMode
+### 4.3 ViewMode
 
 ```ts
 type ViewMode =
@@ -368,7 +326,9 @@ Behavior:
 
 The native menu (`src-tauri` `build_menu`) is the single source of the
 global shortcuts. Custom items carry accelerators and emit `menu:*`
-events that `shell/useMenuEvents` routes to store actions:
+events that `shell/useMenuEvents` routes to store actions (the event
+payloads are listed in the wiki's
+[ipc-api.md](vault/wiki/ipc-api.md#native-menu-events)):
 
 | Menu          | Item                | Shortcut          | Action |
 |---------------|---------------------|-------------------|--------|
@@ -386,7 +346,7 @@ for link insertion, Cmd/Ctrl+S for save) — the palette deliberately
 lives on Cmd/Ctrl+P so it doesn't collide with the editor's link
 shortcut.
 
-### 5.4 Per-mode list panel
+### 4.4 Per-mode list panel
 
 | ViewMode  | List Panel content                                                  |
 |-----------|---------------------------------------------------------------------|
@@ -398,7 +358,7 @@ shortcut.
 | sync      | Last sync time, pending changes, "Sync now" button, log             |
 | settings  | Setting categories; admin-only account and audit-log management     |
 
-### 5.5 Journal mode (quick capture + activity summary)
+### 4.5 Journal mode (quick capture + activity summary)
 
 The journal mode is **not** the daily-journal-file editor. Daily journal
 entries are reached from the **calendar** mode. Journal mode is the user's
@@ -421,7 +381,7 @@ a draggable divider (default 50/50, position persisted):
   short snippet.
 - Capped at ~50 items.
 
-### 5.6 Calendar mode (Agenda-style timeline)
+### 4.6 Calendar mode (Agenda-style timeline)
 
 Inspired by agenda.com. The List Panel shows a **vertical timeline**, not
 a month grid. The timeline runs newest-to-oldest by default, with a
@@ -472,608 +432,7 @@ explicitly assign notes to past or future dates (true Agenda-style
 
 ---
 
-## 6. Domain Model
-
-All types are defined in Rust (`src-tauri/src/domain/types.rs`) and
-mirrored in TypeScript (`src/lib/types.ts`). Field names use `camelCase`
-over the IPC boundary (Tauri default with
-`serde(rename_all = "camelCase")`).
-
-### 6.1 Journal
-
-```rust
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DayMeta {
-    pub date: String,           // "YYYY-MM-DD" (local date)
-    pub has_entry: bool,
-    pub path: Option<String>,   // absolute path when has_entry is true
-    pub mtime: Option<i64>,     // unix epoch seconds, UTC
-    pub title: Option<String>,
-    pub snippet: Option<String>,// first ~200 chars of body, no front matter
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct JournalOpenResult {
-    pub path: String,
-    pub content: String,
-    pub exists: bool,           // false when the file was just created
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct JournalSaveResult {
-    pub path: String,
-    pub mtime: i64,             // unix epoch seconds, UTC
-}
-```
-
-### 6.2 Notes
-
-```rust
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct NoteMeta {
-    pub path: String,           // absolute path
-    pub rel_path: String,       // relative to vault root, forward slashes
-    pub title: String,
-    pub tags: Vec<String>,
-    pub mtime: i64,
-    pub size: u64,
-    pub pinned: bool,           // from front matter
-}
-```
-
-### 6.3 Activity / Timeline items
-
-```rust
-/// Used by both the journal mode "Recent Activity" list and the
-/// calendar mode timeline.
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-#[serde(tag = "kind")]
-pub enum TimelineItem {
-    JournalEntry {
-        date: String,       // "YYYY-MM-DD"
-        path: String,
-        mtime: i64,
-        title: String,
-        snippet: String,
-    },
-    Note {
-        rel_path: String,
-        title: String,
-        mtime: i64,
-        snippet: String,
-        pinned: bool,
-    },
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TimelineDay {
-    pub date: String,           // "YYYY-MM-DD" local
-    pub items: Vec<TimelineItem>,
-}
-```
-
-### 6.4 Vault
-
-```rust
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct VaultInfo {
-    pub root: String,
-    pub name: String,
-    pub initialized: bool,      // true if .naiteh/ exists
-}
-```
-
-### 6.5 Search & Tags
-
-```rust
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SearchHit {
-    pub rel_path: String,
-    pub title: String,
-    pub line: u32,
-    pub excerpt: String,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct TagCount {
-    pub tag: String,
-    pub count: u32,
-}
-```
-
-### 6.6 Sync
-
-```rust
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SyncStatus {
-    pub remote_url: Option<String>,
-    pub branch: String,
-    pub ahead: u32,
-    pub behind: u32,
-    pub dirty: bool,
-    pub last_sync: Option<i64>,
-}
-
-// One per `<file>.conflict-<timestamp>.<ext>` sidecar (see §9).
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct ConflictPair {
-    pub rel_path: String,           // the live ("ours") file
-    pub conflict_rel_path: String,  // the sidecar holding "theirs"
-    pub timestamp: String,
-}
-```
-
-### 6.7 AI Assist
-
-```rust
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AiConfig {
-    pub api_key: Option<String>,   // optional — local providers need none
-    pub model: String,             // e.g. "gpt-4o-mini" or "llama3.2"
-    pub base_url: String,          // OpenAI-compatible base URL
-}
-```
-
-The endpoint can be a hosted API (OpenAI, key required) or a local
-OpenAI-compatible server such as **Ollama**
-(`http://localhost:11434/v1`), in which case no key is needed and no
-note text leaves the machine. The feature is "ready" when a model is
-set and either a key is configured or the endpoint is local.
-
-`AiConfig` is part of the app-level config (§8). The `api_key` is stored
-in plaintext under the user's app-config directory; OS-level user-account
-permissions are the trust boundary. v1 does not use the system keychain.
-
-### 6.8 Auth & Audit
-
-```rust
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub enum UserRole {
-    Admin,
-    User,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AuthUser {
-    pub username: String,
-    pub role: UserRole,
-    pub active: bool,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AuthSession {
-    pub username: String,
-    pub role: UserRole,
-}
-
-// Returned by auth_login; the token is the bearer credential for all
-// subsequent auth IPC.
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LoginResult {
-    pub token: String,
-    pub session: AuthSession,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AuditLogEntry {
-    pub timestamp: String,       // RFC 3339 UTC
-    pub username: String,        // attempted or authenticated username
-    pub action: String,          // login_success, login_failure, note_open, ...
-    pub detail: Option<String>,  // rel path, target account, failure reason
-}
-```
-
-The local account store lives in the app-config directory. Passwords are
-Argon2id-hashed and never exposed to the frontend; only `AuthUser`
-records cross the IPC boundary. The audit log is append-only JSONL at
-`<app-config-dir>/audit-log.jsonl`, rotated to `audit-log.1.jsonl` at
-5 MiB so it can grow independently of `config.json`.
-
-### 6.9 Attachments, Workspace, Evernote import
-
-```rust
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AttachmentImport {
-    pub rel_path: String,    // vault-relative path of the stored file
-    pub file_name: String,
-    pub markdown: String,    // snippet inserted at the editor cursor
-}
-
-// Machine-local last-opened file (.naiteh/workspace.json).
-#[derive(Serialize, Deserialize)]
-#[serde(tag = "kind")]
-pub enum LastOpened {
-    Note { rel_path: String },
-    Journal { date: String },
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WorkspaceState {
-    pub last_opened: Option<LastOpened>,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EvernoteImportReport {
-    pub imported_count: u32,
-    pub skipped_count: u32,
-    pub failed_count: u32,
-    pub notes: Vec<EvernoteImportedNote>,
-    pub errors: Vec<String>,
-}
-
-#[derive(Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct EvernoteImportedNote {
-    pub source_title: String,
-    pub rel_path: String,
-    pub warnings: Vec<String>,  // e.g. dropped ink resources
-}
-```
-
----
-
-## 7. Tauri Commands (IPC API)
-
-All commands return `Result<T, AppError>`. `AppError` serializes to the
-frontend as a tagged union (`{ kind, message }`):
-
-```rust
-pub enum AppError {
-    Io(String),                 // filesystem / process I/O
-    NotFound(String),
-    InvalidPath(String),        // lexical path-traversal / shape rejection
-    AlreadyInitialized(String), // vault init re-run on an existing vault
-    Conflict(String),           // dirty-tree pull, sync conflict, etc.
-    ConfigCorrupt(String),
-    Unauthorized(String),       // auth / session-token failures
-    Validation(String),         // semantic input check (empty field, …)
-    Network(String),            // transport didn't reach the remote
-    Upstream(String),           // remote replied with error / bad body
-    Cancelled,                  // user dismissed a picker / dialog
-}
-```
-
-The frontend's `formatAppError` (`src/lib/types.ts`) renders these
-distinctly so a network failure isn't mislabelled as I/O.
-
-### 7.1 Vault
-
-```rust
-vault_pick_folder() -> Result<VaultInfo, AppError>
-vault_init(root: String) -> Result<VaultInfo, AppError>
-vault_current() -> Result<Option<VaultInfo>, AppError>
-vault_set_active(root: String) -> Result<VaultInfo, AppError>
-vault_list_known() -> Result<Vec<VaultInfo>, AppError>
-```
-
-### 7.2 Journal (daily entry CRUD)
-
-```rust
-journal_month_meta(year: u16, month: u8) -> Result<Vec<DayMeta>, AppError>
-journal_open(date: String) -> Result<JournalOpenResult, AppError>
-journal_save(date: String, content: String) -> Result<JournalSaveResult, AppError>
-```
-
-### 7.3 Quick capture (journal mode top section)
-
-```rust
-quick_create() -> Result<NoteMeta, AppError>
-// Creates an empty note in notes/_inbox/ with timestamp filename.
-
-quick_list(limit: u32) -> Result<Vec<NoteMeta>, AppError>
-// Recent items from notes/_inbox/, newest first.
-```
-
-### 7.4 Activity & Timeline
-
-```rust
-activity_recent(limit: u32) -> Result<Vec<TimelineItem>, AppError>
-// For journal mode bottom section. Mixes entries and notes by mtime.
-
-timeline_range(from: String, to: String) -> Result<Vec<TimelineDay>, AppError>
-// For calendar mode. "from" and "to" are inclusive "YYYY-MM-DD" dates.
-// Returns one TimelineDay per date in range, including empty days.
-
-timeline_pinned() -> Result<Vec<TimelineItem>, AppError>
-// For "On the Agenda" pin area.
-```
-
-All three read from the in-memory index snapshot (`services/index.rs` →
-`services/timeline.rs`) rather than re-scanning the vault per call.
-
-### 7.5 Notes
-
-```rust
-notes_list(rel_dir: Option<String>) -> Result<Vec<NoteMeta>, AppError>
-notes_read(rel_path: String) -> Result<String, AppError>
-notes_write(rel_path: String, content: String) -> Result<NoteMeta, AppError>
-notes_create(rel_dir: String, title: String) -> Result<NoteMeta, AppError>
-notes_delete(rel_path: String) -> Result<(), AppError>
-notes_rename(from: String, to: String) -> Result<NoteMeta, AppError>
-notes_set_pinned(rel_path: String, pinned: bool) -> Result<NoteMeta, AppError>
-
-// Folder management. All folder paths are vault-relative, must live
-// strictly under notes/, and are symlink-safe via resolve_in_vault.
-// The reserved notes/_inbox cannot be renamed or deleted.
-notes_list_dirs() -> Result<Vec<String>, AppError>   // includes empty dirs
-notes_create_dir(rel_dir: String) -> Result<(), AppError>
-notes_delete_dir(rel_dir: String) -> Result<(), AppError>   // recursive
-notes_rename_dir(from: String, to: String) -> Result<(), AppError>
-```
-
-### 7.6 Search & Tags
-
-```rust
-search_text(query: String, limit: u32) -> Result<Vec<SearchHit>, AppError>
-tags_list() -> Result<Vec<TagCount>, AppError>
-tags_notes(tag: String) -> Result<Vec<NoteMeta>, AppError>
-```
-
-`tags_list` / `tags_notes` read from the in-memory tag index
-(`services/index.rs`), which is built lazily on first read and
-invalidated by every write command. `search_text` still scans the
-vault per call (a future index extension).
-
-### 7.7 Sync (Git-backed, exposed as Sync/Backup)
-
-```rust
-sync_status() -> Result<SyncStatus, AppError>
-sync_set_remote(url: String) -> Result<(), AppError>
-sync_init() -> Result<(), AppError>
-sync_pull() -> Result<SyncStatus, AppError>
-sync_push() -> Result<SyncStatus, AppError>
-sync_now() -> Result<SyncStatus, AppError>
-
-// Conflict resolution (see §9). `keep_theirs` derives the original
-// path from the sidecar name, so it takes only the sidecar path.
-sync_list_conflicts() -> Result<Vec<ConflictPair>, AppError>
-sync_resolve_keep_ours(conflict_rel_path: String) -> Result<(), AppError>
-sync_resolve_keep_theirs(conflict_rel_path: String) -> Result<(), AppError>
-```
-
-The UI never exposes the words "git", "commit", "rebase", or "remote URL"
-to casual users — it shows "Sync now", "Backup destination", etc. Power
-users can see Git terms in advanced settings.
-
-### 7.8 AI Assist
-
-```rust
-ai_improve(text: String, instruction: String) -> Result<String, AppError>
-ai_list_models() -> Result<Vec<String>, AppError>
-```
-
-`ai_improve` reads `AiConfig` (§6.7), calls the configured Chat
-Completions endpoint, and returns the model's revised text. The API key
-is attached only when configured (local providers send none). Errors
-when `text`/`instruction` is empty, the upstream returns a non-2xx
-status, or the request times out (60 s). `ai_list_models` queries
-`GET {base_url}/models` so the UI can offer a model picker (for Ollama,
-the locally-pulled models). The system prompt instructs the model to
-return revised text only. Hosted third-party providers are outside
-naiteh's trust boundary; a local provider keeps everything on-device.
-
-App-config setters live alongside the rest of the settings IPC:
-
-```rust
-app_config_get() -> Result<AppConfig, AppError>
-app_config_set_editor(font_size: u16, line_wrapping: bool) -> Result<AppConfig, AppError>
-app_config_set_ai(api_key: Option<String>, model: String, base_url: Option<String>) -> Result<AppConfig, AppError>
-```
-
-### 7.9 Auth & Audit
-
-```rust
-auth_login(username: String, password: String) -> Result<LoginResult, AppError>
-auth_logout(token: String)
-auth_list_users(token: String) -> Result<Vec<AuthUser>, AppError>
-auth_set_user_active(token: String, username: String, active: bool) -> Result<Vec<AuthUser>, AppError>
-auth_list_audit_logs(token: String, limit: u32) -> Result<Vec<AuditLogEntry>, AppError>
-auth_log_action(token: String, action: String, detail: Option<String>) -> Result<(), AppError>
-```
-
-`auth_login` returns `LoginResult { token, session }`. The token is a
-256-bit hex string the frontend stores in memory and passes to every
-subsequent auth IPC. The backend resolves it via an in-process session
-map (`services::auth::SessionStore`) — there is no path that lets the
-frontend impersonate a user by passing a name string.
-
-Account-management and audit-log reads require an admin token;
-`auth_log_action` accepts any live token. `auth_set_user_active`
-refuses to deactivate the `admin` account.
-
-### 7.10 Attachments
-
-```rust
-attachments_import() -> Result<AttachmentImport, AppError>
-// Opens a native file picker, copies the chosen file into attachments/.
-
-attachments_import_bytes(bytes: Vec<u8>, suggested_name: String, mime: Option<String>)
-    -> Result<AttachmentImport, AppError>
-// For editor clipboard paste / drag-and-drop. Empty suggested_name →
-// a synthesized `paste-<timestamp>.<ext>` name.
-```
-
-Both enforce a 50 MiB ceiling. `AttachmentImport { rel_path, file_name,
-markdown }` carries the snippet the editor inserts at the cursor.
-
-### 7.11 Workspace (machine-local last-opened)
-
-```rust
-workspace_get() -> Result<WorkspaceState, AppError>
-workspace_set_last_opened(last_opened: Option<LastOpened>) -> Result<WorkspaceState, AppError>
-```
-
-Persisted to the gitignored `.naiteh/workspace.json` so each machine
-reopens the file it last had open in that vault.
-
-### 7.12 Evernote Import
-
-```rust
-evernote_import() -> Result<EvernoteImportReport, AppError>
-// Native multi-file `.enex` picker → converts each note to Markdown
-// under notes/<notebook>/<slug>/index.md with attachments alongside.
-```
-
-During the import the backend emits per-note progress on the
-`evernote-import-progress` event channel (throttled to ~100 events per
-file). Payload:
-
-```rust
-struct ImportProgress {
-    file_index: usize,    // 0-based, current file
-    total_files: usize,
-    file_name: String,
-    note_done: usize,
-    note_total: usize,
-}
-```
-
-The Settings panel subscribes for the duration of an import and shows a
-live "Importing <file> — n/total" line.
-
-### 7.13 Native menu events
-
-Custom items in the native application menu (§5.3) emit `menu:*` events
-that `shell/useMenuEvents` routes to store actions, rather than
-invoking IPC commands directly:
-
-| Event | Action |
-|---|---|
-| `menu:view` (payload: ViewMode) | Switch panel (Cmd+1..7) |
-| `menu:command-palette` | Open the palette (Cmd+P) |
-| `menu:toggle-ai` | Toggle the AI Assist panel (Cmd+E) |
-| `menu:new-note` | Notes panel new-note prompt (Cmd+N) |
-| `menu:new-folder` | Notes panel new-folder prompt (Shift+Cmd+N) |
-| `menu:import-evernote` | Settings ▸ Evernote import flow |
-
-### Concurrency note
-
-Every IPC that mutates the vault — the `notes_*` writers, `journal_save`,
-`quick_create`, `attachments_*`, `evernote_import`, the `sync_*`
-commands, and the conflict-resolution commands — acquires the per-vault
-mutex (`services/vault_lock.rs`) before touching files, and invalidates
-the tag index on success. See §9.
-
----
-
-## 8. App Config
-
-App-level config (not per-vault) lives in the OS app-config directory:
-
-| OS      | Path                                                        |
-|---------|-------------------------------------------------------------|
-| Windows | `%APPDATA%\naiteh\config.json`                              |
-| macOS   | `~/Library/Application Support/naiteh/config.json`          |
-| Linux   | `~/.config/naiteh/config.json`                              |
-
-Schema:
-
-```json
-{
-  "activeVault": "/Users/me/Documents/MyVault",
-  "knownVaults": [
-    "/Users/me/Documents/MyVault",
-    "/Users/me/Documents/Work"
-  ],
-  "theme": "light",
-  "editor": {
-    "fontSize": 14,
-    "lineWrapping": true
-  },
-  "calendar": {
-    "subView": "timeline"
-  },
-  "journal": {
-    "splitRatio": 0.5
-  },
-  "ai": {
-    "apiKey": null,
-    "model": "gpt-4o-mini",
-    "baseUrl": "https://api.openai.com/v1"
-  }
-}
-```
-
-Per-vault settings live in `<vault>/.naiteh/config.json`.
-
-The app-config directory also contains:
-
-```
-auth.json
-audit-log.jsonl
-```
-
-`auth.json` stores local users and backend-only password hashes. Each
-`audit-log.jsonl` line is one `AuditLogEntry` JSON object. Login attempts
-are logged by the backend; user work events are logged through
-`auth_log_action`.
-
----
-
-## 9. Concurrency & Safety
-
-- **Atomic writes**: every file write goes via temp-file + rename.
-- **No write while syncing**: every IPC that mutates the vault — the
-  `notes_*` writers, `journal_save` / `quick_create`,
-  `attachments_import` / `attachments_import_bytes`, `evernote_import`,
-  the mutating `sync_*` commands (`init` / `set_remote` / `pull` /
-  `push` / `now`), and the conflict-resolution commands — acquires a
-  `tokio::sync::Mutex` keyed on the canonical vault root
-  (`services/vault_lock.rs`) before doing any work. Read-only commands
-  (`notes_read` / `notes_list`, `journal_open`, `tags_*`, `search_text`,
-  `sync_status`, `sync_list_conflicts`) do not lock; atomic-write
-  semantics mean they may observe the previous version, never a torn write.
-- **Tag index**: write commands invalidate the in-memory tag index
-  (`services/index.rs`) on success, so `tags_*` reflects the latest
-  content without re-scanning the vault on every read.
-- **Path containment**: note paths are resolved with
-  `notes::resolve_in_vault`, which canonicalizes the deepest existing
-  ancestor and refuses anything escaping the vault — including via a
-  symlink committed by a malicious synced remote.
-- **Pull refuses dirty trees**: `sync_pull` errors with `AppError::Conflict`
-  if the working tree has uncommitted changes, since the underlying
-  fast-forward force-checkout would otherwise silently clobber them.
-  Use `sync_now` (which commits first) when there are local edits.
-- **Auto-save**: editor debounces saves at 800 ms idle; explicit save on
-  Ctrl/Cmd-S.
-- **Conflict handling**: if `sync_pull` produces a Git conflict, naiteh
-  keeps both versions as `<file>.md` and `<file>.conflict-<timestamp>.md`
-  and surfaces them in the Sync panel's Conflicts section, where the user
-  picks "Keep mine" (`sync_resolve_keep_ours`) or "Keep theirs"
-  (`sync_resolve_keep_theirs`). v1 does not auto-merge.
-- **Privacy boundary**: Sync (§7.7) sends note bytes to the user's chosen
-  Git remote; AI Assist (§7.8) sends the selected passage to the user's
-  configured Chat Completions endpoint — unless that endpoint is a local
-  provider (Ollama), in which case nothing leaves the machine. These are
-  the only outbound network paths in v1, and both are user-initiated. No
-  telemetry, no background calls, no implicit AI rewriting.
-- **Audit trail**: login attempts and selected work events are recorded in
-  append-only local JSONL. The audit log is local-only and visible to admin
-  users from Settings.
-
----
-
-## 10. Roadmap
+## 5. Roadmap
 
 ### v1.0 (MVP)
 
@@ -1105,7 +464,7 @@ are logged by the backend; user work events are logged through
 - In-memory tag index serving tags **and** timeline/activity;
   per-vault write/sync mutex; CSP
 - Local AI providers (Ollama) — key-free, on-device AI Assist
-- Native application menu with global shortcuts (§5.3)
+- Native application menu with global shortcuts (§4.3)
 
 ### v1.5
 
@@ -1126,19 +485,22 @@ are logged by the backend; user work events are logged through
 
 ---
 
-## 11. Glossary
+## 6. Data & API Reference
 
-| Term       | Meaning                                                       |
-|------------|---------------------------------------------------------------|
-| Vault      | The user-chosen root folder containing all notes              |
-| Journal entry | A `.md` file in `journal/`; one per local date            |
-| Quick note | A note in `notes/_inbox/`, captured from journal mode         |
-| Note       | Any Markdown file under `<vault>/notes/`                      |
-| Project    | A user-defined folder under `<vault>/notes/`. No separate dir |
-| Sync       | User-facing name for Git-backed backup/synchronization        |
-| ViewMode   | Which feature the List Panel is showing                       |
-| Timeline   | Calendar mode's date-grouped list of notes/entries            |
-| On the Agenda | The pinned area at the top of the calendar timeline        |
-| AI Assist  | Opt-in side panel that sends selected text to a Chat Completions API and replaces it with the model's revision |
-| Admin      | Local account role that can manage users and inspect logs     |
-| Audit log  | Local JSONL history of login and selected work events         |
+The canonical, machine-readable description of naiteh's data and API — the
+*facts* an LLM or developer reasons over — lives in the **LLM wiki**, a
+first-class storage location in the documentation vault at `vault/wiki/`. This
+implementation doc deliberately does not duplicate them; when a fact below
+disagrees with the wiki, the wiki wins.
+
+| Topic | Wiki page |
+|-------|-----------|
+| Vault layout on disk, front-matter schema | [vault-and-data.md](vault/wiki/vault-and-data.md) |
+| Domain / IPC-boundary entity types (journal, notes, timeline, sync, auth, …) | [domain-model.md](vault/wiki/domain-model.md) |
+| Tauri command (IPC) spec, `AppError` taxonomy, menu events | [ipc-api.md](vault/wiki/ipc-api.md) |
+| App-level + per-vault config schema and paths | [app-config.md](vault/wiki/app-config.md) |
+| Concurrency, atomic writes, path containment, privacy boundary | [concurrency-safety.md](vault/wiki/concurrency-safety.md) |
+| Product features & non-goals (canonical) | [product-overview.md](vault/wiki/product-overview.md) |
+| Glossary | [glossary.md](vault/wiki/glossary.md) |
+
+Start at the wiki index: **[vault/wiki/index.md](vault/wiki/index.md)**.

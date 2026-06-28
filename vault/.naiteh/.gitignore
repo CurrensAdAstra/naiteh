@@ -1,0 +1,3 @@
+# Machine-local vault state (per architecture.md §4.3) — not synced.
+sync-state.json
+workspace.json

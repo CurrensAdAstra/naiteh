@@ -1,3 +1,5 @@
-## Imported Claude Cowork project instructions
+# naiteh — agent context
 
-구현이 제대로 되지 않은거 같은데, 분석해서 프롬프트 재작성해줘
+This project keeps its agent instructions in **[CLAUDE.md](CLAUDE.md)**. See that
+file for the documentation surfaces (the LLM wiki at `vault/wiki/`, the
+implementation reference in `architecture.md`) and build/run instructions.
