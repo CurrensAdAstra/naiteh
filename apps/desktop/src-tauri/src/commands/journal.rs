@@ -13,6 +13,7 @@ use crate::domain::{
 };
 use crate::services::config;
 use crate::services::fs as fsx;
+use crate::services::hooks;
 use crate::services::index::TagIndex;
 use crate::services::notes;
 use crate::services::timeline;
@@ -139,6 +140,19 @@ pub async fn journal_save(
     let result = journal_save_impl(&vault_root, &date, &content);
     if result.is_ok() {
         index.invalidate(&vault_root);
+        if let Ok(config_dir) = config::default_app_config_dir() {
+            let rel = format!(
+                "journal/{}/{}/{date}.md",
+                &date[0..4],
+                &date[5..7]
+            );
+            hooks::fire(
+                &config_dir,
+                hooks::HookEvent::JournalSave,
+                &vault_root,
+                Some(&rel),
+            );
+        }
     }
     result
 }
