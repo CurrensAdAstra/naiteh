@@ -10,6 +10,7 @@ use crate::domain::{AppError, SyncStatus};
 use crate::services::config;
 use crate::services::conflicts::{self, ConflictPair};
 use crate::services::git;
+use crate::services::hooks;
 use crate::services::index::TagIndex;
 use crate::services::sync_state;
 use crate::services::vault_lock::VaultLocks;
@@ -83,6 +84,9 @@ pub async fn sync_now(
     index.invalidate(&vault_root);
     sync_result?;
     record_sync(&vault_root)?;
+    if let Ok(config_dir) = config::default_app_config_dir() {
+        hooks::fire(&config_dir, hooks::HookEvent::Sync, &vault_root, None);
+    }
     sync_status_impl(&vault_root)
 }
 

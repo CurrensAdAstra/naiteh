@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use crate::domain::{AppError, NoteMeta};
 use crate::services::config;
 use crate::services::fs as fsx;
+use crate::services::hooks;
 use crate::services::index::TagIndex;
 use crate::services::notes;
 use crate::services::vault_lock::VaultLocks;
@@ -69,6 +70,14 @@ pub async fn notes_write(
     let result = notes_write_impl(&vault_root, &rel_path, &content);
     if result.is_ok() {
         index.invalidate(&vault_root);
+        if let Ok(config_dir) = config::default_app_config_dir() {
+            hooks::fire(
+                &config_dir,
+                hooks::HookEvent::NoteSave,
+                &vault_root,
+                Some(&rel_path),
+            );
+        }
     }
     result
 }
