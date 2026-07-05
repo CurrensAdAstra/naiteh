@@ -2,7 +2,7 @@
 title: "App Config"
 tags: [naiteh-wiki, config, settings]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-06-28T23:30:00+09:00
+updated: 2026-06-29T09:00:00+09:00
 pinned: false
 ---
 
@@ -49,10 +49,11 @@ Per-vault settings live separately in `<vault>/.naiteh/config.json`.
 ## Other app-config files
 
 ```
-auth.json          # local users + backend-only password hashes (Argon2id)
-audit-log.jsonl    # one AuditLogEntry JSON object per line
-audit-log.1.jsonl  # previous audit log, rotated here when the active one hits 5 MiB
-hooks/             # user-installed CLI hooks (see below)
+auth.json                # local users + backend-only password hashes (Argon2id)
+audit-log.jsonl          # one AuditLogEntry JSON object per line
+audit-log.1.jsonl        # previous audit log, rotated here when the active one hits 5 MiB
+remembered-session.json  # opt-in "keep me signed in" token + 30-day expiry (see IPC auth_resume)
+hooks/                   # user-installed CLI hooks (see below)
 ```
 
 Login attempts are logged by the backend; user work events are logged through

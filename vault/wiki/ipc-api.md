@@ -2,7 +2,7 @@
 title: "IPC API (Tauri Commands)"
 tags: [naiteh-wiki, ipc, api, commands]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-06-29T00:00:00+09:00
+updated: 2026-06-29T09:00:00+09:00
 pinned: false
 ---
 
@@ -145,7 +145,8 @@ app_config_set_ai(api_key: Option<String>, model: String, base_url: Option<Strin
 ## Auth & Audit
 
 ```rust
-auth_login(username: String, password: String) -> Result<LoginResult, AppError>
+auth_login(username: String, password: String, remember: bool) -> Result<LoginResult, AppError>
+auth_resume() -> Result<Option<LoginResult>, AppError>
 auth_logout(token: String)
 auth_list_users(token: String) -> Result<Vec<AuthUser>, AppError>
 auth_set_user_active(token: String, username: String, active: bool) -> Result<Vec<AuthUser>, AppError>
@@ -159,6 +160,16 @@ resolves it via an in-process session map (`services::auth::SessionStore`) — n
 path lets the frontend impersonate a user by passing a name string.
 Account-management and audit reads require an **admin** token; `auth_log_action`
 accepts any live token. `auth_set_user_active` refuses to deactivate `admin`.
+
+**Remember me.** When `auth_login` is called with `remember: true`, the backend
+persists `{ token, username, expiresAt }` to `remembered-session.json` in the
+app-config dir (30-day TTL). On startup the frontend calls `auth_resume`, which
+re-installs that token into the `SessionStore` and returns the session —
+skipping the login screen — but only after re-checking the account is still
+present and active (a role change or deactivation between runs is honoured; a
+stale record is pruned). `remember: false` and `auth_logout` both delete the
+file. The file sits in the same trust boundary as `auth.json` and the AI key:
+only the local OS user can read it.
 
 ## Attachments
 

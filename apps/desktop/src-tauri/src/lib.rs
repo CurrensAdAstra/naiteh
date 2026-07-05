@@ -200,6 +200,7 @@ pub fn run() {
             commands::vault::vault_list_known,
             commands::vault::vault_create_default,
             commands::auth::auth_login,
+            commands::auth::auth_resume,
             commands::auth::auth_logout,
             commands::auth::auth_list_users,
             commands::auth::auth_set_user_active,

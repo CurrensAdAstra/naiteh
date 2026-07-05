@@ -76,6 +76,20 @@
   outline-offset: 0;
 }
 
+.remember {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.remember input {
+  cursor: pointer;
+}
+
 .error {
   margin: 0;
   padding: 8px 10px;
