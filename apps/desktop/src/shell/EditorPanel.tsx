@@ -14,6 +14,7 @@ import {
 import { attachmentsImport } from "../lib/api/attachments";
 import { journalSave } from "../lib/api/journal";
 import { notesWrite } from "../lib/api/notes";
+import { resolveFenceLanguage } from "../lib/codeBlockLanguages";
 import { editorAttachmentDrop } from "../lib/editorAttachmentDrop";
 import {
   isPinnedInContent,
@@ -103,7 +104,9 @@ export function EditorPanel() {
       doc: initial,
       extensions: [
         basicSetup,
-        markdown(),
+        // Fenced code blocks get per-language highlighting; grammars
+        // lazy-load on first use (see lib/codeBlockLanguages).
+        markdown({ codeLanguages: resolveFenceLanguage }),
         markdownKeymap(),
         wrapCompartment.of(initialWrap),
         readOnlyCompartment.of(initialReadOnly),

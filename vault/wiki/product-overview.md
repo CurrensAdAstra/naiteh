@@ -2,7 +2,7 @@
 title: "Product Overview"
 tags: [naiteh-wiki, product, stack]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-06-28T00:00:00+09:00
+updated: 2026-06-28T23:30:00+09:00
 pinned: false
 ---
 
@@ -52,7 +52,7 @@ pinned: false
 | Backend language | **Rust**                                                   |
 | Frontend         | **React 18 + TypeScript + Vite**                           |
 | Styling          | **CSS Modules**                                            |
-| Editor           | **CodeMirror 6**                                           |
+| Editor           | **CodeMirror 6** — fenced code blocks get per-language syntax highlighting (100+ grammars via `@codemirror/language-data`, lazy-loaded; exact name/alias match with extension fallback, e.g. ```py) |
 | Git integration  | **`git2` crate** (libgit2 bindings)                        |
 | AI HTTP client   | **`reqwest` (rustls-tls)** — used only by AI Assist        |
 | Package manager  | **pnpm**                                                   |
