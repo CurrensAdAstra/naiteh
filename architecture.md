@@ -422,6 +422,15 @@ a month grid. The timeline runs newest-to-oldest by default, with a
 └─────────────────────────────────┘
 ```
 
+**Wide layout.** Calendar is the one view where the list panel is not
+sized by the resizer. `AppShell` gives it `CALENDAR_LIST_RATIO` (0.7) of
+the space it shares with the editor — a `calc()` on `--list-panel-width`
+that subtracts the fixed activity / resizer / ai columns first, so the
+month grid + timeline get ~70 % and the editor ~30 %. The drag handle is
+hidden in calendar mode (the width is proportional, not drag-sized), and
+`CalendarGrid` cells grow to a 52 px min-height so the month reads as a
+real calendar rather than a flat strip.
+
 Behaviors:
 
 - Each day section header is sticky as the user scrolls.
