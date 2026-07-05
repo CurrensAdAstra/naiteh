@@ -465,6 +465,9 @@ explicitly assign notes to past or future dates (true Agenda-style
   per-vault write/sync mutex; CSP
 - Local AI providers (Ollama) — key-free, on-device AI Assist
 - Native application menu with global shortcuts (§4.3)
+- CLI hooks (`<app-config-dir>/hooks/on-note-save|on-journal-save|on-sync`)
+  — the first slice of the v2 "plugin system" candidate, git-hooks model
+- One-click default vault: first run offers `~/Documents/heartwood`
 
 ### v1.5
 
@@ -479,7 +482,8 @@ explicitly assign notes to past or future dates (true Agenda-style
 
 - Backlinks & wiki-links
 - Graph view
-- Plugin system
+- Plugin system beyond CLI hooks (in-webview JS API, Obsidian-style,
+  and/or MCP server exposure of the vault)
 - Mobile app (if v1.5 study is positive)
 - System Calendar / Reminders integration
 
