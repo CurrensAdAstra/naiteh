@@ -42,7 +42,6 @@ const VIEW_COMMANDS: readonly {
   { mode: "search", label: "Search Notes", detail: "Find text", Icon: Search },
   { mode: "tags", label: "Open Tags", detail: "Filter by tag", Icon: Tag },
   { mode: "sync", label: "Open Sync", detail: "Backup and restore", Icon: RefreshCw },
-  { mode: "settings", label: "Open Settings", detail: "Configure naiteh", Icon: Settings },
 ] as const;
 
 function matches(command: Command, query: string): boolean {
@@ -59,6 +58,7 @@ export function CommandPalette() {
   const open = useUIStore((s) => s.commandPaletteOpen);
   const setOpen = useUIStore((s) => s.setCommandPaletteOpen);
   const setViewMode = useUIStore((s) => s.setViewMode);
+  const setSettingsOpen = useUIStore((s) => s.setSettingsOpen);
   const toggleAiPanel = useUIStore((s) => s.toggleAiPanel);
   const editorReadOnly = useUIStore((s) => s.editorReadOnly);
   const toggleEditorReadOnly = useUIStore((s) => s.toggleEditorReadOnly);
@@ -76,6 +76,13 @@ export function CommandPalette() {
         run: () => setViewMode(mode),
       })),
       {
+        id: "open-settings",
+        label: "Open Settings",
+        detail: "Configure naiteh",
+        Icon: Settings,
+        run: () => setSettingsOpen(true),
+      },
+      {
         id: "toggle-ai",
         label: "Toggle AI Assist",
         detail: "Open or close assistant panel",
@@ -90,7 +97,13 @@ export function CommandPalette() {
         run: toggleEditorReadOnly,
       },
     ],
-    [editorReadOnly, setViewMode, toggleAiPanel, toggleEditorReadOnly],
+    [
+      editorReadOnly,
+      setSettingsOpen,
+      setViewMode,
+      toggleAiPanel,
+      toggleEditorReadOnly,
+    ],
   );
 
   const filtered = useMemo(

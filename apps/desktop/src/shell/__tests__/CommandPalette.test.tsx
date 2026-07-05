@@ -11,6 +11,7 @@ describe("CommandPalette", () => {
       aiPanelOpen: false,
       commandPaletteOpen: true,
       editorReadOnly: false,
+      settingsOpen: false,
     });
   });
 
@@ -21,7 +22,7 @@ describe("CommandPalette", () => {
     fireEvent.change(input, { target: { value: "settings" } });
     fireEvent.keyDown(input, { key: "Enter", bubbles: true });
 
-    expect(useUIStore.getState().viewMode).toBe("settings");
+    expect(useUIStore.getState().settingsOpen).toBe(true);
     expect(useUIStore.getState().commandPaletteOpen).toBe(false);
   });
 

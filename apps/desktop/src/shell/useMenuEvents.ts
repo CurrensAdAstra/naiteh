@@ -11,7 +11,6 @@ const VIEW_MODES: readonly ViewMode[] = [
   "search",
   "tags",
   "sync",
-  "settings",
 ];
 
 function isViewMode(value: string): value is ViewMode {
@@ -26,6 +25,7 @@ function isViewMode(value: string): value is ViewMode {
  *   - `menu:view` (payload = mode) → switch panel (Cmd+1..7)
  *   - `menu:command-palette` → open the palette (Cmd+P)
  *   - `menu:toggle-ai` → toggle the AI panel (Cmd+E)
+ *   - `menu:settings` → open the settings modal (Cmd+,)
  *   - `menu:new-note` / `menu:new-folder` → Notes panel prompts (Cmd+N /
  *     Shift+Cmd+N)
  *   - `menu:import-evernote` → Settings import flow
@@ -39,6 +39,7 @@ export function useMenuEvents(): void {
       }),
       listen("menu:command-palette", () => ui().setCommandPaletteOpen(true)),
       listen("menu:toggle-ai", () => ui().toggleAiPanel()),
+      listen("menu:settings", () => ui().setSettingsOpen(true)),
       listen("menu:new-note", () => ui().requestNewNote()),
       listen("menu:new-folder", () => ui().requestNewFolder()),
       listen("menu:import-evernote", () => ui().requestEvernoteImport()),

@@ -1,2 +1,2 @@
 export { FirstRunSetup } from "./FirstRunSetup";
-export { SettingsListPanel } from "./SettingsListPanel";
+export { SettingsModal } from "./SettingsModal";

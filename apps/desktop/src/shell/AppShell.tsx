@@ -1,6 +1,7 @@
 import { type CSSProperties } from "react";
 
 import { AiPanel } from "../features/ai/AiPanel";
+import { SettingsModal } from "../features/settings/SettingsModal";
 import { useUIStore } from "../state/uiStore";
 import { ActivityBar } from "./ActivityBar";
 import { CommandPalette } from "./CommandPalette";
@@ -17,6 +18,7 @@ export function AppShell() {
   const viewMode = useUIStore((s) => s.viewMode);
   const listPanelWidth = useUIStore((s) => s.listPanelWidth);
   const aiPanelOpen = useUIStore((s) => s.aiPanelOpen);
+  const settingsOpen = useUIStore((s) => s.settingsOpen);
   // Per-vault sync refresh + last-opened restore/persist coordination.
   useWorkspaceLifecycle();
 
@@ -45,6 +47,7 @@ export function AppShell() {
         </div>
       )}
       <CommandPalette />
+      {settingsOpen && <SettingsModal />}
       <div className={styles.status}>
         <StatusBar />
       </div>
