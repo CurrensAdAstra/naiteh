@@ -21,12 +21,21 @@ pub fn auth_login(
     sessions: tauri::State<'_, SessionStore>,
     username: String,
     password: String,
+    remember: bool,
 ) -> Result<LoginResult, AppError> {
     let dir = app_config_dir()?;
     match auth::authenticate(&dir, &username, &password) {
         Ok(session) => {
             auth::append_audit(&dir, &session.username, "login_success", None)?;
             let token = sessions.issue(session.clone());
+            // Opt-in: persist so the next launch can skip the login
+            // screen. When not remembering, clear any prior record so it
+            // can't outlive this login.
+            if remember {
+                auth::save_remembered(&dir, &token, &session)?;
+            } else {
+                auth::clear_remembered(&dir);
+            }
             Ok(LoginResult { token, session })
         }
         Err(e) => {
@@ -40,9 +49,31 @@ pub fn auth_login(
     }
 }
 
+/// Resume a remembered session on startup without a password. Returns
+/// `None` when there is no valid remembered session (missing, expired,
+/// or the account was disabled/removed since) — see
+/// `auth::load_remembered` for the rules.
+#[tauri::command]
+pub fn auth_resume(
+    sessions: tauri::State<'_, SessionStore>,
+) -> Result<Option<LoginResult>, AppError> {
+    let dir = app_config_dir()?;
+    let Some((token, session)) = auth::load_remembered(&dir) else {
+        return Ok(None);
+    };
+    sessions.install(token.clone(), session.clone());
+    auth::append_audit(&dir, &session.username, "session_resume", None)?;
+    Ok(Some(LoginResult { token, session }))
+}
+
 #[tauri::command]
 pub fn auth_logout(sessions: tauri::State<'_, SessionStore>, token: String) {
     sessions.revoke(&token);
+    // Signing out must also drop the remembered session, else the next
+    // launch would silently sign back in.
+    if let Ok(dir) = app_config_dir() {
+        auth::clear_remembered(&dir);
+    }
 }
 
 #[tauri::command]

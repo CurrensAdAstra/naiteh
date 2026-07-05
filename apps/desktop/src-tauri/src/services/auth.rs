@@ -38,6 +38,14 @@ use crate::services::fs as fsx;
 const AUTH_FILE: &str = "auth.json";
 const AUDIT_FILE: &str = "audit-log.jsonl";
 const AUDIT_FILE_ROTATED: &str = "audit-log.1.jsonl";
+/// Opt-in "remember me" session, stored in the app-config dir (same
+/// trust boundary as `auth.json` and the API key — only the local OS
+/// user account can read it). Lets the app skip the login screen on
+/// restart until the token expires or the user signs out.
+const REMEMBERED_FILE: &str = "remembered-session.json";
+/// How long a remembered session stays valid without re-entering the
+/// password.
+const REMEMBER_TTL_DAYS: i64 = 30;
 /// Rotate the audit log once it crosses this size. Single-level
 /// rotation bounds total audit history to ~2× this.
 const MAX_AUDIT_BYTES: u64 = 5 * 1024 * 1024;
@@ -168,6 +176,87 @@ fn load_store(config_dir: &Path) -> Result<AuthStore, AppError> {
 fn save_store(config_dir: &Path, store: &AuthStore) -> Result<(), AppError> {
     fsx::ensure_dir(config_dir)?;
     fsx::write_json(&auth_path(config_dir), store)
+}
+
+// ── Remembered ("keep me signed in") session ─────────────────────────
+
+/// On-disk record of an opt-in remembered session. The token is the
+/// same opaque bearer string `SessionStore::issue` minted at login; on
+/// restart `resume` re-installs it so it keeps validating.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RememberedSession {
+    token: String,
+    username: String,
+    /// RFC3339 UTC instant after which the remembered session is stale.
+    expires_at: String,
+}
+
+fn remembered_path(config_dir: &Path) -> PathBuf {
+    config_dir.join(REMEMBERED_FILE)
+}
+
+/// Persist `token`/`session` so the next launch can skip the login
+/// screen for the next [`REMEMBER_TTL_DAYS`] days.
+pub fn save_remembered(
+    config_dir: &Path,
+    token: &str,
+    session: &AuthSession,
+) -> Result<(), AppError> {
+    fsx::ensure_dir(config_dir)?;
+    let expires_at = (Utc::now() + chrono::Duration::days(REMEMBER_TTL_DAYS))
+        .to_rfc3339_opts(SecondsFormat::Secs, true);
+    let record = RememberedSession {
+        token: token.to_string(),
+        username: session.username.clone(),
+        expires_at,
+    };
+    fsx::write_json(&remembered_path(config_dir), &record)
+}
+
+/// Delete any remembered session. Best-effort: a missing file is fine.
+pub fn clear_remembered(config_dir: &Path) {
+    let _ = std::fs::remove_file(remembered_path(config_dir));
+}
+
+/// Load a valid remembered session, if one exists. Returns the persisted
+/// token paired with a *freshly resolved* session (current username +
+/// role from `auth.json`), so a role change or deactivation between runs
+/// is honoured. Any of {missing, corrupt, expired, unknown user,
+/// deactivated user} yields `None` — and prunes the file so a stale
+/// record doesn't linger.
+pub fn load_remembered(config_dir: &Path) -> Option<(String, AuthSession)> {
+    let record: RememberedSession = fsx::read_json(&remembered_path(config_dir)).ok()?;
+
+    let expired = chrono::DateTime::parse_from_rfc3339(&record.expires_at)
+        .map(|exp| Utc::now() >= exp)
+        .unwrap_or(true); // unparseable expiry → treat as expired
+    if expired {
+        clear_remembered(config_dir);
+        return None;
+    }
+
+    // Re-derive the session from the live account so a disabled or
+    // role-changed account can't ride a stale token back in.
+    let store = load_store(config_dir).ok()?;
+    let wanted = canonical_username(&record.username);
+    let user = store
+        .users
+        .iter()
+        .find(|u| canonical_username(&u.username) == wanted);
+    match user {
+        Some(u) if u.active => Some((
+            record.token,
+            AuthSession {
+                username: u.username.clone(),
+                role: u.role.clone(),
+            },
+        )),
+        _ => {
+            clear_remembered(config_dir);
+            None
+        }
+    }
 }
 
 fn persist_seeded_store_if_needed(config_dir: &Path, store: &AuthStore) -> Result<(), AppError> {
@@ -405,6 +494,14 @@ impl SessionStore {
         let mut map = self.inner.lock().expect("session map poisoned");
         map.insert(token.clone(), session);
         token
+    }
+
+    /// Re-register a pre-existing token → session mapping. Used to resume
+    /// a remembered session on startup, where the token was minted in a
+    /// previous run and persisted to disk.
+    pub fn install(&self, token: String, session: AuthSession) {
+        let mut map = self.inner.lock().expect("session map poisoned");
+        map.insert(token, session);
     }
 
     /// Resolve a token to a (live) session. Returns
@@ -690,5 +787,78 @@ mod tests {
         let t = store.issue(session("admin", UserRole::Admin));
         store.revoke(&t);
         assert!(store.resolve(&t).is_err());
+    }
+
+    #[test]
+    fn install_reregisters_a_persisted_token() {
+        let store = SessionStore::default();
+        store.install("deadbeef".into(), session("admin", UserRole::Admin));
+        assert_eq!(store.resolve("deadbeef").unwrap().username, "admin");
+    }
+
+    // ── remembered session ──────────────────────────────────────────
+
+    #[test]
+    fn remembered_round_trips_and_resolves_live_role() {
+        let dir = tempdir().unwrap();
+        // Seed the admin account so load_store finds it.
+        authenticate(dir.path(), "admin", "admin").unwrap();
+        save_remembered(dir.path(), "tok-123", &session("admin", UserRole::Admin)).unwrap();
+
+        let (token, resumed) = load_remembered(dir.path()).unwrap();
+        assert_eq!(token, "tok-123");
+        assert_eq!(resumed.username, "admin");
+        assert_eq!(resumed.role, UserRole::Admin);
+    }
+
+    #[test]
+    fn missing_remembered_is_none() {
+        let dir = tempdir().unwrap();
+        assert!(load_remembered(dir.path()).is_none());
+    }
+
+    #[test]
+    fn expired_remembered_is_pruned() {
+        let dir = tempdir().unwrap();
+        authenticate(dir.path(), "admin", "admin").unwrap();
+        // Hand-write a record dated in the past.
+        let record = RememberedSession {
+            token: "old".into(),
+            username: "admin".into(),
+            expires_at: "2000-01-01T00:00:00Z".into(),
+        };
+        fsx::write_json(&remembered_path(dir.path()), &record).unwrap();
+
+        assert!(load_remembered(dir.path()).is_none());
+        // ...and the stale file is gone.
+        assert!(!remembered_path(dir.path()).exists());
+    }
+
+    #[test]
+    fn deactivated_account_cannot_resume() {
+        let dir = tempdir().unwrap();
+        // Seed a disabled standard user directly, then try to resume as them.
+        let mut store = load_store(dir.path()).unwrap();
+        store.users.push(StoredUser {
+            username: "bob".into(),
+            role: UserRole::User,
+            active: false,
+            password_hash: hash_password_argon2("pw").unwrap(),
+        });
+        save_store(dir.path(), &store).unwrap();
+        save_remembered(dir.path(), "tok", &session("bob", UserRole::User)).unwrap();
+
+        assert!(load_remembered(dir.path()).is_none());
+        assert!(!remembered_path(dir.path()).exists());
+    }
+
+    #[test]
+    fn clear_remembered_removes_the_file() {
+        let dir = tempdir().unwrap();
+        authenticate(dir.path(), "admin", "admin").unwrap();
+        save_remembered(dir.path(), "tok", &session("admin", UserRole::Admin)).unwrap();
+        assert!(remembered_path(dir.path()).exists());
+        clear_remembered(dir.path());
+        assert!(!remembered_path(dir.path()).exists());
     }
 }

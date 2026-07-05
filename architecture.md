@@ -43,7 +43,12 @@ the code.
    run (password equals the username; change it from Settings). The admin
    creates further accounts in the UI. Login mints an opaque session
    token; the frontend passes that token, never a plain username, to
-   every IPC that needs to know who is asking.
+   every IPC that needs to know who is asking. Login offers an opt-in
+   "keep me signed in on this device" (default on): the token is persisted
+   to the app-config dir with a 30-day expiry and restored on the next
+   launch via `auth_resume`, so single-user machines aren't re-prompted
+   every start. Sign-out and unchecking the box both drop it; a
+   deactivated account can't ride a stale token back in.
 
 The canonical feature list and non-goals are mirrored in the wiki's
 [product-overview.md](vault/wiki/product-overview.md).
@@ -483,7 +488,8 @@ explicitly assign notes to past or future dates (true Agenda-style
   per-note progress events, reachable from File ▸ Import
 - Notes folder management (create / rename / delete, empty dirs shown)
 - Sync conflict-resolution UI (keep mine / keep theirs)
-- Auth hardening: Argon2id passwords + in-memory session tokens
+- Auth hardening: Argon2id passwords + in-memory session tokens, with an
+  opt-in persisted "keep me signed in" token (30-day TTL, `auth_resume`)
 - In-memory tag index serving tags **and** timeline/activity;
   per-vault write/sync mutex; CSP
 - Local AI providers (Ollama) — key-free, on-device AI Assist

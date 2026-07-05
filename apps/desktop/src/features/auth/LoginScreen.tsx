@@ -17,6 +17,7 @@ function initialUsername(): string {
 export function LoginScreen({ onLogin }: LoginScreenProps) {
   const [username, setUsername] = useState(initialUsername);
   const [password, setPassword] = useState("");
+  const [remember, setRemember] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const canSubmit = useMemo(
@@ -30,7 +31,7 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
     setBusy(true);
     setError(null);
     try {
-      const result = await authLogin(username, password);
+      const result = await authLogin(username, password, remember);
       onLogin(result.token, result.session);
     } catch (err) {
       setError(formatAppError(err));
@@ -70,6 +71,15 @@ export function LoginScreen({ onLogin }: LoginScreenProps) {
             />
           </label>
         </div>
+        <label className={styles.remember}>
+          <input
+            type="checkbox"
+            checked={remember}
+            onChange={(e) => setRemember(e.target.checked)}
+            data-testid="login-remember"
+          />
+          <span>Keep me signed in on this device</span>
+        </label>
         {error !== null && (
           <p className={styles.error} role="alert">
             {error}
