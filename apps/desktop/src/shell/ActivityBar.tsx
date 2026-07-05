@@ -26,12 +26,13 @@ const ICONS: readonly ActivityIcon[] = [
   { mode: "search", label: "Search", Icon: Search },
   { mode: "tags", label: "Tags", Icon: Tag },
   { mode: "sync", label: "Sync", Icon: RefreshCw },
-  { mode: "settings", label: "Settings", Icon: Settings },
 ] as const;
 
 export function ActivityBar() {
   const viewMode = useUIStore((s) => s.viewMode);
   const setViewMode = useUIStore((s) => s.setViewMode);
+  const settingsOpen = useUIStore((s) => s.settingsOpen);
+  const setSettingsOpen = useUIStore((s) => s.setSettingsOpen);
 
   return (
     <nav className={styles.bar} aria-label="Activity Bar">
@@ -52,6 +53,17 @@ export function ActivityBar() {
           </button>
         );
       })}
+      <button
+        type="button"
+        aria-label="Settings"
+        aria-current={settingsOpen ? "page" : undefined}
+        className={`${styles.button} ${settingsOpen ? styles.active : ""}`}
+        onClick={() => setSettingsOpen(true)}
+        data-testid="activity-settings"
+      >
+        {settingsOpen && <span className={styles.activeBar} aria-hidden="true" />}
+        <Settings size={24} strokeWidth={1.5} />
+      </button>
     </nav>
   );
 }

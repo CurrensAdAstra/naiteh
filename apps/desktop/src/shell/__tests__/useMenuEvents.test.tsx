@@ -35,6 +35,7 @@ describe("useMenuEvents", () => {
       pendingAction: null,
       commandPaletteOpen: false,
       aiPanelOpen: false,
+      settingsOpen: false,
     });
   });
 
@@ -46,6 +47,7 @@ describe("useMenuEvents", () => {
     expect(handlers.has("menu:new-note")).toBe(true);
     expect(handlers.has("menu:new-folder")).toBe(true);
     expect(handlers.has("menu:import-evernote")).toBe(true);
+    expect(handlers.has("menu:settings")).toBe(true);
   });
 
   it("menu:view switches the view mode for a valid payload", () => {
@@ -84,10 +86,17 @@ describe("useMenuEvents", () => {
     expect(useUIStore.getState().pendingAction).toBe("newFolder");
   });
 
-  it("menu:import-evernote routes to the Settings import flow", () => {
+  it("menu:import-evernote opens the settings modal import flow", () => {
     render(<Harness />);
     fire("menu:import-evernote");
-    expect(useUIStore.getState().viewMode).toBe("settings");
+    expect(useUIStore.getState().settingsOpen).toBe(true);
     expect(useUIStore.getState().pendingAction).toBe("evernoteImport");
+  });
+
+  it("menu:settings opens the settings modal", () => {
+    render(<Harness />);
+    expect(useUIStore.getState().settingsOpen).toBe(false);
+    fire("menu:settings");
+    expect(useUIStore.getState().settingsOpen).toBe(true);
   });
 });

@@ -295,11 +295,14 @@ type ViewMode =
   | "calendar"   // Agenda-style timeline of notes by date
   | "search"     // full-text search
   | "tags"       // tag browser
-  | "sync"       // sync/backup status & actions
-  | "settings";  // app + vault settings
+  | "sync";      // sync/backup status & actions
 ```
 
-Activity Bar shows seven icons in this order:
+Settings is intentionally **not** a `ViewMode` — it opens as a
+full-screen modal (§4.3 shortcuts table), so it does not occupy a list
+panel or an Activity Bar slot in the same way.
+
+Activity Bar shows the six view icons plus a settings gear pinned below:
 
 ```
 ┌──┐
@@ -309,7 +312,7 @@ Activity Bar shows seven icons in this order:
 │🔍│ search
 │🏷│ tags
 │🔄│ sync
-│⚙ │ settings
+│⚙ │ settings  ← opens the modal, not a ViewMode
 └──┘
 ```
 
@@ -332,12 +335,22 @@ payloads are listed in the wiki's
 
 | Menu          | Item                | Shortcut          | Action |
 |---------------|---------------------|-------------------|--------|
+| naiteh        | Settings…           | Cmd/Ctrl+,        | Open the settings modal |
 | File          | New Note            | Cmd/Ctrl+N        | Notes panel new-note prompt |
 | File          | New Folder          | Cmd/Ctrl+Shift+N  | Notes panel new-folder prompt |
-| File          | Import from Evernote… | —               | Settings import flow |
-| View          | Journal … Settings  | Cmd/Ctrl+1 … 7    | Switch `ViewMode` |
+| File          | Import from Evernote… | —               | Settings modal import flow |
+| View          | Journal … Sync      | Cmd/Ctrl+1 … 6    | Switch `ViewMode` |
 | View          | Command Palette…    | Cmd/Ctrl+P        | Open the palette |
 | View          | Toggle AI Assist    | Cmd/Ctrl+E        | Toggle the AI panel |
+
+Settings is **not** a `ViewMode`; it is a full-screen modal
+(`features/settings/SettingsModal`) overlaying the shell, opened from
+the app menu (Cmd/Ctrl+,), the Activity Bar gear, the status-bar user
+name, or the palette. It mirrors the Obsidian settings layout: a
+left section nav (Vault, Editor, AI Assist, Import, plus Accounts /
+Audit Log for admins) beside a scrolling column of "name + description →
+control" rows. This replaced the cramped list-panel settings that shared
+the 280 px sidebar.
 
 The Edit menu uses the standard predefined items (undo/redo/cut/copy/
 paste/select-all) with their usual shortcuts. The editor keeps its own
@@ -356,7 +369,8 @@ shortcut.
 | search    | Search input + result list (full-text)                              |
 | tags      | Flat tag list with counts; selecting a tag shows its notes          |
 | sync      | Last sync time, pending changes, "Sync now" button, log             |
-| settings  | Setting categories; admin-only account and audit-log management     |
+
+(Settings is a modal, not a list panel — see §4.3.)
 
 ### 4.5 Journal mode (quick capture + activity summary)
 

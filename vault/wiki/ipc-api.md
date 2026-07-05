@@ -2,7 +2,7 @@
 title: "IPC API (Tauri Commands)"
 tags: [naiteh-wiki, ipc, api, commands]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-06-28T23:30:00+09:00
+updated: 2026-06-29T00:00:00+09:00
 pinned: false
 ---
 
@@ -208,12 +208,17 @@ to store actions (not direct IPC):
 
 | Event | Action |
 |---|---|
-| `menu:view` (payload: ViewMode) | Switch panel (Cmd+1..7) |
+| `menu:view` (payload: ViewMode) | Switch panel (Cmd+1..6) |
 | `menu:command-palette` | Open the palette (Cmd+P) |
 | `menu:toggle-ai` | Toggle AI Assist panel (Cmd+E) |
+| `menu:settings` | Open the settings modal (Cmd+,) |
 | `menu:new-note` | Notes panel new-note prompt (Cmd+N) |
 | `menu:new-folder` | Notes panel new-folder prompt (Cmd+Shift+N) |
-| `menu:import-evernote` | Settings ▸ Evernote import flow |
+| `menu:import-evernote` | Settings modal Evernote import flow |
+
+`ViewMode` is one of journal/notes/calendar/search/tags/sync. Settings
+is **not** a view — it is a full-screen modal opened by `menu:settings`,
+the Activity Bar gear, the status-bar user name, or the palette.
 
 ## Concurrency note
 

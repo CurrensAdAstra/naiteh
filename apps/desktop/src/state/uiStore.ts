@@ -7,8 +7,7 @@ export type ViewMode =
   | "calendar"
   | "search"
   | "tags"
-  | "sync"
-  | "settings";
+  | "sync";
 
 // architecture.md §5.1
 export const LIST_PANEL_MIN = 200;
@@ -36,6 +35,8 @@ interface UIState {
   journalSplitRatio: number;
   aiPanelOpen: boolean;
   commandPaletteOpen: boolean;
+  /** The Obsidian-style settings modal overlays the whole shell. */
+  settingsOpen: boolean;
   editorReadOnly: boolean;
   pendingAction: PendingAction | null;
   setViewMode: (mode: ViewMode) => void;
@@ -45,9 +46,10 @@ interface UIState {
   toggleAiPanel: () => void;
   setCommandPaletteOpen: (open: boolean) => void;
   toggleCommandPalette: () => void;
+  setSettingsOpen: (open: boolean) => void;
   setEditorReadOnly: (readOnly: boolean) => void;
   toggleEditorReadOnly: () => void;
-  /** Navigate to Settings and queue the Evernote import flow there. */
+  /** Open the settings modal and queue the Evernote import flow there. */
   requestEvernoteImport: () => void;
   /** Navigate to Notes and queue a new-note / new-folder prompt there. */
   requestNewNote: () => void;
@@ -61,6 +63,7 @@ export const useUIStore = create<UIState>((set) => ({
   journalSplitRatio: JOURNAL_SPLIT_DEFAULT,
   aiPanelOpen: false,
   commandPaletteOpen: false,
+  settingsOpen: false,
   editorReadOnly: false,
   pendingAction: null,
   setViewMode: (mode) => set({ viewMode: mode }),
@@ -75,11 +78,12 @@ export const useUIStore = create<UIState>((set) => ({
   setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
   toggleCommandPalette: () =>
     set((s) => ({ commandPaletteOpen: !s.commandPaletteOpen })),
+  setSettingsOpen: (open) => set({ settingsOpen: open }),
   setEditorReadOnly: (readOnly) => set({ editorReadOnly: readOnly }),
   toggleEditorReadOnly: () =>
     set((s) => ({ editorReadOnly: !s.editorReadOnly })),
   requestEvernoteImport: () =>
-    set({ viewMode: "settings", pendingAction: "evernoteImport" }),
+    set({ settingsOpen: true, pendingAction: "evernoteImport" }),
   requestNewNote: () =>
     set({ viewMode: "notes", pendingAction: "newNote" }),
   requestNewFolder: () =>

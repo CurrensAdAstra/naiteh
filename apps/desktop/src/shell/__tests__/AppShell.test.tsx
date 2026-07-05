@@ -81,7 +81,7 @@ describe("AppShell", () => {
     await waitForShellRefresh();
     const editorBefore = screen.getByTestId("editor-panel");
 
-    const sequence: ViewMode[] = ["notes", "calendar", "tags", "settings"];
+    const sequence: ViewMode[] = ["notes", "calendar", "tags", "sync"];
     for (const mode of sequence) {
       act(() => {
         useUIStore.getState().setViewMode(mode);
