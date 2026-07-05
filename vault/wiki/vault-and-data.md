@@ -2,7 +2,7 @@
 title: "Vault & Data"
 tags: [naiteh-wiki, vault, storage]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-06-28T00:00:00+09:00
+updated: 2026-06-28T23:30:00+09:00
 pinned: false
 ---
 
@@ -13,8 +13,10 @@ pinned: false
 A **vault** is a directory on disk that contains all notes, journal entries, and
 metadata. naiteh never stores notes anywhere else.
 
-- **First run**: the app asks the user to (a) pick an existing folder or
-  (b) create a new one. The path is stored in app config.
+- **First run**: the app offers (a) one-click creation of the default
+  vault `~/Documents/heartwood` (deduped `heartwood-2`, `heartwood-3`, …
+  if the folder exists), (b) creating a vault in a picked folder, or
+  (c) opening an existing vault. The path is stored in app config.
 - The active vault can be changed from Settings. naiteh remembers **multiple
   vaults**, but only one is active at a time.
 

@@ -1,6 +1,11 @@
 import { useState } from "react";
 
-import { vaultInit, vaultPickFolder, vaultSetActive } from "../../lib/api/vault";
+import {
+  vaultCreateDefault,
+  vaultInit,
+  vaultPickFolder,
+  vaultSetActive,
+} from "../../lib/api/vault";
 import { formatAppError, isAppError } from "../../lib/types";
 import { useVaultStore } from "../../state/vaultStore";
 import styles from "./FirstRunSetup.module.css";
@@ -40,6 +45,19 @@ export function FirstRunSetup() {
     }
   }
 
+  async function handleQuickCreate() {
+    setBusy(true);
+    setError(null);
+    try {
+      const active = await vaultCreateDefault();
+      setActive(active);
+    } catch (e) {
+      setError(formatAppError(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <main className={styles.root} data-testid="first-run-setup">
       <h1 className={styles.title}>Welcome to naiteh</h1>
@@ -48,10 +66,19 @@ export function FirstRunSetup() {
         <button
           type="button"
           className={`${styles.button} ${styles.primary}`}
+          onClick={() => void handleQuickCreate()}
+          disabled={busy}
+          data-testid="first-run-quick-create"
+        >
+          Start with “heartwood” (Documents)
+        </button>
+        <button
+          type="button"
+          className={`${styles.button} ${styles.secondary}`}
           onClick={() => void handlePick("new")}
           disabled={busy}
         >
-          Create new vault
+          Create vault in a folder I pick…
         </button>
         <button
           type="button"
