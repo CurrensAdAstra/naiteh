@@ -23,13 +23,13 @@ describe("FirstRunSetup", () => {
     useVaultStore.setState({ active: null });
   });
 
-  it("quick-create button provisions heartwood and activates it", async () => {
-    const heartwood = {
-      root: "/Users/me/Documents/heartwood",
-      name: "heartwood",
+  it("quick-create button provisions duramen and activates it", async () => {
+    const duramen = {
+      root: "/Users/me/Documents/duramen",
+      name: "duramen",
       initialized: true,
     };
-    mockedCreateDefault.mockResolvedValue(heartwood);
+    mockedCreateDefault.mockResolvedValue(duramen);
     const user = userEvent.setup();
 
     render(<FirstRunSetup />);
@@ -37,7 +37,7 @@ describe("FirstRunSetup", () => {
 
     await waitFor(() => {
       expect(mockedCreateDefault).toHaveBeenCalledTimes(1);
-      expect(useVaultStore.getState().active).toEqual(heartwood);
+      expect(useVaultStore.getState().active).toEqual(duramen);
     });
     expect(mockedPick).not.toHaveBeenCalled();
   });

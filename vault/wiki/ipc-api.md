@@ -41,7 +41,7 @@ vault_current() -> Result<Option<VaultInfo>, AppError>
 vault_set_active(root: String) -> Result<VaultInfo, AppError>
 vault_list_known() -> Result<Vec<VaultInfo>, AppError>
 
-// One-click first-run setup: create ~/Documents/heartwood (deduped
+// One-click first-run setup: create ~/Documents/duramen (deduped
 // with -2, -3, … if taken), initialize it, make it active.
 vault_create_default() -> Result<VaultInfo, AppError>
 ```

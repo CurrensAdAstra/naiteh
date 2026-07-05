@@ -14,7 +14,7 @@ A **vault** is a directory on disk that contains all notes, journal entries, and
 metadata. naiteh never stores notes anywhere else.
 
 - **First run**: the app offers (a) one-click creation of the default
-  vault `~/Documents/heartwood` (deduped `heartwood-2`, `heartwood-3`, …
+  vault `~/Documents/duramen` (deduped `duramen-2`, `duramen-3`, …
   if the folder exists), (b) creating a vault in a picked folder, or
   (c) opening an existing vault. The path is stored in app config.
 - The active vault can be changed from Settings. naiteh remembers **multiple

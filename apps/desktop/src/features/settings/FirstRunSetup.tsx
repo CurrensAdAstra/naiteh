@@ -70,7 +70,7 @@ export function FirstRunSetup() {
           disabled={busy}
           data-testid="first-run-quick-create"
         >
-          Start with “heartwood” (Documents)
+          Start with “duramen” (Documents)
         </button>
         <button
           type="button"

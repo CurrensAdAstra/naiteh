@@ -96,11 +96,11 @@ fn vault_init_impl(root: &Path) -> Result<VaultInfo, AppError> {
 
 /// Default vault folder name, created under the user's Documents dir by
 /// the first-run "quick create" path. The vault's display name is the
-/// folder name, so a fresh setup shows up as "heartwood".
-const DEFAULT_VAULT_NAME: &str = "heartwood";
+/// folder name, so a fresh setup shows up as "duramen".
+const DEFAULT_VAULT_NAME: &str = "duramen";
 
-/// One-click first-run setup: create `~/Documents/heartwood` (falling
-/// back to `heartwood-2`, `heartwood-3`, … if the name is taken),
+/// One-click first-run setup: create `~/Documents/duramen` (falling
+/// back to `duramen-2`, `duramen-3`, … if the name is taken),
 /// initialize it as a vault, and make it active.
 #[tauri::command]
 pub fn vault_create_default() -> Result<VaultInfo, AppError> {
@@ -331,13 +331,13 @@ mod tests {
     // ── vault_create_default ────────────────────────────────────────
 
     #[test]
-    fn create_default_makes_heartwood_and_activates_it() {
+    fn create_default_makes_duramen_and_activates_it() {
         let cfg_dir = tempfile::tempdir().unwrap();
         let docs = tempfile::tempdir().unwrap();
 
         let info = vault_create_default_impl(cfg_dir.path(), docs.path()).unwrap();
 
-        assert_eq!(info.name, "heartwood");
+        assert_eq!(info.name, "duramen");
         assert!(info.initialized);
         let root = Path::new(&info.root);
         assert!(root.join(".naiteh/config.json").is_file());
@@ -350,13 +350,13 @@ mod tests {
     }
 
     #[test]
-    fn create_default_dedups_when_heartwood_exists() {
+    fn create_default_dedups_when_duramen_exists() {
         let cfg_dir = tempfile::tempdir().unwrap();
         let docs = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(docs.path().join("heartwood")).unwrap();
+        std::fs::create_dir_all(docs.path().join("duramen")).unwrap();
 
         let info = vault_create_default_impl(cfg_dir.path(), docs.path()).unwrap();
-        assert_eq!(info.name, "heartwood-2");
+        assert_eq!(info.name, "duramen-2");
         assert!(info.initialized);
     }
 }
