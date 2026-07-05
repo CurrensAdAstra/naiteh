@@ -43,7 +43,7 @@ export function vaultListKnown(): Promise<VaultInfo[]> {
 }
 
 /**
- * One-click first-run setup: creates `~/Documents/heartwood` (deduped
+ * One-click first-run setup: creates `~/Documents/duramen` (deduped
  * with `-2`, `-3`, … if taken), initializes it, and makes it active.
  */
 export function vaultCreateDefault(): Promise<VaultInfo> {

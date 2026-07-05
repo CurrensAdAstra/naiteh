@@ -467,7 +467,7 @@ explicitly assign notes to past or future dates (true Agenda-style
 - Native application menu with global shortcuts (§4.3)
 - CLI hooks (`<app-config-dir>/hooks/on-note-save|on-journal-save|on-sync`)
   — the first slice of the v2 "plugin system" candidate, git-hooks model
-- One-click default vault: first run offers `~/Documents/heartwood`
+- One-click default vault: first run offers `~/Documents/duramen`
 
 ### v1.5
 
