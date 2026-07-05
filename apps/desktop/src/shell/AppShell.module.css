@@ -1,4 +1,6 @@
 .shell {
+  --activity-width: 48px;
+  --resizer-width: 5px;
   display: grid;
   height: 100%;
   width: 100%;
@@ -6,9 +8,9 @@
   color: var(--color-text-primary);
   grid-template-rows: 1fr 22px;
   grid-template-columns:
-    48px
+    var(--activity-width)
     var(--list-panel-width, 280px)
-    5px
+    var(--resizer-width)
     1fr
     var(--ai-panel-width, 0px);
   grid-template-areas:

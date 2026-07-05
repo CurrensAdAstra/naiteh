@@ -63,8 +63,10 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  height: 28px;
-  font-size: 11px;
+  /* The calendar panel is wide in calendar mode (70% of the shell), so
+     cells breathe vertically instead of staying a flat 28px letterbox. */
+  min-height: 52px;
+  font-size: 13px;
   color: var(--color-text-primary);
   border-radius: 3px;
 }

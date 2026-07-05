@@ -14,6 +14,11 @@ import styles from "./AppShell.module.css";
 
 const AI_PANEL_WIDTH_PX = 360;
 
+// Calendar mode gives the month grid a fixed share of the list+editor
+// region (the monthly calendar reads better wide) instead of the px
+// width the resizer controls in every other view.
+const CALENDAR_LIST_RATIO = 0.7;
+
 export function AppShell() {
   const viewMode = useUIStore((s) => s.viewMode);
   const listPanelWidth = useUIStore((s) => s.listPanelWidth);
@@ -22,8 +27,17 @@ export function AppShell() {
   // Per-vault sync refresh + last-opened restore/persist coordination.
   useWorkspaceLifecycle();
 
+  const isCalendar = viewMode === "calendar";
+  // In calendar mode the list panel takes CALENDAR_LIST_RATIO of the space
+  // it shares with the editor (the fixed activity / resizer / ai columns
+  // are subtracted first); elsewhere it uses the resizer-controlled width.
+  const listPanelTrack = isCalendar
+    ? `calc((100% - var(--activity-width) - var(--resizer-width)` +
+      ` - var(--ai-panel-width)) * ${CALENDAR_LIST_RATIO})`
+    : `${listPanelWidth}px`;
+
   const shellStyle: CSSProperties = {
-    ["--list-panel-width" as string]: `${listPanelWidth}px`,
+    ["--list-panel-width" as string]: listPanelTrack,
     ["--ai-panel-width" as string]: aiPanelOpen ? `${AI_PANEL_WIDTH_PX}px` : "0px",
   };
 
@@ -36,7 +50,8 @@ export function AppShell() {
         <PanelRouter mode={viewMode} />
       </div>
       <div className={styles.resizer}>
-        <ListPanelResizer />
+        {/* The width is proportional (not drag-sized) in calendar mode. */}
+        {!isCalendar && <ListPanelResizer />}
       </div>
       <div className={styles.editor}>
         <EditorPanel />
