@@ -41,3 +41,12 @@ export function vaultListKnown(): Promise<VaultInfo[]> {
   if (!hasTauriRuntime()) return Promise.resolve([]);
   return invoke<VaultInfo[]>("vault_list_known");
 }
+
+/**
+ * One-click first-run setup: creates `~/Documents/heartwood` (deduped
+ * with `-2`, `-3`, … if taken), initializes it, and makes it active.
+ */
+export function vaultCreateDefault(): Promise<VaultInfo> {
+  if (!hasTauriRuntime()) return desktopRequired();
+  return invoke<VaultInfo>("vault_create_default");
+}

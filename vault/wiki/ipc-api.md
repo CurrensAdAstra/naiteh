@@ -2,7 +2,7 @@
 title: "IPC API (Tauri Commands)"
 tags: [naiteh-wiki, ipc, api, commands]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-06-28T00:00:00+09:00
+updated: 2026-06-28T23:30:00+09:00
 pinned: false
 ---
 
@@ -40,6 +40,10 @@ vault_init(root: String) -> Result<VaultInfo, AppError>
 vault_current() -> Result<Option<VaultInfo>, AppError>
 vault_set_active(root: String) -> Result<VaultInfo, AppError>
 vault_list_known() -> Result<Vec<VaultInfo>, AppError>
+
+// One-click first-run setup: create ~/Documents/heartwood (deduped
+// with -2, -3, … if taken), initialize it, make it active.
+vault_create_default() -> Result<VaultInfo, AppError>
 ```
 
 ## Journal
