@@ -10,6 +10,7 @@ const MENU_NEW_NOTE: &str = "new_note";
 const MENU_NEW_FOLDER: &str = "new_folder";
 const MENU_COMMAND_PALETTE: &str = "command_palette";
 const MENU_TOGGLE_AI: &str = "toggle_ai";
+const MENU_SETTINGS: &str = "settings";
 const VIEW_ID_PREFIX: &str = "view:";
 
 /// (id-suffix, label, accelerator) for the seven view-switch entries.
@@ -21,7 +22,6 @@ const VIEW_ITEMS: &[(&str, &str, &str)] = &[
     ("search", "Search", "CmdOrCtrl+4"),
     ("tags", "Tags", "CmdOrCtrl+5"),
     ("sync", "Sync", "CmdOrCtrl+6"),
-    ("settings", "Settings", "CmdOrCtrl+7"),
 ];
 
 /// Native application menu. Standard App / Edit submenus (so the editor's
@@ -37,6 +37,14 @@ fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         true,
         &[
             &PredefinedMenuItem::about(handle, None, None)?,
+            &PredefinedMenuItem::separator(handle)?,
+            &MenuItem::with_id(
+                handle,
+                MENU_SETTINGS,
+                "Settings…",
+                true,
+                Some("CmdOrCtrl+,"),
+            )?,
             &PredefinedMenuItem::separator(handle)?,
             &PredefinedMenuItem::hide(handle, None)?,
             &PredefinedMenuItem::quit(handle, None)?,
@@ -125,21 +133,43 @@ fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     Menu::with_items(handle, &[&app_menu, &file_menu, &edit_menu, &view_menu])
 }
 
-/// Translate a menu click into a frontend `menu:*` event.
-fn emit_menu_event<R: Runtime>(app: &AppHandle<R>, id: &str) {
+/// The result of routing a menu id to a frontend event channel. Split
+/// out from `emit_menu_event` so the id→channel mapping is unit-testable
+/// without an `AppHandle`.
+enum MenuRoute {
+    /// A view-switch: `menu:view` with the mode string as payload.
+    View(String),
+    /// A unit-payload event on the named channel.
+    Unit(&'static str),
+    /// Unknown id — ignore.
+    None,
+}
+
+fn route_menu_id(id: &str) -> MenuRoute {
     if let Some(mode) = id.strip_prefix(VIEW_ID_PREFIX) {
-        let _ = app.emit("menu:view", mode.to_string());
-        return;
+        return MenuRoute::View(mode.to_string());
     }
-    let event = match id {
-        MENU_NEW_NOTE => "menu:new-note",
-        MENU_NEW_FOLDER => "menu:new-folder",
-        MENU_COMMAND_PALETTE => "menu:command-palette",
-        MENU_TOGGLE_AI => "menu:toggle-ai",
-        MENU_IMPORT_EVERNOTE => "menu:import-evernote",
-        _ => return,
-    };
-    let _ = app.emit(event, ());
+    match id {
+        MENU_NEW_NOTE => MenuRoute::Unit("menu:new-note"),
+        MENU_NEW_FOLDER => MenuRoute::Unit("menu:new-folder"),
+        MENU_COMMAND_PALETTE => MenuRoute::Unit("menu:command-palette"),
+        MENU_TOGGLE_AI => MenuRoute::Unit("menu:toggle-ai"),
+        MENU_SETTINGS => MenuRoute::Unit("menu:settings"),
+        MENU_IMPORT_EVERNOTE => MenuRoute::Unit("menu:import-evernote"),
+        _ => MenuRoute::None,
+    }
+}
+
+fn emit_menu_event<R: Runtime>(app: &AppHandle<R>, id: &str) {
+    match route_menu_id(id) {
+        MenuRoute::View(mode) => {
+            let _ = app.emit("menu:view", mode);
+        }
+        MenuRoute::Unit(event) => {
+            let _ = app.emit(event, ());
+        }
+        MenuRoute::None => {}
+    }
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -164,7 +194,9 @@ pub fn run() {
             commands::vault::vault_current,
             commands::vault::vault_set_active,
             commands::vault::vault_list_known,
+            commands::vault::vault_create_default,
             commands::auth::auth_login,
+            commands::auth::auth_resume,
             commands::auth::auth_logout,
             commands::auth::auth_list_users,
             commands::auth::auth_set_user_active,
@@ -214,4 +246,56 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn view_ids_route_to_menu_view_with_mode_payload() {
+        for (mode, _, _) in VIEW_ITEMS {
+            let id = format!("{VIEW_ID_PREFIX}{mode}");
+            match route_menu_id(&id) {
+                MenuRoute::View(payload) => assert_eq!(payload, *mode),
+                _ => panic!("view id {id} did not route to menu:view"),
+            }
+        }
+    }
+
+    #[test]
+    fn settings_id_routes_to_settings_channel() {
+        assert!(matches!(
+            route_menu_id(MENU_SETTINGS),
+            MenuRoute::Unit("menu:settings")
+        ));
+    }
+
+    #[test]
+    fn known_action_ids_route_to_their_channels() {
+        let cases = [
+            (MENU_NEW_NOTE, "menu:new-note"),
+            (MENU_NEW_FOLDER, "menu:new-folder"),
+            (MENU_COMMAND_PALETTE, "menu:command-palette"),
+            (MENU_TOGGLE_AI, "menu:toggle-ai"),
+            (MENU_IMPORT_EVERNOTE, "menu:import-evernote"),
+        ];
+        for (id, channel) in cases {
+            match route_menu_id(id) {
+                MenuRoute::Unit(c) => assert_eq!(c, channel),
+                _ => panic!("{id} did not route to {channel}"),
+            }
+        }
+    }
+
+    #[test]
+    fn settings_is_not_a_view_item() {
+        // Settings moved out of the View menu into its own modal (Cmd+,).
+        assert!(!VIEW_ITEMS.iter().any(|(mode, _, _)| *mode == "settings"));
+    }
+
+    #[test]
+    fn unknown_id_is_ignored() {
+        assert!(matches!(route_menu_id("bogus"), MenuRoute::None));
+    }
 }

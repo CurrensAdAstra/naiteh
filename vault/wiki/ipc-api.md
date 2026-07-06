@@ -2,7 +2,7 @@
 title: "IPC API (Tauri Commands)"
 tags: [naiteh-wiki, ipc, api, commands]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-06-28T00:00:00+09:00
+updated: 2026-06-29T09:00:00+09:00
 pinned: false
 ---
 
@@ -40,6 +40,10 @@ vault_init(root: String) -> Result<VaultInfo, AppError>
 vault_current() -> Result<Option<VaultInfo>, AppError>
 vault_set_active(root: String) -> Result<VaultInfo, AppError>
 vault_list_known() -> Result<Vec<VaultInfo>, AppError>
+
+// One-click first-run setup: create ~/Documents/duramen (deduped
+// with -2, -3, … if taken), initialize it, make it active.
+vault_create_default() -> Result<VaultInfo, AppError>
 ```
 
 ## Journal
@@ -141,7 +145,8 @@ app_config_set_ai(api_key: Option<String>, model: String, base_url: Option<Strin
 ## Auth & Audit
 
 ```rust
-auth_login(username: String, password: String) -> Result<LoginResult, AppError>
+auth_login(username: String, password: String, remember: bool) -> Result<LoginResult, AppError>
+auth_resume() -> Result<Option<LoginResult>, AppError>
 auth_logout(token: String)
 auth_list_users(token: String) -> Result<Vec<AuthUser>, AppError>
 auth_set_user_active(token: String, username: String, active: bool) -> Result<Vec<AuthUser>, AppError>
@@ -155,6 +160,16 @@ resolves it via an in-process session map (`services::auth::SessionStore`) — n
 path lets the frontend impersonate a user by passing a name string.
 Account-management and audit reads require an **admin** token; `auth_log_action`
 accepts any live token. `auth_set_user_active` refuses to deactivate `admin`.
+
+**Remember me.** When `auth_login` is called with `remember: true`, the backend
+persists `{ token, username, expiresAt }` to `remembered-session.json` in the
+app-config dir (30-day TTL). On startup the frontend calls `auth_resume`, which
+re-installs that token into the `SessionStore` and returns the session —
+skipping the login screen — but only after re-checking the account is still
+present and active (a role change or deactivation between runs is honoured; a
+stale record is pruned). `remember: false` and `auth_logout` both delete the
+file. The file sits in the same trust boundary as `auth.json` and the AI key:
+only the local OS user can read it.
 
 ## Attachments
 
@@ -204,12 +219,17 @@ to store actions (not direct IPC):
 
 | Event | Action |
 |---|---|
-| `menu:view` (payload: ViewMode) | Switch panel (Cmd+1..7) |
+| `menu:view` (payload: ViewMode) | Switch panel (Cmd+1..6) |
 | `menu:command-palette` | Open the palette (Cmd+P) |
 | `menu:toggle-ai` | Toggle AI Assist panel (Cmd+E) |
+| `menu:settings` | Open the settings modal (Cmd+,) |
 | `menu:new-note` | Notes panel new-note prompt (Cmd+N) |
 | `menu:new-folder` | Notes panel new-folder prompt (Cmd+Shift+N) |
-| `menu:import-evernote` | Settings ▸ Evernote import flow |
+| `menu:import-evernote` | Settings modal Evernote import flow |
+
+`ViewMode` is one of journal/notes/calendar/search/tags/sync. Settings
+is **not** a view — it is a full-screen modal opened by `menu:settings`,
+the Activity Bar gear, the status-bar user name, or the palette.
 
 ## Concurrency note
 

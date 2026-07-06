@@ -31,10 +31,9 @@ describe("uiStore", () => {
       "search",
       "tags",
       "sync",
-      "settings",
     ];
     // type-level: each literal must satisfy ViewMode (compile-time check).
-    expect(modes).toHaveLength(7);
+    expect(modes).toHaveLength(6);
   });
 
   it("setViewMode swaps the active mode", () => {
@@ -75,9 +74,9 @@ describe("uiStore", () => {
     expect(useUIStore.getState().commandPaletteOpen).toBe(false);
   });
 
-  it("requestEvernoteImport navigates to Settings and queues the action", () => {
+  it("requestEvernoteImport opens the settings modal and queues the action", () => {
     useUIStore.getState().requestEvernoteImport();
-    expect(useUIStore.getState().viewMode).toBe("settings");
+    expect(useUIStore.getState().settingsOpen).toBe(true);
     expect(useUIStore.getState().pendingAction).toBe("evernoteImport");
 
     useUIStore.getState().clearPendingAction();

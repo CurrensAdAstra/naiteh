@@ -11,7 +11,7 @@ import { useEditorStore } from "../../../state/editorStore";
 import { useSettingsStore } from "../../../state/settingsStore";
 import { useUIStore } from "../../../state/uiStore";
 import { useVaultStore } from "../../../state/vaultStore";
-import { SettingsListPanel } from "../SettingsListPanel";
+import { SettingsModal } from "../SettingsModal";
 
 vi.mock("../../../lib/api/vault", () => ({
   vaultListKnown: vi.fn(),
@@ -94,7 +94,14 @@ function configWithEditor(fontSize: number, lineWrapping: boolean): AppConfig {
   };
 }
 
-describe("SettingsListPanel", () => {
+async function gotoSection(
+  user: ReturnType<typeof userEvent.setup>,
+  id: "general" | "editor" | "ai" | "import" | "accounts" | "audit",
+) {
+  await user.click(await screen.findByTestId(`settings-nav-${id}`));
+}
+
+describe("SettingsModal", () => {
   beforeEach(() => {
     mockedListKnown.mockReset();
     mockedPick.mockReset();
@@ -130,7 +137,7 @@ describe("SettingsListPanel", () => {
       vault("/v", "v"),
       vault("/w", "w"),
     ]);
-    render(<SettingsListPanel />);
+    render(<SettingsModal />);
     await screen.findByTestId("vault-row-/v");
     expect(screen.getByTestId("vault-row-/v")).toHaveTextContent(/active/i);
     expect(screen.getByTestId("vault-row-/w")).not.toHaveTextContent(
@@ -154,7 +161,7 @@ describe("SettingsListPanel", () => {
     });
 
     const user = userEvent.setup();
-    render(<SettingsListPanel />);
+    render(<SettingsModal />);
     await user.click(await screen.findByTestId("vault-row-/w"));
 
     await waitFor(() => {
@@ -169,7 +176,7 @@ describe("SettingsListPanel", () => {
     mockedPick.mockResolvedValue(vault("/x", "x", false));
 
     const user = userEvent.setup();
-    render(<SettingsListPanel />);
+    render(<SettingsModal />);
     await user.click(await screen.findByTestId("vault-open-existing"));
 
     expect(
@@ -185,7 +192,7 @@ describe("SettingsListPanel", () => {
     mockedSetActive.mockResolvedValue(vault("/new", "new", true));
 
     const user = userEvent.setup();
-    render(<SettingsListPanel />);
+    render(<SettingsModal />);
     await user.click(await screen.findByTestId("vault-create-new"));
 
     await waitFor(() => {
@@ -198,7 +205,9 @@ describe("SettingsListPanel", () => {
   it("changing font size dispatches app_config_set_editor and updates the store", async () => {
     mockedListKnown.mockResolvedValue([vault("/v", "v")]);
     mockedSetEditor.mockResolvedValue(configWithEditor(18, true));
-    render(<SettingsListPanel />);
+    const user = userEvent.setup();
+    render(<SettingsModal />);
+    await gotoSection(user, "editor");
 
     const input = await screen.findByTestId("font-size-input");
     fireEvent.change(input, { target: { value: "18" } });
@@ -212,7 +221,9 @@ describe("SettingsListPanel", () => {
   it("font size input clamps below the minimum", async () => {
     mockedListKnown.mockResolvedValue([vault("/v", "v")]);
     mockedSetEditor.mockResolvedValue(configWithEditor(8, true));
-    render(<SettingsListPanel />);
+    const user = userEvent.setup();
+    render(<SettingsModal />);
+    await gotoSection(user, "editor");
     const input = await screen.findByTestId("font-size-input");
     fireEvent.change(input, { target: { value: "1" } });
     await waitFor(() =>
@@ -223,7 +234,9 @@ describe("SettingsListPanel", () => {
   it("font size input clamps above the maximum", async () => {
     mockedListKnown.mockResolvedValue([vault("/v", "v")]);
     mockedSetEditor.mockResolvedValue(configWithEditor(32, true));
-    render(<SettingsListPanel />);
+    const user = userEvent.setup();
+    render(<SettingsModal />);
+    await gotoSection(user, "editor");
     const input = await screen.findByTestId("font-size-input");
     fireEvent.change(input, { target: { value: "999" } });
     await waitFor(() =>
@@ -235,10 +248,11 @@ describe("SettingsListPanel", () => {
     mockedListKnown.mockResolvedValue([vault("/v", "v")]);
     mockedSetEditor.mockResolvedValue(configWithEditor(EDITOR_FONT_DEFAULT, false));
     const user = userEvent.setup();
-    render(<SettingsListPanel />);
+    render(<SettingsModal />);
+    await gotoSection(user, "editor");
 
-    const checkbox = await screen.findByTestId("line-wrapping-input");
-    await user.click(checkbox);
+    const toggle = await screen.findByTestId("line-wrapping-input");
+    await user.click(toggle);
 
     await waitFor(() => {
       expect(mockedSetEditor).toHaveBeenCalledWith(EDITOR_FONT_DEFAULT, false);
@@ -249,7 +263,8 @@ describe("SettingsListPanel", () => {
   it("'Use local Ollama' switches the endpoint to the Ollama URL", async () => {
     mockedListKnown.mockResolvedValue([vault("/v", "v")]);
     const user = userEvent.setup();
-    render(<SettingsListPanel />);
+    render(<SettingsModal />);
+    await gotoSection(user, "ai");
 
     await user.click(await screen.findByTestId("ai-use-ollama"));
 
@@ -266,7 +281,8 @@ describe("SettingsListPanel", () => {
     mockedListKnown.mockResolvedValue([vault("/v", "v")]);
     mockedListModels.mockResolvedValue(["llama3.2", "qwen2.5"]);
     const user = userEvent.setup();
-    render(<SettingsListPanel />);
+    render(<SettingsModal />);
+    await gotoSection(user, "ai");
 
     await user.click(await screen.findByTestId("ai-load-models"));
 
@@ -281,13 +297,15 @@ describe("SettingsListPanel", () => {
       kind: "Io",
       message: "list failed",
     });
-    render(<SettingsListPanel />);
+    render(<SettingsModal />);
     expect(await screen.findByText(/list failed/i)).toBeInTheDocument();
   });
 
   it("renders the Evernote import section with an enabled button", async () => {
     mockedListKnown.mockResolvedValue([vault("/v", "v")]);
-    render(<SettingsListPanel />);
+    const user = userEvent.setup();
+    render(<SettingsModal />);
+    await gotoSection(user, "import");
     const button = await screen.findByTestId("evernote-import-button");
     expect(button).toBeEnabled();
     expect(button).toHaveTextContent(/choose .enex/i);
@@ -311,7 +329,8 @@ describe("SettingsListPanel", () => {
       errors: [],
     });
     const user = userEvent.setup();
-    render(<SettingsListPanel />);
+    render(<SettingsModal />);
+    await gotoSection(user, "import");
 
     await user.click(await screen.findByTestId("evernote-import-button"));
 
@@ -345,7 +364,8 @@ describe("SettingsListPanel", () => {
     );
 
     const user = userEvent.setup();
-    render(<SettingsListPanel />);
+    render(<SettingsModal />);
+    await gotoSection(user, "import");
     await user.click(await screen.findByTestId("evernote-import-button"));
 
     const progress = await screen.findByTestId("evernote-import-progress");
@@ -374,7 +394,8 @@ describe("SettingsListPanel", () => {
       message: "Cancelled",
     });
     const user = userEvent.setup();
-    render(<SettingsListPanel />);
+    render(<SettingsModal />);
+    await gotoSection(user, "import");
 
     await user.click(await screen.findByTestId("evernote-import-button"));
 
@@ -397,7 +418,7 @@ describe("SettingsListPanel", () => {
     // Simulate the File ▸ Import menu having queued the action.
     useUIStore.setState({ pendingAction: "evernoteImport" });
 
-    render(<SettingsListPanel />);
+    render(<SettingsModal />);
 
     await waitFor(() => {
       expect(mockedEvernoteImport).toHaveBeenCalled();
@@ -425,12 +446,16 @@ describe("SettingsListPanel", () => {
       session: { username: "admin", role: "Admin" },
     });
 
-    render(<SettingsListPanel />);
+    const user = userEvent.setup();
+    render(<SettingsModal />);
 
+    await gotoSection(user, "accounts");
     expect(await screen.findByTestId("settings-accounts")).toHaveTextContent(
       "mgkyung",
     );
-    expect(screen.getByTestId("settings-audit")).toHaveTextContent(
+
+    await gotoSection(user, "audit");
+    expect(await screen.findByTestId("settings-audit")).toHaveTextContent(
       "login_success",
     );
   });
@@ -452,7 +477,8 @@ describe("SettingsListPanel", () => {
     });
 
     const user = userEvent.setup();
-    render(<SettingsListPanel />);
+    render(<SettingsModal />);
+    await gotoSection(user, "accounts");
     await user.click(await screen.findByTestId("account-toggle-mgkyung"));
 
     await waitFor(() => {

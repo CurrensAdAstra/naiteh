@@ -35,7 +35,6 @@ const CASES: Array<{ mode: ViewMode; testId: string }> = [
   { mode: "search", testId: "list-panel-search" },
   { mode: "tags", testId: "list-panel-tags" },
   { mode: "sync", testId: "list-panel-sync" },
-  { mode: "settings", testId: "list-panel-settings" },
 ];
 
 describe("PanelRouter", () => {

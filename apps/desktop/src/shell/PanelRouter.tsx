@@ -2,7 +2,6 @@ import { CalendarListPanel } from "../features/calendar/CalendarListPanel";
 import { JournalListPanel } from "../features/journal/JournalListPanel";
 import { NotesListPanel } from "../features/notes/NotesListPanel";
 import { SearchListPanel } from "../features/search/SearchListPanel";
-import { SettingsListPanel } from "../features/settings/SettingsListPanel";
 import { SyncListPanel } from "../features/sync/SyncListPanel";
 import { TagsListPanel } from "../features/tags/TagsListPanel";
 import type { ViewMode } from "../state/uiStore";
@@ -25,7 +24,5 @@ export function PanelRouter({ mode }: PanelRouterProps) {
       return <TagsListPanel />;
     case "sync":
       return <SyncListPanel />;
-    case "settings":
-      return <SettingsListPanel />;
   }
 }

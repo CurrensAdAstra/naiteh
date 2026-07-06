@@ -81,7 +81,7 @@ describe("AppShell", () => {
     await waitForShellRefresh();
     const editorBefore = screen.getByTestId("editor-panel");
 
-    const sequence: ViewMode[] = ["notes", "calendar", "tags", "settings"];
+    const sequence: ViewMode[] = ["notes", "calendar", "tags", "sync"];
     for (const mode of sequence) {
       act(() => {
         useUIStore.getState().setViewMode(mode);
@@ -98,5 +98,27 @@ describe("AppShell", () => {
     await waitForShellRefresh();
 
     expect(screen.getByTestId("status-bar")).toHaveTextContent("vault");
+  });
+
+  it("calendar mode gives the list panel a 70% proportional track and hides the resizer", async () => {
+    render(<AppShell />);
+    await waitForShellRefresh();
+
+    // Non-calendar view: fixed px width + draggable resizer.
+    const shell = screen.getByTestId("app-shell");
+    expect(shell.style.getPropertyValue("--list-panel-width")).toBe(
+      `${LIST_PANEL_DEFAULT}px`,
+    );
+    expect(screen.getByTestId("list-panel-resizer")).toBeInTheDocument();
+
+    act(() => {
+      useUIStore.getState().setViewMode("calendar");
+    });
+
+    const track = shell.style.getPropertyValue("--list-panel-width");
+    expect(track).toContain("* 0.7");
+    expect(track).toContain("--ai-panel-width");
+    // The drag handle is gone — the width is proportional, not drag-sized.
+    expect(screen.queryByTestId("list-panel-resizer")).not.toBeInTheDocument();
   });
 });

@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import { AdminDashboard } from "./features/auth/AdminDashboard";
 import { LoginScreen } from "./features/auth/LoginScreen";
 import { FirstRunSetup } from "./features/settings/FirstRunSetup";
+import { authResume } from "./lib/api/auth";
 import { vaultCurrent } from "./lib/api/vault";
 import { formatAppError } from "./lib/types";
 import { AppShell } from "./shell/AppShell";
@@ -21,6 +22,9 @@ export function App() {
   const [loading, setLoading] = useState(true);
   const [loadedFor, setLoadedFor] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Try to restore a remembered session before deciding to show login,
+  // so a "Keep me signed in" user never sees the login screen flash.
+  const [resuming, setResuming] = useState(true);
   const session = useAuthStore((s) => s.session);
   const setSession = useAuthStore((s) => s.setSession);
   const active = useVaultStore((s) => s.active);
@@ -28,6 +32,25 @@ export function App() {
   const refreshSettings = useSettingsStore((s) => s.refresh);
   const adminPath = isAdminPath();
   useMenuEvents();
+
+  useEffect(() => {
+    let mounted = true;
+    authResume()
+      .then((result) => {
+        if (mounted && result !== null) {
+          setSession(result.token, result.session);
+        }
+      })
+      .catch(() => {
+        // A resume failure is not fatal — fall through to the login screen.
+      })
+      .finally(() => {
+        if (mounted) setResuming(false);
+      });
+    return () => {
+      mounted = false;
+    };
+  }, [setSession]);
 
   useEffect(() => {
     if (session === null) {
@@ -65,6 +88,9 @@ export function App() {
     };
   }, [adminPath, session, setActive, refreshSettings]);
 
+  if (resuming) {
+    return <div className={styles.center}>Loading…</div>;
+  }
   if (session === null) {
     return <LoginScreen onLogin={setSession} />;
   }

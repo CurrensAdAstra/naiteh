@@ -43,7 +43,12 @@ the code.
    run (password equals the username; change it from Settings). The admin
    creates further accounts in the UI. Login mints an opaque session
    token; the frontend passes that token, never a plain username, to
-   every IPC that needs to know who is asking.
+   every IPC that needs to know who is asking. Login offers an opt-in
+   "keep me signed in on this device" (default on): the token is persisted
+   to the app-config dir with a 30-day expiry and restored on the next
+   launch via `auth_resume`, so single-user machines aren't re-prompted
+   every start. Sign-out and unchecking the box both drop it; a
+   deactivated account can't ride a stale token back in.
 
 The canonical feature list and non-goals are mirrored in the wiki's
 [product-overview.md](vault/wiki/product-overview.md).
@@ -295,11 +300,14 @@ type ViewMode =
   | "calendar"   // Agenda-style timeline of notes by date
   | "search"     // full-text search
   | "tags"       // tag browser
-  | "sync"       // sync/backup status & actions
-  | "settings";  // app + vault settings
+  | "sync";      // sync/backup status & actions
 ```
 
-Activity Bar shows seven icons in this order:
+Settings is intentionally **not** a `ViewMode` — it opens as a
+full-screen modal (§4.3 shortcuts table), so it does not occupy a list
+panel or an Activity Bar slot in the same way.
+
+Activity Bar shows the six view icons plus a settings gear pinned below:
 
 ```
 ┌──┐
@@ -309,7 +317,7 @@ Activity Bar shows seven icons in this order:
 │🔍│ search
 │🏷│ tags
 │🔄│ sync
-│⚙ │ settings
+│⚙ │ settings  ← opens the modal, not a ViewMode
 └──┘
 ```
 
@@ -332,12 +340,22 @@ payloads are listed in the wiki's
 
 | Menu          | Item                | Shortcut          | Action |
 |---------------|---------------------|-------------------|--------|
+| naiteh        | Settings…           | Cmd/Ctrl+,        | Open the settings modal |
 | File          | New Note            | Cmd/Ctrl+N        | Notes panel new-note prompt |
 | File          | New Folder          | Cmd/Ctrl+Shift+N  | Notes panel new-folder prompt |
-| File          | Import from Evernote… | —               | Settings import flow |
-| View          | Journal … Settings  | Cmd/Ctrl+1 … 7    | Switch `ViewMode` |
+| File          | Import from Evernote… | —               | Settings modal import flow |
+| View          | Journal … Sync      | Cmd/Ctrl+1 … 6    | Switch `ViewMode` |
 | View          | Command Palette…    | Cmd/Ctrl+P        | Open the palette |
 | View          | Toggle AI Assist    | Cmd/Ctrl+E        | Toggle the AI panel |
+
+Settings is **not** a `ViewMode`; it is a full-screen modal
+(`features/settings/SettingsModal`) overlaying the shell, opened from
+the app menu (Cmd/Ctrl+,), the Activity Bar gear, the status-bar user
+name, or the palette. It mirrors the Obsidian settings layout: a
+left section nav (Vault, Editor, AI Assist, Import, plus Accounts /
+Audit Log for admins) beside a scrolling column of "name + description →
+control" rows. This replaced the cramped list-panel settings that shared
+the 280 px sidebar.
 
 The Edit menu uses the standard predefined items (undo/redo/cut/copy/
 paste/select-all) with their usual shortcuts. The editor keeps its own
@@ -356,7 +374,8 @@ shortcut.
 | search    | Search input + result list (full-text)                              |
 | tags      | Flat tag list with counts; selecting a tag shows its notes          |
 | sync      | Last sync time, pending changes, "Sync now" button, log             |
-| settings  | Setting categories; admin-only account and audit-log management     |
+
+(Settings is a modal, not a list panel — see §4.3.)
 
 ### 4.5 Journal mode (quick capture + activity summary)
 
@@ -407,6 +426,15 @@ a month grid. The timeline runs newest-to-oldest by default, with a
 │ ...                             │
 └─────────────────────────────────┘
 ```
+
+**Wide layout.** Calendar is the one view where the list panel is not
+sized by the resizer. `AppShell` gives it `CALENDAR_LIST_RATIO` (0.7) of
+the space it shares with the editor — a `calc()` on `--list-panel-width`
+that subtracts the fixed activity / resizer / ai columns first, so the
+month grid + timeline get ~70 % and the editor ~30 %. The drag handle is
+hidden in calendar mode (the width is proportional, not drag-sized), and
+`CalendarGrid` cells grow to a 52 px min-height so the month reads as a
+real calendar rather than a flat strip.
 
 Behaviors:
 
@@ -460,11 +488,15 @@ explicitly assign notes to past or future dates (true Agenda-style
   per-note progress events, reachable from File ▸ Import
 - Notes folder management (create / rename / delete, empty dirs shown)
 - Sync conflict-resolution UI (keep mine / keep theirs)
-- Auth hardening: Argon2id passwords + in-memory session tokens
+- Auth hardening: Argon2id passwords + in-memory session tokens, with an
+  opt-in persisted "keep me signed in" token (30-day TTL, `auth_resume`)
 - In-memory tag index serving tags **and** timeline/activity;
   per-vault write/sync mutex; CSP
 - Local AI providers (Ollama) — key-free, on-device AI Assist
 - Native application menu with global shortcuts (§4.3)
+- CLI hooks (`<app-config-dir>/hooks/on-note-save|on-journal-save|on-sync`)
+  — the first slice of the v2 "plugin system" candidate, git-hooks model
+- One-click default vault: first run offers `~/Documents/duramen`
 
 ### v1.5
 
@@ -479,7 +511,8 @@ explicitly assign notes to past or future dates (true Agenda-style
 
 - Backlinks & wiki-links
 - Graph view
-- Plugin system
+- Plugin system beyond CLI hooks (in-webview JS API, Obsidian-style,
+  and/or MCP server exposure of the vault)
 - Mobile app (if v1.5 study is positive)
 - System Calendar / Reminders integration
 

@@ -92,6 +92,51 @@ fn vault_init_impl(root: &Path) -> Result<VaultInfo, AppError> {
     Ok(vault_info_for(root))
 }
 
+// ── vault_create_default ─────────────────────────────────────────────────
+
+/// Default vault folder name, created under the user's Documents dir by
+/// the first-run "quick create" path. The vault's display name is the
+/// folder name, so a fresh setup shows up as "duramen".
+const DEFAULT_VAULT_NAME: &str = "duramen";
+
+/// One-click first-run setup: create `~/Documents/duramen` (falling
+/// back to `duramen-2`, `duramen-3`, … if the name is taken),
+/// initialize it as a vault, and make it active.
+#[tauri::command]
+pub fn vault_create_default() -> Result<VaultInfo, AppError> {
+    let config_dir = config::default_app_config_dir()?;
+    fsx::ensure_dir(&config_dir)?;
+    let documents = dirs::document_dir()
+        .or_else(dirs::home_dir)
+        .ok_or_else(|| AppError::NotFound("no Documents directory on this system".into()))?;
+    vault_create_default_impl(&config_dir, &documents)
+}
+
+fn vault_create_default_impl(config_dir: &Path, documents: &Path) -> Result<VaultInfo, AppError> {
+    let root = available_default_root(documents)?;
+    fsx::ensure_dir(&root)?;
+    let info = vault_init_impl(&root)?;
+    vault_set_active_impl(config_dir, &info.root)?;
+    Ok(info)
+}
+
+fn available_default_root(documents: &Path) -> Result<PathBuf, AppError> {
+    let base = documents.join(DEFAULT_VAULT_NAME);
+    if !base.exists() {
+        return Ok(base);
+    }
+    for i in 2..1000 {
+        let candidate = documents.join(format!("{DEFAULT_VAULT_NAME}-{i}"));
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    Err(AppError::Conflict(format!(
+        "could not find a free folder name for {DEFAULT_VAULT_NAME} under {}",
+        documents.display()
+    )))
+}
+
 // ── vault_current / vault_set_active / vault_list_known ──────────────────
 
 #[tauri::command]
@@ -278,5 +323,37 @@ mod tests {
         let listed = vault_list_known_impl(cfg_dir.path()).unwrap();
         assert!(listed[0].initialized);
         assert!(!listed[1].initialized);
+    }
+
+    // ── vault_create_default ────────────────────────────────────────
+
+    #[test]
+    fn create_default_makes_duramen_and_activates_it() {
+        let cfg_dir = tempfile::tempdir().unwrap();
+        let docs = tempfile::tempdir().unwrap();
+
+        let info = vault_create_default_impl(cfg_dir.path(), docs.path()).unwrap();
+
+        assert_eq!(info.name, "duramen");
+        assert!(info.initialized);
+        let root = Path::new(&info.root);
+        assert!(root.join(".naiteh/config.json").is_file());
+        assert!(root.join("notes/_inbox").is_dir());
+        assert!(root.join("journal").is_dir());
+
+        // Registered as the active vault in app config.
+        let active = vault_current_impl(cfg_dir.path()).unwrap().unwrap();
+        assert_eq!(active.root, info.root);
+    }
+
+    #[test]
+    fn create_default_dedups_when_duramen_exists() {
+        let cfg_dir = tempfile::tempdir().unwrap();
+        let docs = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(docs.path().join("duramen")).unwrap();
+
+        let info = vault_create_default_impl(cfg_dir.path(), docs.path()).unwrap();
+        assert_eq!(info.name, "duramen-2");
+        assert!(info.initialized);
     }
 }

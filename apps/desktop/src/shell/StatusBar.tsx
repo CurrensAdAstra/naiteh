@@ -15,6 +15,7 @@ export function StatusBar() {
   const syncStatus = useSyncStore((s) => s.status);
   const syncNotInitialized = useSyncStore((s) => s.notInitialized);
   const setViewMode = useUIStore((s) => s.setViewMode);
+  const setSettingsOpen = useUIStore((s) => s.setSettingsOpen);
   const session = useAuthStore((s) => s.session);
   const clearSession = useAuthStore((s) => s.clearSession);
   const logAction = useAuthStore((s) => s.logAction);
@@ -40,7 +41,7 @@ export function StatusBar() {
         <button
           type="button"
           className={styles.linkLike}
-          onClick={() => setViewMode("settings")}
+          onClick={() => setSettingsOpen(true)}
           aria-label="Open account settings"
           title="Open account settings"
           data-testid="status-user"

@@ -31,11 +31,30 @@ describe("LoginScreen", () => {
     await user.click(screen.getByTestId("login-submit"));
 
     await waitFor(() => {
-      expect(mockedLogin).toHaveBeenCalledWith("admin", "admin");
+      // "Keep me signed in" defaults on, so remember=true.
+      expect(mockedLogin).toHaveBeenCalledWith("admin", "admin", true);
       expect(onLogin).toHaveBeenCalledWith("deadbeef", {
         username: "admin",
         role: "Admin",
       });
+    });
+  });
+
+  it("passes remember=false when the checkbox is unticked", async () => {
+    mockedLogin.mockResolvedValue({
+      token: "deadbeef",
+      session: { username: "admin", role: "Admin" },
+    });
+    const user = userEvent.setup();
+
+    render(<LoginScreen onLogin={vi.fn()} />);
+    await user.type(screen.getByTestId("login-username"), "admin");
+    await user.type(screen.getByTestId("login-password"), "admin");
+    await user.click(screen.getByTestId("login-remember"));
+    await user.click(screen.getByTestId("login-submit"));
+
+    await waitFor(() => {
+      expect(mockedLogin).toHaveBeenCalledWith("admin", "admin", false);
     });
   });
 
