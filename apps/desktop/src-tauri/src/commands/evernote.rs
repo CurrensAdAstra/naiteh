@@ -95,9 +95,7 @@ pub async fn evernote_import<R: Runtime>(
             Ok(r) => merge_report(&mut merged, r),
             Err(e) => {
                 merged.failed_count += 1;
-                merged
-                    .errors
-                    .push(format!("{}: {e}", p.display()));
+                merged.errors.push(format!("{}: {e}", p.display()));
             }
         }
     }

@@ -43,11 +43,7 @@ pub fn pinned(docs: &[IndexedDoc]) -> Vec<TimelineItem> {
 /// One `TimelineDay` per date in `[from, to]` (inclusive), newest day
 /// first. Journal entries land on their own date; notes land on their
 /// mtime's local date. Empty days are included.
-pub fn range(
-    docs: &[IndexedDoc],
-    from: NaiveDate,
-    to: NaiveDate,
-) -> Vec<TimelineDay> {
+pub fn range(docs: &[IndexedDoc], from: NaiveDate, to: NaiveDate) -> Vec<TimelineDay> {
     let mut journal_by_date: HashMap<String, TimelineItem> = HashMap::new();
     let mut notes_by_date: HashMap<String, Vec<TimelineItem>> = HashMap::new();
 
@@ -203,12 +199,7 @@ mod tests {
 
     #[test]
     fn journal_files_become_journal_entries_keyed_by_date() {
-        let docs = vec![note_doc(
-            "journal/2026/05/2026-05-09.md",
-            "Day",
-            500,
-            false,
-        )];
+        let docs = vec![note_doc("journal/2026/05/2026-05-09.md", "Day", 500, false)];
         let items = recent(&docs, 10);
         match &items[0] {
             TimelineItem::JournalEntry { date, title, .. } => {
@@ -243,8 +234,7 @@ mod tests {
         // Newest day first.
         assert_eq!(days[0].date, "2026-05-10");
         assert_eq!(days[2].date, "2026-05-08");
-        let with_entry: Vec<_> =
-            days.iter().filter(|d| !d.items.is_empty()).collect();
+        let with_entry: Vec<_> = days.iter().filter(|d| !d.items.is_empty()).collect();
         assert_eq!(with_entry.len(), 1);
         assert_eq!(with_entry[0].date, "2026-05-09");
     }

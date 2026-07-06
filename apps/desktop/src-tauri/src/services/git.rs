@@ -252,7 +252,8 @@ pub fn pull_ff_only(vault_root: &Path) -> Result<(), AppError> {
     // retry, or use `sync_now` instead.
     if is_dirty(&repo)? {
         return Err(AppError::Conflict(
-            "vault has uncommitted changes; save your work or use \"Sync now\" instead of \"Pull\"".into(),
+            "vault has uncommitted changes; save your work or use \"Sync now\" instead of \"Pull\""
+                .into(),
         ));
     }
     let branch = current_branch_name(&repo)?;
@@ -745,7 +746,12 @@ mod tests {
     #[test]
     fn conflict_path_keeps_extension_and_directory() {
         let v = tempdir().unwrap();
-        let p = conflict_path(v.path(), "notes/work/standup.md", "2026-05-09T10-00-00", None);
+        let p = conflict_path(
+            v.path(),
+            "notes/work/standup.md",
+            "2026-05-09T10-00-00",
+            None,
+        );
         assert_eq!(
             p.strip_prefix(v.path()).unwrap().to_string_lossy(),
             "notes/work/standup.conflict-2026-05-09T10-00-00.md"

@@ -170,10 +170,7 @@ fn save_store(config_dir: &Path, store: &AuthStore) -> Result<(), AppError> {
     fsx::write_json(&auth_path(config_dir), store)
 }
 
-fn persist_seeded_store_if_needed(
-    config_dir: &Path,
-    store: &AuthStore,
-) -> Result<(), AppError> {
+fn persist_seeded_store_if_needed(config_dir: &Path, store: &AuthStore) -> Result<(), AppError> {
     if !auth_path(config_dir).exists() {
         save_store(config_dir, store)?;
     }
@@ -317,10 +314,7 @@ pub fn append_audit(
     let path = audit_path(config_dir);
     rotate_audit_if_needed(config_dir, &path);
 
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)?;
+    let mut file = OpenOptions::new().create(true).append(true).open(&path)?;
     writeln!(file, "{json}")?;
     Ok(())
 }
@@ -338,10 +332,7 @@ fn rotate_audit_if_needed(config_dir: &Path, path: &Path) {
     }
 }
 
-pub fn read_audit(
-    config_dir: &Path,
-    limit: u32,
-) -> Result<Vec<AuditLogEntry>, AppError> {
+pub fn read_audit(config_dir: &Path, limit: u32) -> Result<Vec<AuditLogEntry>, AppError> {
     let limit = limit.clamp(1, 500) as usize;
     // Read only the file's tail rather than slurping the whole thing —
     // the active log can be multiple MB before rotation kicks in.
@@ -420,9 +411,9 @@ impl SessionStore {
     /// `AppError::Unauthorized` for unknown / forged tokens.
     pub fn resolve(&self, token: &str) -> Result<AuthSession, AppError> {
         let map = self.inner.lock().expect("session map poisoned");
-        map.get(token).cloned().ok_or_else(|| {
-            AppError::Unauthorized("invalid or expired session".into())
-        })
+        map.get(token)
+            .cloned()
+            .ok_or_else(|| AppError::Unauthorized("invalid or expired session".into()))
     }
 
     /// Resolve and additionally require the role to be Admin.
@@ -467,8 +458,7 @@ mod tests {
         let dir = tempdir().unwrap();
         authenticate(dir.path(), "admin", "admin").unwrap();
         let store: AuthStore =
-            serde_json::from_str(&std::fs::read_to_string(auth_path(dir.path())).unwrap())
-                .unwrap();
+            serde_json::from_str(&std::fs::read_to_string(auth_path(dir.path())).unwrap()).unwrap();
         assert!(
             store.users[0].password_hash.starts_with("$argon2"),
             "seed hash should be argon2, got {}",
@@ -516,8 +506,7 @@ mod tests {
 
         // Now on disk the hash has been re-written as argon2.
         let reloaded: AuthStore =
-            serde_json::from_str(&std::fs::read_to_string(auth_path(dir.path())).unwrap())
-                .unwrap();
+            serde_json::from_str(&std::fs::read_to_string(auth_path(dir.path())).unwrap()).unwrap();
         let upgraded = &reloaded
             .users
             .iter()
@@ -609,7 +598,10 @@ mod tests {
         std::fs::write(&path, content).unwrap();
 
         let lines = read_last_lines(&path, 2).unwrap();
-        assert_eq!(lines, vec!["line-1998".to_string(), "line-1999".to_string()]);
+        assert_eq!(
+            lines,
+            vec!["line-1998".to_string(), "line-1999".to_string()]
+        );
     }
 
     #[test]
@@ -638,7 +630,10 @@ mod tests {
         assert!(dir.path().join(AUDIT_FILE_ROTATED).exists());
         let active = std::fs::read_to_string(&path).unwrap();
         assert!(active.contains("after-rotate"));
-        assert!(active.len() < 1024, "active log should be small after rotation");
+        assert!(
+            active.len() < 1024,
+            "active log should be small after rotation"
+        );
     }
 
     // ── SessionStore ─────────────────────────────────────────────────

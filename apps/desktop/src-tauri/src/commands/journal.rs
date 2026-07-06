@@ -235,9 +235,7 @@ pub fn timeline_range(
 // ── timeline_pinned ──────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn timeline_pinned(
-    index: tauri::State<'_, TagIndex>,
-) -> Result<Vec<TimelineItem>, AppError> {
+pub fn timeline_pinned(index: tauri::State<'_, TagIndex>) -> Result<Vec<TimelineItem>, AppError> {
     let vault_root = config::current_vault_root()?;
     let snap = index.get_or_build(&vault_root)?;
     Ok(timeline::pinned(&snap.notes))
@@ -279,7 +277,6 @@ fn journal_path_for(vault_root: &Path, date: &str) -> PathBuf {
         .join(format!("{date}.md"))
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,11 +297,7 @@ mod tests {
         timeline::recent(&snap.notes, limit as usize)
     }
 
-    fn range(
-        vault: &Path,
-        from: &str,
-        to: &str,
-    ) -> Result<Vec<TimelineDay>, AppError> {
+    fn range(vault: &Path, from: &str, to: &str) -> Result<Vec<TimelineDay>, AppError> {
         let from_d = parse_date(from)?;
         let to_d = parse_date(to)?;
         if from_d > to_d {
