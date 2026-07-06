@@ -53,10 +53,7 @@ impl TagIndex {
     /// Returns the cached snapshot, building it from disk if missing.
     /// The returned `Arc` lets callers iterate without holding the
     /// outer map lock.
-    pub fn get_or_build(
-        &self,
-        vault_root: &Path,
-    ) -> Result<Arc<TagSnapshot>, AppError> {
+    pub fn get_or_build(&self, vault_root: &Path) -> Result<Arc<TagSnapshot>, AppError> {
         let key = canonical_or_owned(vault_root);
         {
             let map = self.inner.lock().expect("tag-index map poisoned");
@@ -160,11 +157,7 @@ mod tests {
         assert_eq!(initial.notes.len(), 3);
 
         // Add a new tagged file then invalidate.
-        fsx::atomic_write(
-            &v.path().join("notes/c.md"),
-            b"---\ntags: [new]\n---\nbody",
-        )
-        .unwrap();
+        fsx::atomic_write(&v.path().join("notes/c.md"), b"---\ntags: [new]\n---\nbody").unwrap();
         idx.invalidate(v.path());
 
         let after = idx.get_or_build(v.path()).unwrap();
@@ -176,11 +169,7 @@ mod tests {
     fn different_vaults_get_independent_snapshots() {
         let v1 = vault_with_tags();
         let v2 = tempdir().unwrap();
-        fsx::atomic_write(
-            &v2.path().join("notes/x.md"),
-            b"---\ntags: [other]\n---\n",
-        )
-        .unwrap();
+        fsx::atomic_write(&v2.path().join("notes/x.md"), b"---\ntags: [other]\n---\n").unwrap();
 
         let idx = TagIndex::default();
         let s1 = idx.get_or_build(v1.path()).unwrap();

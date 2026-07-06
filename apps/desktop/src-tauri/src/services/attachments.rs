@@ -114,7 +114,9 @@ fn pick_paste_name(suggested: &str, mime: Option<&str>) -> String {
         return cleaned;
     }
     let stamp = chrono::Utc::now().format("%Y-%m-%d-%H%M%S").to_string();
-    let ext = mime.and_then(fs_naming::extension_for_mime).unwrap_or("bin");
+    let ext = mime
+        .and_then(fs_naming::extension_for_mime)
+        .unwrap_or("bin");
     format!("paste-{stamp}.{ext}")
 }
 
@@ -236,10 +238,11 @@ mod tests {
     fn import_bytes_accepts_payload_at_the_cap() {
         let vault = tempdir().unwrap();
         let at_limit = vec![7u8; MAX_ATTACHMENT_BYTES as usize];
-        let result =
-            import_bytes(vault.path(), &at_limit, "ok.bin", None).unwrap();
+        let result = import_bytes(vault.path(), &at_limit, "ok.bin", None).unwrap();
         assert_eq!(
-            std::fs::metadata(vault.path().join(&result.rel_path)).unwrap().len(),
+            std::fs::metadata(vault.path().join(&result.rel_path))
+                .unwrap()
+                .len(),
             MAX_ATTACHMENT_BYTES
         );
     }
@@ -247,11 +250,18 @@ mod tests {
     #[test]
     fn import_bytes_uses_suggested_name_when_safe() {
         let vault = tempdir().unwrap();
-        let result =
-            import_bytes(vault.path(), b"png-data", "Screen Shot.PNG", Some("image/png"))
-                .unwrap();
+        let result = import_bytes(
+            vault.path(),
+            b"png-data",
+            "Screen Shot.PNG",
+            Some("image/png"),
+        )
+        .unwrap();
         assert_eq!(result.rel_path, "attachments/screen-shot.png");
-        assert_eq!(result.markdown, "![screen shot](attachments/screen-shot.png)");
+        assert_eq!(
+            result.markdown,
+            "![screen shot](attachments/screen-shot.png)"
+        );
         assert_eq!(
             std::fs::read(vault.path().join(&result.rel_path)).unwrap(),
             b"png-data"
@@ -261,8 +271,7 @@ mod tests {
     #[test]
     fn import_bytes_synthesizes_paste_name_when_suggestion_empty() {
         let vault = tempdir().unwrap();
-        let result =
-            import_bytes(vault.path(), b"png-data", "", Some("image/png")).unwrap();
+        let result = import_bytes(vault.path(), b"png-data", "", Some("image/png")).unwrap();
         // Filename should look like paste-YYYY-MM-DD-HHMMSS.png
         assert!(result.file_name.starts_with("paste-"));
         assert!(result.file_name.ends_with(".png"));
@@ -272,9 +281,7 @@ mod tests {
     #[test]
     fn import_bytes_falls_back_to_bin_when_mime_unknown() {
         let vault = tempdir().unwrap();
-        let result =
-            import_bytes(vault.path(), b"raw", "", Some("application/x-weird"))
-                .unwrap();
+        let result = import_bytes(vault.path(), b"raw", "", Some("application/x-weird")).unwrap();
         assert!(result.file_name.ends_with(".bin"));
         // Unknown mime + .bin extension → non-image markdown form.
         assert!(result.markdown.starts_with("["));
@@ -284,18 +291,15 @@ mod tests {
     #[test]
     fn import_bytes_rejects_empty_payload() {
         let vault = tempdir().unwrap();
-        let err = import_bytes(vault.path(), &[], "x.png", Some("image/png"))
-            .unwrap_err();
+        let err = import_bytes(vault.path(), &[], "x.png", Some("image/png")).unwrap_err();
         assert!(matches!(err, AppError::InvalidPath(_)), "got {err:?}");
     }
 
     #[test]
     fn import_bytes_disambiguates_repeated_pastes() {
         let vault = tempdir().unwrap();
-        let first =
-            import_bytes(vault.path(), b"a", "note.txt", Some("text/plain")).unwrap();
-        let second =
-            import_bytes(vault.path(), b"b", "note.txt", Some("text/plain")).unwrap();
+        let first = import_bytes(vault.path(), b"a", "note.txt", Some("text/plain")).unwrap();
+        let second = import_bytes(vault.path(), b"b", "note.txt", Some("text/plain")).unwrap();
         assert_eq!(first.rel_path, "attachments/note.txt");
         assert_eq!(second.rel_path, "attachments/note-2.txt");
     }

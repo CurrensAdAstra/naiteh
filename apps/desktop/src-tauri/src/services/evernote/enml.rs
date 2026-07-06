@@ -51,15 +51,14 @@ pub fn enml_to_markdown(
             Ok(Event::End(ref e)) => state.handle_end(e)?,
             Ok(Event::Empty(ref e)) => state.handle_empty(e)?,
             Ok(Event::Text(t)) => {
-                let s = t.unescape().map_err(|err| {
-                    AppError::ConfigCorrupt(format!("ENML text unescape: {err}"))
-                })?;
+                let s = t
+                    .unescape()
+                    .map_err(|err| AppError::ConfigCorrupt(format!("ENML text unescape: {err}")))?;
                 state.handle_text(&s);
             }
             Ok(Event::CData(c)) => {
-                let s = std::str::from_utf8(c.as_ref()).map_err(|err| {
-                    AppError::ConfigCorrupt(format!("ENML CDATA utf-8: {err}"))
-                })?;
+                let s = std::str::from_utf8(c.as_ref())
+                    .map_err(|err| AppError::ConfigCorrupt(format!("ENML CDATA utf-8: {err}")))?;
                 state.handle_text(s);
             }
             Ok(Event::Eof) => break,
@@ -322,9 +321,9 @@ impl<'a> ConverterState<'a> {
                     .flatten()
                     .find(|a| a.key.local_name().as_ref() == b"checked")
                     .and_then(|a| {
-                        a.unescape_value().ok().map(|v| {
-                            matches!(v.as_ref(), "true" | "True" | "TRUE" | "1")
-                        })
+                        a.unescape_value()
+                            .ok()
+                            .map(|v| matches!(v.as_ref(), "true" | "True" | "TRUE" | "1"))
                     })
                     .unwrap_or(false);
                 // A todo starts its own line; consume any pending block
@@ -580,9 +579,7 @@ mod tests {
 
     #[test]
     fn bold_italic_strike() {
-        let md = convert(
-            "<en-note><p><b>bold</b> and <i>italic</i> and <s>gone</s></p></en-note>",
-        );
+        let md = convert("<en-note><p><b>bold</b> and <i>italic</i> and <s>gone</s></p></en-note>");
         assert_eq!(md, "**bold** and *italic* and ~~gone~~");
     }
 
@@ -629,9 +626,7 @@ mod tests {
 
     #[test]
     fn pre_code_block_preserves_content_verbatim() {
-        let md = convert(
-            "<en-note><pre>fn main() {\n  println!(\"hi\");\n}</pre></en-note>",
-        );
+        let md = convert("<en-note><pre>fn main() {\n  println!(\"hi\");\n}</pre></en-note>");
         assert!(md.starts_with("```\n"));
         assert!(md.contains("fn main()"));
         assert!(md.trim_end().ends_with("```"));
@@ -653,9 +648,7 @@ mod tests {
 
     #[test]
     fn img_with_src_becomes_markdown_image() {
-        let md = convert(
-            r#"<en-note><p><img src="https://x/y.png" alt="cat"/></p></en-note>"#,
-        );
+        let md = convert(r#"<en-note><p><img src="https://x/y.png" alt="cat"/></p></en-note>"#);
         assert_eq!(md, "![cat](https://x/y.png)");
     }
 
@@ -684,17 +677,13 @@ mod tests {
 
     #[test]
     fn anchor_becomes_markdown_link() {
-        let md = convert(
-            r#"<en-note><p>See <a href="https://example.com">site</a></p></en-note>"#,
-        );
+        let md = convert(r#"<en-note><p>See <a href="https://example.com">site</a></p></en-note>"#);
         assert_eq!(md, "See [site](https://example.com)");
     }
 
     #[test]
     fn nested_lists_indent() {
-        let md = convert(
-            "<en-note><ul><li>parent<ul><li>child</li></ul></li></ul></en-note>",
-        );
+        let md = convert("<en-note><ul><li>parent<ul><li>child</li></ul></li></ul></en-note>");
         // We don't insist on perfect spacing, just that the child is
         // indented by two spaces.
         assert!(md.contains("- parent"));

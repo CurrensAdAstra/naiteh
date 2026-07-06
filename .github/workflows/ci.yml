@@ -5,7 +5,8 @@ on:
   pull_request:
 
 env:
-  PNPM_VERSION: 10
+  # pnpm version comes from package.json "packageManager"; specifying it
+  # here too made pnpm/action-setup@v4 fail with "multiple versions".
   NODE_VERSION: 20
 
 jobs:
@@ -100,8 +101,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        with:
-          version: ${{ env.PNPM_VERSION }}
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
@@ -132,7 +131,10 @@ jobs:
             libsoup-3.0-dev \
             libjavascriptcoregtk-4.1-dev \
             libssh2-1-dev
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned rather than @stable so rustfmt output is reproducible
+      # against what contributors run locally (rustfmt can reformat
+      # differently across toolchain versions).
+      - uses: dtolnay/rust-toolchain@1.90.0
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
@@ -140,6 +142,13 @@ jobs:
           workspaces: apps/desktop/src-tauri
       - name: cargo fmt --check
         run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --all -- --check
+      # tauri::generate_context! embeds the frontend dist at compile time,
+      # so clippy/test need it to exist. This job doesn't build the
+      # frontend (that's the Frontend/build jobs), so stub it.
+      - name: Stub frontend dist for generate_context!
+        run: |
+          mkdir -p apps/desktop/dist
+          printf '<!doctype html><title>ci</title>' > apps/desktop/dist/index.html
       - name: cargo clippy (deny warnings)
         run: |
           cargo clippy \
@@ -175,13 +184,11 @@ jobs:
             libjavascriptcoregtk-4.1-dev \
             libssh2-1-dev
       - uses: pnpm/action-setup@v4
-        with:
-          version: ${{ env.PNPM_VERSION }}
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.90.0 # pinned; see the Rust job
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: apps/desktop/src-tauri

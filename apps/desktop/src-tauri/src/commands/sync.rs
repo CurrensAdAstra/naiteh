@@ -26,9 +26,7 @@ fn sync_status_impl(vault_root: &Path) -> Result<SyncStatus, AppError> {
 }
 
 #[tauri::command]
-pub async fn sync_init(
-    locks: tauri::State<'_, VaultLocks>,
-) -> Result<(), AppError> {
+pub async fn sync_init(locks: tauri::State<'_, VaultLocks>) -> Result<(), AppError> {
     let vault_root = config::current_vault_root()?;
     let lock = locks.for_vault(&vault_root);
     let _guard = lock.lock().await;
@@ -64,9 +62,7 @@ pub async fn sync_pull(
 }
 
 #[tauri::command]
-pub async fn sync_push(
-    locks: tauri::State<'_, VaultLocks>,
-) -> Result<SyncStatus, AppError> {
+pub async fn sync_push(locks: tauri::State<'_, VaultLocks>) -> Result<SyncStatus, AppError> {
     let vault_root = config::current_vault_root()?;
     let lock = locks.for_vault(&vault_root);
     let _guard = lock.lock().await;

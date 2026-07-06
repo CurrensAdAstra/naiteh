@@ -96,7 +96,10 @@ mod tests {
     #[test]
     fn sanitize_slugifies_stem_and_cleans_extension() {
         assert_eq!(sanitize_file_name("Screen Shot.PNG"), "screen-shot.png");
-        assert_eq!(sanitize_file_name("Quarterly Plan.pdf"), "quarterly-plan.pdf");
+        assert_eq!(
+            sanitize_file_name("Quarterly Plan.pdf"),
+            "quarterly-plan.pdf"
+        );
     }
 
     #[test]

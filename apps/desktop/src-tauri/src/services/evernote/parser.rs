@@ -52,10 +52,9 @@ pub struct Resource {
 /// Reads + parses an .enex file. Returns one entry per `<note>` element.
 pub fn parse_enex(path: &Path) -> Result<Vec<EvernoteNote>, AppError> {
     let bytes = std::fs::read(path).map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => AppError::NotFound(format!(
-            "ENEX file not found: {}",
-            path.display()
-        )),
+        std::io::ErrorKind::NotFound => {
+            AppError::NotFound(format!("ENEX file not found: {}", path.display()))
+        }
         _ => AppError::Io(format!("reading {}: {e}", path.display())),
     })?;
     parse_enex_bytes(&bytes)
@@ -112,9 +111,7 @@ pub fn parse_enex_bytes(bytes: &[u8]) -> Result<Vec<EvernoteNote>, AppError> {
                         }
                     }
                     "resource" => {
-                        if let (Some(rb), Some(n)) =
-                            (current_resource.take(), current.as_mut())
-                        {
+                        if let (Some(rb), Some(n)) = (current_resource.take(), current.as_mut()) {
                             if let Some(r) = rb.build()? {
                                 n.resources.push(r);
                             }
@@ -124,15 +121,14 @@ pub fn parse_enex_bytes(bytes: &[u8]) -> Result<Vec<EvernoteNote>, AppError> {
                 }
             }
             Ok(Event::Text(t)) => {
-                let s = t.unescape().map_err(|e| {
-                    AppError::ConfigCorrupt(format!("ENEX text unescape: {e}"))
-                })?;
+                let s = t
+                    .unescape()
+                    .map_err(|e| AppError::ConfigCorrupt(format!("ENEX text unescape: {e}")))?;
                 text_buf.push_str(&s);
             }
             Ok(Event::CData(c)) => {
-                let s = std::str::from_utf8(c.as_ref()).map_err(|e| {
-                    AppError::ConfigCorrupt(format!("ENEX CDATA utf-8: {e}"))
-                })?;
+                let s = std::str::from_utf8(c.as_ref())
+                    .map_err(|e| AppError::ConfigCorrupt(format!("ENEX CDATA utf-8: {e}")))?;
                 text_buf.push_str(s);
             }
             Ok(Event::Eof) => {
@@ -174,18 +170,21 @@ impl ResourceBuilder {
             // No data → not useful as an attachment. Silently drop.
             return Ok(None);
         }
-        let cleaned: String =
-            self.data_b64.chars().filter(|c| !c.is_whitespace()).collect();
+        let cleaned: String = self
+            .data_b64
+            .chars()
+            .filter(|c| !c.is_whitespace())
+            .collect();
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(cleaned.as_bytes())
-            .map_err(|e| {
-                AppError::ConfigCorrupt(format!("base64 resource decode: {e}"))
-            })?;
+            .map_err(|e| AppError::ConfigCorrupt(format!("base64 resource decode: {e}")))?;
         let mut hasher = Md5::new();
         hasher.update(&bytes);
         let md5_hash_hex = hex_lower(&hasher.finalize());
         Ok(Some(Resource {
-            mime: self.mime.unwrap_or_else(|| "application/octet-stream".into()),
+            mime: self
+                .mime
+                .unwrap_or_else(|| "application/octet-stream".into()),
             file_name: self.file_name,
             data: bytes,
             md5_hash_hex,
@@ -331,13 +330,11 @@ mod tests {
 
     #[test]
     fn parses_multiple_notes() {
-        let enex = format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?>
+        let enex = r#"<?xml version="1.0" encoding="UTF-8"?>
 <en-export>
   <note><title>A</title><content><![CDATA[<en-note>a</en-note>]]></content></note>
   <note><title>B</title><content><![CDATA[<en-note>b</en-note>]]></content></note>
-</en-export>"#,
-        );
+</en-export>"#;
         let notes = parse_enex_bytes(enex.as_bytes()).unwrap();
         assert_eq!(notes.len(), 2);
         assert_eq!(notes[0].title, "A");

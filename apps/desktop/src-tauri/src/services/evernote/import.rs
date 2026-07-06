@@ -37,10 +37,7 @@ use crate::services::notes;
 /// is the convenience entry point for tests and any future caller that
 /// doesn't need updates.
 #[allow(dead_code)]
-pub fn import_enex(
-    vault_root: &Path,
-    enex_path: &Path,
-) -> Result<EvernoteImportReport, AppError> {
+pub fn import_enex(vault_root: &Path, enex_path: &Path) -> Result<EvernoteImportReport, AppError> {
     import_enex_with_progress(vault_root, enex_path, |_, _| {})
 }
 
@@ -109,10 +106,7 @@ fn import_one_note(
     let slug = unique_slug(vault_root, notebook_slug, &base_slug, used_slugs);
     used_slugs.push(slug.clone());
 
-    let note_dir = vault_root
-        .join("notes")
-        .join(notebook_slug)
-        .join(&slug);
+    let note_dir = vault_root.join("notes").join(notebook_slug).join(&slug);
     fsx::ensure_dir(&note_dir)?;
 
     let mut warnings: Vec<String> = Vec::new();
@@ -127,8 +121,7 @@ fn import_one_note(
             ));
             continue;
         }
-        let file_name =
-            pick_resource_name(resource, r_idx, &mut used_resource_names);
+        let file_name = pick_resource_name(resource, r_idx, &mut used_resource_names);
         let resource_path = note_dir.join(&file_name);
         fsx::atomic_write(&resource_path, &resource.data)?;
 
@@ -203,11 +196,7 @@ fn unique_slug(
     format!("{base}-{}", chrono::Utc::now().timestamp())
 }
 
-fn pick_resource_name(
-    r: &Resource,
-    index: usize,
-    used: &mut Vec<String>,
-) -> String {
+fn pick_resource_name(r: &Resource, index: usize, used: &mut Vec<String>) -> String {
     let candidate = if let Some(name) = &r.file_name {
         fs_naming::sanitize_file_name(name)
     } else {
@@ -244,11 +233,7 @@ fn is_dropped_mime(mime: &str) -> bool {
     m.contains("vnd.evernote.ink")
 }
 
-fn build_front_matter(
-    title: &str,
-    note: &EvernoteNote,
-    warnings: &[String],
-) -> String {
+fn build_front_matter(title: &str, note: &EvernoteNote, warnings: &[String]) -> String {
     let mut out = String::from("---\n");
     out.push_str(&format!("title: {}\n", yaml_quote(title)));
     if let Some(created) = note.created {
@@ -337,10 +322,15 @@ mod tests {
         assert_eq!(report.failed_count, 0);
         let imported = &report.notes[0];
         assert_eq!(imported.source_title, "Hello Note");
-        assert_eq!(imported.rel_path, "notes/personal-notes/hello-note/index.md");
+        assert_eq!(
+            imported.rel_path,
+            "notes/personal-notes/hello-note/index.md"
+        );
 
         let body = std::fs::read_to_string(
-            vault.path().join("notes/personal-notes/hello-note/index.md"),
+            vault
+                .path()
+                .join("notes/personal-notes/hello-note/index.md"),
         )
         .unwrap();
         assert!(body.starts_with("---\n"));
@@ -492,8 +482,7 @@ mod tests {
             "expected no resources, got {resource_files:?}"
         );
 
-        let body =
-            std::fs::read_to_string(note_dir.join("index.md")).unwrap();
+        let body = std::fs::read_to_string(note_dir.join("index.md")).unwrap();
         assert!(body.contains("import_warnings:"));
     }
 
@@ -550,10 +539,7 @@ mod tests {
 </en-export>"#,
         );
         let report = import_enex(vault.path(), &enex).unwrap();
-        let body = std::fs::read_to_string(
-            vault.path().join(&report.notes[0].rel_path),
-        )
-        .unwrap();
+        let body = std::fs::read_to_string(vault.path().join(&report.notes[0].rel_path)).unwrap();
         // Both the " and the \ should be escaped inside the quoted value.
         assert!(
             body.contains(r#"title: "Quote: \"hello\" & backslash \\""#),

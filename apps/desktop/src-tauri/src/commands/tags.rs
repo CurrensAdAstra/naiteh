@@ -70,10 +70,7 @@ fn tags_list_impl(vault_root: &std::path::Path) -> Result<Vec<TagCount>, AppErro
 }
 
 #[cfg(test)]
-fn tags_notes_impl(
-    vault_root: &std::path::Path,
-    tag: &str,
-) -> Result<Vec<NoteMeta>, AppError> {
+fn tags_notes_impl(vault_root: &std::path::Path, tag: &str) -> Result<Vec<NoteMeta>, AppError> {
     let idx = TagIndex::default();
     let snap = idx.get_or_build(vault_root)?;
     Ok(tags_notes_from_snapshot(&snap, tag))

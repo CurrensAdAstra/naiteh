@@ -43,13 +43,7 @@ fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         ],
     )?;
 
-    let new_note = MenuItem::with_id(
-        handle,
-        MENU_NEW_NOTE,
-        "New Note",
-        true,
-        Some("CmdOrCtrl+N"),
-    )?;
+    let new_note = MenuItem::with_id(handle, MENU_NEW_NOTE, "New Note", true, Some("CmdOrCtrl+N"))?;
     let new_folder = MenuItem::with_id(
         handle,
         MENU_NEW_FOLDER,
@@ -119,8 +113,10 @@ fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         Some("CmdOrCtrl+E"),
     )?;
     let separator = PredefinedMenuItem::separator(handle)?;
-    let mut view_refs: Vec<&dyn tauri::menu::IsMenuItem<R>> =
-        view_items.iter().map(|i| i as &dyn tauri::menu::IsMenuItem<R>).collect();
+    let mut view_refs: Vec<&dyn tauri::menu::IsMenuItem<R>> = view_items
+        .iter()
+        .map(|i| i as &dyn tauri::menu::IsMenuItem<R>)
+        .collect();
     view_refs.push(&separator);
     view_refs.push(&command_palette);
     view_refs.push(&toggle_ai);

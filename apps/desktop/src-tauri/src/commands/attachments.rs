@@ -51,10 +51,5 @@ pub async fn attachments_import_bytes(
     let vault_root = config::current_vault_root()?;
     let lock = locks.for_vault(&vault_root);
     let _guard = lock.lock().await;
-    attachments::import_bytes(
-        &vault_root,
-        &bytes,
-        &suggested_name,
-        mime.as_deref(),
-    )
+    attachments::import_bytes(&vault_root, &bytes, &suggested_name, mime.as_deref())
 }

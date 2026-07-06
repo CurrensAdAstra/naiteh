@@ -49,11 +49,7 @@ pub fn list(vault_root: &Path) -> Result<Vec<ConflictPair>, AppError> {
     Ok(out)
 }
 
-fn walk(
-    vault_root: &Path,
-    dir: &Path,
-    out: &mut Vec<ConflictPair>,
-) -> Result<(), AppError> {
+fn walk(vault_root: &Path, dir: &Path, out: &mut Vec<ConflictPair>) -> Result<(), AppError> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let p = entry.path();
@@ -110,15 +106,10 @@ fn rel_from(vault_root: &Path, abs: &Path) -> Option<String> {
 
 /// Drop the conflict sidecar; the live file already holds the user's
 /// preferred version.
-pub fn resolve_keep_ours(
-    vault_root: &Path,
-    conflict_rel_path: &str,
-) -> Result<(), AppError> {
+pub fn resolve_keep_ours(vault_root: &Path, conflict_rel_path: &str) -> Result<(), AppError> {
     let path = guard_conflict(vault_root, conflict_rel_path)?;
     std::fs::remove_file(&path).map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => {
-            AppError::NotFound(conflict_rel_path.to_string())
-        }
+        std::io::ErrorKind::NotFound => AppError::NotFound(conflict_rel_path.to_string()),
         _ => AppError::Io(e.to_string()),
     })
 }
@@ -130,10 +121,7 @@ pub fn resolve_keep_ours(
 /// the caller — `<dir>/<stem>.conflict-<ts>.<ext>` always resolves to
 /// `<dir>/<stem>.<ext>`. This keeps a forged/buggy frontend call from
 /// writing one note's bytes over an unrelated file.
-pub fn resolve_keep_theirs(
-    vault_root: &Path,
-    conflict_rel_path: &str,
-) -> Result<(), AppError> {
+pub fn resolve_keep_theirs(vault_root: &Path, conflict_rel_path: &str) -> Result<(), AppError> {
     let conflict_abs = guard_conflict(vault_root, conflict_rel_path)?;
     let original_rel = derive_original_rel(conflict_rel_path).ok_or_else(|| {
         AppError::InvalidPath(format!(
@@ -144,9 +132,7 @@ pub fn resolve_keep_theirs(
     let live_abs = vault_root.join(&original_rel);
 
     let bytes = std::fs::read(&conflict_abs).map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => {
-            AppError::NotFound(conflict_rel_path.to_string())
-        }
+        std::io::ErrorKind::NotFound => AppError::NotFound(conflict_rel_path.to_string()),
         _ => AppError::Io(e.to_string()),
     })?;
     fsx::atomic_write(&live_abs, &bytes)?;
@@ -203,12 +189,12 @@ mod tests {
     fn list_finds_conflict_pairs_and_sorts_them() {
         let v = tempdir().unwrap();
         touch(v.path(), "notes/a.md", b"ours-a");
-        touch(v.path(), "notes/a.conflict-2026-05-09T10-00-00.md", b"theirs-a");
         touch(
             v.path(),
-            "notes/work/b.md",
-            b"ours-b",
+            "notes/a.conflict-2026-05-09T10-00-00.md",
+            b"theirs-a",
         );
+        touch(v.path(), "notes/work/b.md", b"ours-b");
         touch(
             v.path(),
             "notes/work/b.conflict-2026-05-10T11-22-33.md",
@@ -287,11 +273,7 @@ mod tests {
             b"theirs",
         );
 
-        resolve_keep_theirs(
-            v.path(),
-            "notes/work/plan.conflict-2026-05-09T10-00-00.md",
-        )
-        .unwrap();
+        resolve_keep_theirs(v.path(), "notes/work/plan.conflict-2026-05-09T10-00-00.md").unwrap();
         assert_eq!(
             std::fs::read_to_string(v.path().join("notes/work/plan.md")).unwrap(),
             "theirs"
@@ -344,8 +326,7 @@ mod tests {
     #[test]
     fn keep_ours_returns_not_found_when_sidecar_missing() {
         let v = tempdir().unwrap();
-        let err = resolve_keep_ours(v.path(), "notes/ghost.conflict-ts.md")
-            .unwrap_err();
+        let err = resolve_keep_ours(v.path(), "notes/ghost.conflict-ts.md").unwrap_err();
         assert!(matches!(err, AppError::NotFound(_)));
     }
 }

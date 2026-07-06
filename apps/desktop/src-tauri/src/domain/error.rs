@@ -67,8 +67,7 @@ mod tests {
         let json = serde_json::to_string(&AppError::Upstream("429".into())).unwrap();
         assert_eq!(json, r#"{"kind":"Upstream","message":"429"}"#);
 
-        let json =
-            serde_json::to_string(&AppError::Validation("empty field".into())).unwrap();
+        let json = serde_json::to_string(&AppError::Validation("empty field".into())).unwrap();
         assert_eq!(json, r#"{"kind":"Validation","message":"empty field"}"#);
     }
 
