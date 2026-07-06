@@ -8,6 +8,7 @@ pub mod evernote;
 pub mod fs;
 pub mod fs_naming;
 pub mod git;
+pub mod hooks;
 pub mod index;
 pub mod notes;
 pub mod sync_state;
