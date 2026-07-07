@@ -23,13 +23,15 @@ When the two ever disagree on a *fact*, the LLM wiki is the source of truth.
 ## Layout
 
 ```
+crates/core/               Rust engine core (domain/, services/) — Tauri-free
 apps/desktop/src/          React + TypeScript frontend
-apps/desktop/src-tauri/    Rust backend (domain/, services/, commands)
+apps/desktop/src-tauri/    Tauri shell (commands/ = thin IPC wrappers, menu)
 vault/                     self-contained documentation vault
   journal/                 (dated entries)
   note/                    (free-form notes)
   wiki/                    the LLM wiki — 8 pages, start at index.md
 architecture.md            full implementation reference
+docs/design/               forward-looking design docs (not yet facts)
 docs/sessions/             dated work-session summaries
 ```
 

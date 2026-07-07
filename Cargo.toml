@@ -1,0 +1,30 @@
+# Cargo workspace — see architecture.md §3 and docs/design/engine-daemon.md §11.
+# crates/core is the Tauri-free engine core; apps/desktop/src-tauri is the
+# desktop shell (thin IPC wrappers + menu + webview glue).
+[workspace]
+resolver = "2"
+members = ["crates/core", "apps/desktop/src-tauri"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+rust-version = "1.77"
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "fs", "macros", "sync"] }
+git2 = { version = "0.19", default-features = false, features = ["https", "ssh"] }
+thiserror = "1"
+dirs = "5"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+sha2 = "0.10"
+quick-xml = "0.36"
+base64 = "0.22"
+md-5 = "0.10"
+argon2 = { version = "0.5", features = ["std"] }
+password-hash = { version = "0.5", features = ["getrandom"] }
+getrandom = "0.2"
+tempfile = "3"
+httpmock = "0.7"

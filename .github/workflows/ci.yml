@@ -79,6 +79,7 @@ jobs:
         run: |
           set -e
           violations=$(grep -rEn 'std::fs::write|fs::write\b|tokio::fs::write' \
+            crates/core/src \
             apps/desktop/src-tauri/src \
             --include='*.rs' \
             --exclude-dir=services || true)
@@ -139,9 +140,9 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: apps/desktop/src-tauri
+          workspaces: .
       - name: cargo fmt --check
-        run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --all -- --check
+        run: cargo fmt --all -- --check
       # tauri::generate_context! embeds the frontend dist at compile time,
       # so clippy/test need it to exist. This job doesn't build the
       # frontend (that's the Frontend/build jobs), so stub it.
@@ -152,14 +153,13 @@ jobs:
       - name: cargo clippy (deny warnings)
         run: |
           cargo clippy \
-            --manifest-path apps/desktop/src-tauri/Cargo.toml \
+            --workspace \
             --all-targets --all-features \
             -- -D warnings
       - name: cargo test
         run: |
           cargo test \
-            --manifest-path apps/desktop/src-tauri/Cargo.toml \
-            --all --all-features
+            --workspace --all-features
 
   build:
     name: Build (${{ matrix.os }})
@@ -191,7 +191,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.90.0 # pinned; see the Rust job
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: apps/desktop/src-tauri
+          workspaces: .
           key: build-${{ matrix.os }}
       - run: pnpm install --frozen-lockfile
       - name: Tauri debug build

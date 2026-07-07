@@ -1,5 +1,6 @@
 // Side-effectful services — see architecture.md §8 / §9.
 
+pub mod ai;
 pub mod attachments;
 pub mod auth;
 pub mod config;

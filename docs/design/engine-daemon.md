@@ -282,7 +282,7 @@ detection, timeline building, the `_impl` functions) is portable and moves into
 
 | Phase | Deliverable | Reversible? |
 |---|---|---|
-| **P0** | Extract `core` crate (services + domain). Desktop still in-process. Pure refactor, no behavior change. | Fully |
+| **P0** ✅ *(done)* | Extract `core` crate (services + domain). Desktop still in-process. Pure refactor, no behavior change. | Fully |
 | **P1** | `engine` binary wrapping `core` with the loopback API + token. Tauri **launches it as a sidecar** (dies with the app). UI keeps working. | Fully |
 | **P2** | `watcher` + `ingest` pipeline (folder watching). | Fully |
 | **P3** | Web-clipper extension → `/clip`. | Fully |
