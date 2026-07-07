@@ -1,6 +1,9 @@
 mod commands;
-mod domain;
-mod services;
+
+// Re-exported from the Tauri-free engine core so the `commands/` layer's
+// existing `crate::domain::…` / `crate::services::…` paths keep working.
+// See crates/core and docs/design/engine-daemon.md §11.
+pub use naiteh_core::{domain, services};
 
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
 use tauri::{AppHandle, Emitter, Runtime};

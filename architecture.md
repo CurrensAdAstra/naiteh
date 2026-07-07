@@ -104,9 +104,32 @@ naiteh/
 │   ├── note/
 │   └── wiki/                  ← LLM wiki: canonical data/facts (see §6)
 ├── docs/
+│   ├── design/                ← forward-looking design docs (engine daemon …)
 │   └── sessions/              ← dated work-session summaries
 ├── package.json               ← pnpm workspace root
 ├── pnpm-workspace.yaml
+├── Cargo.toml                 ← cargo workspace root (crates/core + src-tauri)
+├── crates/
+│   └── core/                  ← naiteh-core: the Tauri-free engine core
+│       ├── Cargo.toml
+│       └── src/
+│           ├── lib.rs
+│           ├── domain/         ← pure domain types + AppError,
+│           │   │                  grouped by area, re-exported flat
+│           │   │                  as domain::Foo (mod.rs)
+│           │   ├── mod.rs
+│           │   ├── error.rs     ← AppError
+│           │   ├── attachment.rs← AttachmentImport
+│           │   ├── auth.rs      ← UserRole, AuthUser, AuthSession,
+│           │   │                  LoginResult, AuditLogEntry
+│           │   ├── evernote.rs  ← EvernoteImportReport, …Note
+│           │   ├── journal.rs   ← DayMeta, Journal*Result,
+│           │   │                  TimelineItem, TimelineDay
+│           │   ├── note.rs      ← NoteMeta
+│           │   ├── search.rs    ← SearchHit, TagCount
+│           │   ├── sync.rs      ← SyncStatus
+│           │   └── vault.rs     ← VaultInfo
+│           └── services/       ← side-effectful logic (fs, git, auth, ai, …)
 ├── apps/
 │   └── desktop/
 │       ├── package.json
@@ -132,57 +155,28 @@ naiteh/
 │       │   └── styles/
 │       │       ├── tokens.css         ← VS Code Light Modern tokens
 │       │       └── reset.css
-│       └── src-tauri/                 ← Rust backend
-│           ├── Cargo.toml
+│       └── src-tauri/                 ← Tauri desktop shell
+│           ├── Cargo.toml              ← depends on naiteh-core
 │           ├── tauri.conf.json
 │           └── src/
 │               ├── main.rs
-│               ├── lib.rs              ← Tauri builder, managed state, IPC registry
-│               ├── commands/           ← thin IPC wrappers, one module per area
-│               │   ├── mod.rs
-│               │   ├── ai.rs
-│               │   ├── attachments.rs
-│               │   ├── auth.rs
-│               │   ├── evernote.rs
-│               │   ├── journal.rs
-│               │   ├── notes.rs
-│               │   ├── search.rs
-│               │   ├── settings.rs
-│               │   ├── sync.rs
-│               │   ├── tags.rs
-│               │   ├── vault.rs
-│               │   └── workspace.rs
-│               ├── domain/             ← pure domain types + AppError,
-│               │   │                      grouped by area, re-exported flat
-│               │   │                      as crate::domain::Foo (mod.rs)
-│               │   ├── mod.rs
-│               │   ├── error.rs         ← AppError
-│               │   ├── attachment.rs    ← AttachmentImport
-│               │   ├── auth.rs          ← UserRole, AuthUser, AuthSession,
-│               │   │                      LoginResult, AuditLogEntry
-│               │   ├── evernote.rs      ← EvernoteImportReport, …Note
-│               │   ├── journal.rs       ← DayMeta, Journal*Result,
-│               │   │                      TimelineItem, TimelineDay
-│               │   ├── note.rs          ← NoteMeta
-│               │   ├── search.rs        ← SearchHit, TagCount
-│               │   ├── sync.rs          ← SyncStatus
-│               │   └── vault.rs         ← VaultInfo
-│               └── services/           ← side-effectful logic
+│               ├── lib.rs              ← Tauri builder, managed state, menu,
+│               │                          IPC registry; re-exports core's
+│               │                          domain/ + services/ for commands
+│               └── commands/           ← thin IPC wrappers, one module per area
 │                   ├── mod.rs
+│                   ├── ai.rs
 │                   ├── attachments.rs
-│                   ├── auth.rs         ← Argon2 accounts + SessionStore + audit log
-│                   ├── config.rs
-│                   ├── conflicts.rs    ← sync-conflict discovery + resolution
-│                   ├── evernote/       ← .enex parser, ENML→MD, importer
-│                   ├── fs.rs           ← atomic writes
-│                   ├── fs_naming.rs    ← shared sanitize/MIME/label helpers
-│                   ├── git.rs
-│                   ├── index.rs        ← in-memory tag index (invalidated by writes)
-│                   ├── notes.rs        ← front matter, slugify, resolve_in_vault
-│                   ├── sync_state.rs
-│                   ├── timeline.rs     ← activity/timeline items from the index
-│                   ├── vault_lock.rs   ← per-vault write/sync mutex
-│                   └── workspace.rs    ← per-vault last-opened state
+│                   ├── auth.rs
+│                   ├── evernote.rs
+│                   ├── journal.rs
+│                   ├── notes.rs
+│                   ├── search.rs
+│                   ├── settings.rs
+│                   ├── sync.rs
+│                   ├── tags.rs
+│                   ├── vault.rs
+│                   └── workspace.rs
 └── README.md
 ```
 

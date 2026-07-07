@@ -1,6 +1,5 @@
 PNPM ?= pnpm
 CARGO ?= cargo
-TAURI_DIR := apps/desktop/src-tauri
 
 .PHONY: help install dev tauri-dev build tauri-build preview typecheck lint test test-rust check clean
 
@@ -48,10 +47,10 @@ test:
 	$(PNPM) test
 
 test-rust:
-	cd $(TAURI_DIR) && $(CARGO) test
+	$(CARGO) test --workspace
 
 check: typecheck lint test test-rust
 
 clean:
 	rm -rf apps/desktop/dist
-	cd $(TAURI_DIR) && $(CARGO) clean
+	$(CARGO) clean
