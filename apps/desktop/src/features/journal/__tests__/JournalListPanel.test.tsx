@@ -1,9 +1,21 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { NoteMeta, TimelineItem } from "../../../lib/types";
 import { useEditorStore } from "../../../state/editorStore";
+import {
+  JOURNAL_SPLIT_DEFAULT,
+  JOURNAL_SPLIT_MAX,
+  JOURNAL_SPLIT_MIN,
+  useUIStore,
+} from "../../../state/uiStore";
 import { JournalListPanel } from "../JournalListPanel";
 
 vi.mock("../../../lib/api/journal", () => ({
@@ -197,5 +209,71 @@ describe("JournalListPanel", () => {
         /no vault/i,
       ),
     ).toBeInTheDocument();
+  });
+
+  describe("split divider keyboard resizing", () => {
+    beforeEach(() => {
+      mockedQuickList.mockResolvedValue([]);
+      mockedActivityRecent.mockResolvedValue([]);
+      useUIStore.setState({ journalSplitRatio: JOURNAL_SPLIT_DEFAULT });
+    });
+
+    async function renderDivider() {
+      render(<JournalListPanel />);
+      await within(screen.getByTestId("journal-quick-capture")).findByText(
+        /no quick notes yet/i,
+      );
+      return screen.getByRole("separator", { name: /journal split divider/i });
+    }
+
+    it("exposes a focusable horizontal separator with value attributes", async () => {
+      const sep = await renderDivider();
+      expect(sep).toHaveAttribute("tabindex", "0");
+      expect(sep).toHaveAttribute("aria-orientation", "horizontal");
+      expect(sep).toHaveAttribute("aria-valuemin", String(JOURNAL_SPLIT_MIN * 100));
+      expect(sep).toHaveAttribute("aria-valuemax", String(JOURNAL_SPLIT_MAX * 100));
+      expect(sep).toHaveAttribute(
+        "aria-valuenow",
+        String(Math.round(JOURNAL_SPLIT_DEFAULT * 100)),
+      );
+    });
+
+    it("ArrowDown / ArrowUp move the divider in 5% steps (Shift = 20%)", async () => {
+      const sep = await renderDivider();
+      const start = Math.round(JOURNAL_SPLIT_DEFAULT * 100);
+
+      fireEvent.keyDown(sep, { key: "ArrowDown" });
+      expect(sep).toHaveAttribute("aria-valuenow", String(start + 5));
+      expect(useUIStore.getState().journalSplitRatio).toBeCloseTo(
+        (start + 5) / 100,
+      );
+
+      fireEvent.keyDown(sep, { key: "ArrowUp" });
+      fireEvent.keyDown(sep, { key: "ArrowUp" });
+      expect(sep).toHaveAttribute("aria-valuenow", String(start - 5));
+
+      fireEvent.keyDown(sep, { key: "ArrowDown", shiftKey: true });
+      expect(sep).toHaveAttribute("aria-valuenow", String(start + 15));
+    });
+
+    it("Home / End jump to the bounds and arrows clamp there", async () => {
+      const sep = await renderDivider();
+      fireEvent.keyDown(sep, { key: "End" });
+      expect(useUIStore.getState().journalSplitRatio).toBe(JOURNAL_SPLIT_MAX);
+      fireEvent.keyDown(sep, { key: "ArrowDown" });
+      expect(useUIStore.getState().journalSplitRatio).toBe(JOURNAL_SPLIT_MAX);
+      fireEvent.keyDown(sep, { key: "Home" });
+      expect(useUIStore.getState().journalSplitRatio).toBe(JOURNAL_SPLIT_MIN);
+      expect(sep).toHaveAttribute(
+        "aria-valuenow",
+        String(JOURNAL_SPLIT_MIN * 100),
+      );
+    });
+
+    it("leaves unrelated keys alone", async () => {
+      const sep = await renderDivider();
+      expect(fireEvent.keyDown(sep, { key: "Tab" })).toBe(true);
+      expect(useUIStore.getState().journalSplitRatio).toBe(JOURNAL_SPLIT_DEFAULT);
+    });
   });
 });

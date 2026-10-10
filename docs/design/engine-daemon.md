@@ -45,7 +45,7 @@ the UI window. The answer is a **headless engine + thin UI client**.
   server the user doesn't control.
 
 **Non-goals (for this iteration)**
-- Remote/E2EE sync server implementation (interface only; see §8).
+- Remote/E2EE sync server implementation (interface only; see §9).
 - Real-time collaboration / CRDT merge.
 - Auto-update of the daemon, health telemetry, remote management.
 - Web client / mobile app (separate future work; enabled but not built here).
@@ -155,7 +155,7 @@ Scope for now: **autostart at login + restart on crash.** Nothing more.
   - **Tauri UI** → thin client. Its `lib/api/*` wrappers swap `invoke(...)` for
     `fetch("http://127.0.0.1:PORT/...")` behind the same function signatures,
     so feature code barely changes. (During P1 the app can still launch the
-    engine as a sidecar; see §9.)
+    engine as a sidecar; see §12.)
   - **Browser extension** → posts to `/clip`.
 
 ## 7. Folder watching & ingest

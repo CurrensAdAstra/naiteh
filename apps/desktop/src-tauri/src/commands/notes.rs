@@ -1,8 +1,12 @@
-//! Notes IPC commands — see architecture.md §7.5.
+//! Notes IPC commands — see vault/wiki/ipc-api.md ("Notes").
 //!
 //! Each public command is a thin wrapper that resolves the active vault and
 //! delegates to a `*_impl` taking the vault root explicitly so it can be
 //! unit-tested against a tempdir.
+//!
+//! Every command is `async` and runs its filesystem work through
+//! `fsx::run_blocking`: a synchronous Tauri command executes on the main
+//! thread, so a vault walk there would freeze the UI.
 
 use std::path::{Path, PathBuf};
 
@@ -12,22 +16,40 @@ use crate::services::fs as fsx;
 use crate::services::hooks;
 use crate::services::index::TagIndex;
 use crate::services::notes;
+use crate::services::session::{require_session, ActiveSession};
 use crate::services::vault_lock::VaultLocks;
+
+/// Fire `on-note-save` for a note that was just written / created /
+/// renamed / re-pinned. Fire-and-forget; never fails the command.
+fn fire_note_saved(vault_root: &Path, rel_path: &str) {
+    if let Ok(config_dir) = config::default_app_config_dir() {
+        hooks::fire(
+            &config_dir,
+            hooks::HookEvent::NoteSave,
+            vault_root,
+            Some(rel_path),
+        );
+    }
+}
 
 // ── notes_list ────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn notes_list(rel_dir: Option<String>) -> Result<Vec<NoteMeta>, AppError> {
-    let vault_root = config::current_vault_root()?;
-    notes_list_impl(&vault_root, rel_dir.as_deref())
+pub async fn notes_list(
+    active: tauri::State<'_, ActiveSession>,
+    rel_dir: Option<String>,
+) -> Result<Vec<NoteMeta>, AppError> {
+    require_session(&active)?;
+    fsx::run_blocking(move || {
+        let vault_root = config::current_vault_root()?;
+        notes_list_impl(&vault_root, rel_dir.as_deref())
+    })
+    .await
 }
 
 fn notes_list_impl(vault_root: &Path, rel_dir: Option<&str>) -> Result<Vec<NoteMeta>, AppError> {
     let scan_root = match rel_dir {
-        Some(rel) => {
-            notes::check_rel_path(rel)?;
-            vault_root.join(rel)
-        }
+        Some(rel) => notes::resolve_in_vault(vault_root, rel)?,
         None => vault_root.join("notes"),
     };
     let files = notes::collect_md_files(&scan_root)?;
@@ -42,9 +64,16 @@ fn notes_list_impl(vault_root: &Path, rel_dir: Option<&str>) -> Result<Vec<NoteM
 // ── notes_read ────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn notes_read(rel_path: String) -> Result<String, AppError> {
-    let vault_root = config::current_vault_root()?;
-    notes_read_impl(&vault_root, &rel_path)
+pub async fn notes_read(
+    active: tauri::State<'_, ActiveSession>,
+    rel_path: String,
+) -> Result<String, AppError> {
+    require_session(&active)?;
+    fsx::run_blocking(move || {
+        let vault_root = config::current_vault_root()?;
+        notes_read_impl(&vault_root, &rel_path)
+    })
+    .await
 }
 
 fn notes_read_impl(vault_root: &Path, rel_path: &str) -> Result<String, AppError> {
@@ -59,25 +88,21 @@ fn notes_read_impl(vault_root: &Path, rel_path: &str) -> Result<String, AppError
 
 #[tauri::command]
 pub async fn notes_write(
+    active: tauri::State<'_, ActiveSession>,
     locks: tauri::State<'_, VaultLocks>,
     index: tauri::State<'_, TagIndex>,
     rel_path: String,
     content: String,
 ) -> Result<NoteMeta, AppError> {
+    require_session(&active)?;
     let vault_root = config::current_vault_root()?;
     let lock = locks.for_vault(&vault_root);
     let _guard = lock.lock().await;
-    let result = notes_write_impl(&vault_root, &rel_path, &content);
-    if result.is_ok() {
+    let root = vault_root.clone();
+    let result = fsx::run_blocking(move || notes_write_impl(&root, &rel_path, &content)).await;
+    if let Ok(meta) = &result {
         index.invalidate(&vault_root);
-        if let Ok(config_dir) = config::default_app_config_dir() {
-            hooks::fire(
-                &config_dir,
-                hooks::HookEvent::NoteSave,
-                &vault_root,
-                Some(&rel_path),
-            );
-        }
+        fire_note_saved(&vault_root, &meta.rel_path);
     }
     result
 }
@@ -96,17 +121,21 @@ fn notes_write_impl(
 
 #[tauri::command]
 pub async fn notes_create(
+    active: tauri::State<'_, ActiveSession>,
     locks: tauri::State<'_, VaultLocks>,
     index: tauri::State<'_, TagIndex>,
     rel_dir: String,
     title: String,
 ) -> Result<NoteMeta, AppError> {
+    require_session(&active)?;
     let vault_root = config::current_vault_root()?;
     let lock = locks.for_vault(&vault_root);
     let _guard = lock.lock().await;
-    let result = notes_create_impl(&vault_root, &rel_dir, &title);
-    if result.is_ok() {
+    let root = vault_root.clone();
+    let result = fsx::run_blocking(move || notes_create_impl(&root, &rel_dir, &title)).await;
+    if let Ok(meta) = &result {
         index.invalidate(&vault_root);
+        fire_note_saved(&vault_root, &meta.rel_path);
     }
     result
 }
@@ -116,7 +145,7 @@ fn notes_create_impl(vault_root: &Path, rel_dir: &str, title: &str) -> Result<No
     fsx::ensure_dir(&dir)?;
     let stem = notes::slugify(title);
     let target = unique_path(&dir, &stem);
-    let body = format!("---\ntitle: {}\n---\n\n", yaml_quote(title.trim()));
+    let body = format!("---\ntitle: {}\n---\n\n", notes::yaml_quote(title.trim()));
     fsx::atomic_write(&target, body.as_bytes())?;
     notes::read_note_meta(vault_root, &target)
 }
@@ -131,25 +160,21 @@ fn unique_path(dir: &Path, stem: &str) -> PathBuf {
     candidate
 }
 
-/// Quote a YAML scalar value safely. Wraps in double quotes and escapes
-/// embedded backslashes / quotes.
-fn yaml_quote(s: &str) -> String {
-    let escaped = s.replace('\\', r"\\").replace('"', "\\\"");
-    format!("\"{escaped}\"")
-}
-
 // ── notes_delete ──────────────────────────────────────────────────────────
 
 #[tauri::command]
 pub async fn notes_delete(
+    active: tauri::State<'_, ActiveSession>,
     locks: tauri::State<'_, VaultLocks>,
     index: tauri::State<'_, TagIndex>,
     rel_path: String,
 ) -> Result<(), AppError> {
+    require_session(&active)?;
     let vault_root = config::current_vault_root()?;
     let lock = locks.for_vault(&vault_root);
     let _guard = lock.lock().await;
-    let result = notes_delete_impl(&vault_root, &rel_path);
+    let root = vault_root.clone();
+    let result = fsx::run_blocking(move || notes_delete_impl(&root, &rel_path)).await;
     if result.is_ok() {
         index.invalidate(&vault_root);
     }
@@ -168,17 +193,21 @@ fn notes_delete_impl(vault_root: &Path, rel_path: &str) -> Result<(), AppError> 
 
 #[tauri::command]
 pub async fn notes_rename(
+    active: tauri::State<'_, ActiveSession>,
     locks: tauri::State<'_, VaultLocks>,
     index: tauri::State<'_, TagIndex>,
     from: String,
     to: String,
 ) -> Result<NoteMeta, AppError> {
+    require_session(&active)?;
     let vault_root = config::current_vault_root()?;
     let lock = locks.for_vault(&vault_root);
     let _guard = lock.lock().await;
-    let result = notes_rename_impl(&vault_root, &from, &to);
-    if result.is_ok() {
+    let root = vault_root.clone();
+    let result = fsx::run_blocking(move || notes_rename_impl(&root, &from, &to)).await;
+    if let Ok(meta) = &result {
         index.invalidate(&vault_root);
+        fire_note_saved(&vault_root, &meta.rel_path);
     }
     result
 }
@@ -189,13 +218,16 @@ fn notes_rename_impl(vault_root: &Path, from: &str, to: &str) -> Result<NoteMeta
     if !from_abs.is_file() {
         return Err(AppError::NotFound(from.to_string()));
     }
-    if to_abs.exists() {
+    // On a case-insensitive filesystem `Note.md` → `note.md` makes
+    // `to_abs.exists()` report the source itself; that's a legitimate
+    // case-only rename, not a collision.
+    if to_abs.exists() && !fsx::is_case_only_alias(&from_abs, &to_abs) {
         return Err(AppError::Conflict(format!("target already exists: {to}")));
     }
     if let Some(parent) = to_abs.parent() {
         fsx::ensure_dir(parent)?;
     }
-    std::fs::rename(&from_abs, &to_abs)?;
+    fsx::rename_entry(&from_abs, &to_abs)?;
     notes::read_note_meta(vault_root, &to_abs)
 }
 
@@ -203,17 +235,21 @@ fn notes_rename_impl(vault_root: &Path, from: &str, to: &str) -> Result<NoteMeta
 
 #[tauri::command]
 pub async fn notes_set_pinned(
+    active: tauri::State<'_, ActiveSession>,
     locks: tauri::State<'_, VaultLocks>,
     index: tauri::State<'_, TagIndex>,
     rel_path: String,
     pinned: bool,
 ) -> Result<NoteMeta, AppError> {
+    require_session(&active)?;
     let vault_root = config::current_vault_root()?;
     let lock = locks.for_vault(&vault_root);
     let _guard = lock.lock().await;
-    let result = notes_set_pinned_impl(&vault_root, &rel_path, pinned);
-    if result.is_ok() {
+    let root = vault_root.clone();
+    let result = fsx::run_blocking(move || notes_set_pinned_impl(&root, &rel_path, pinned)).await;
+    if let Ok(meta) = &result {
         index.invalidate(&vault_root);
+        fire_note_saved(&vault_root, &meta.rel_path);
     }
     result
 }
@@ -235,15 +271,22 @@ fn notes_set_pinned_impl(
 
 // ── folders (directory management under notes/) ───────────────────────────
 
-const INBOX_DIR: &str = "notes/_inbox";
+const NOTES_DIR: &str = "notes";
+const INBOX_NAME: &str = "_inbox";
 
 /// List every folder under `notes/` (vault-relative, forward slashes),
 /// including empty ones — the note tree alone can't surface a folder
 /// with no files in it.
 #[tauri::command]
-pub fn notes_list_dirs() -> Result<Vec<String>, AppError> {
-    let vault_root = config::current_vault_root()?;
-    notes_list_dirs_impl(&vault_root)
+pub async fn notes_list_dirs(
+    active: tauri::State<'_, ActiveSession>,
+) -> Result<Vec<String>, AppError> {
+    require_session(&active)?;
+    fsx::run_blocking(|| {
+        let vault_root = config::current_vault_root()?;
+        notes_list_dirs_impl(&vault_root)
+    })
+    .await
 }
 
 fn notes_list_dirs_impl(vault_root: &Path) -> Result<Vec<String>, AppError> {
@@ -260,7 +303,9 @@ fn collect_dirs(vault_root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let p = entry.path();
-        if !p.is_dir() {
+        // `file_type` doesn't follow symlinks, so a synced
+        // `notes/loop -> ..` can't send us into infinite recursion.
+        if !entry.file_type()?.is_dir() {
             continue;
         }
         let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
@@ -275,60 +320,92 @@ fn collect_dirs(vault_root: &Path, dir: &Path, out: &mut Vec<String>) -> Result<
     Ok(())
 }
 
-/// A managed folder must live strictly under `notes/` — never the
-/// `notes/` root itself, never another top-level dir.
-fn ensure_notes_subdir(rel: &str) -> Result<(), AppError> {
-    let trimmed = rel.trim_end_matches('/');
-    if trimmed.starts_with("notes/") && trimmed.len() > "notes/".len() {
-        Ok(())
-    } else {
-        Err(AppError::InvalidPath(format!(
-            "folder must be under notes/: {rel}"
-        )))
-    }
+/// A folder argument for the folder-management commands, resolved and
+/// vetted.
+struct NotesSubdir {
+    /// Lexically joined absolute path (what we operate on).
+    abs: PathBuf,
+    /// Canonical form (deepest existing ancestor canonicalized), used
+    /// for containment / identity comparisons.
+    canon: PathBuf,
+    /// True if this names the reserved `notes/_inbox`, by spelling
+    /// (case-insensitive) or by filesystem identity.
+    reserved: bool,
 }
 
-fn ensure_not_reserved(rel: &str) -> Result<(), AppError> {
-    if rel.trim_end_matches('/') == INBOX_DIR {
-        return Err(AppError::Conflict(
-            "the _inbox folder is reserved and can't be moved or deleted".into(),
-        ));
+/// Resolve a managed folder. It must normalize cleanly (no `.`, `..`,
+/// empty segments, backslashes or drive prefixes — see
+/// `notes::normalize_rel_path`) and live strictly under `notes/`, both
+/// lexically and after canonicalization — never `notes/` itself, never
+/// another top-level dir, never reached via a symlink pointing out of
+/// `notes/`.
+fn resolve_notes_subdir(vault_root: &Path, rel: &str) -> Result<NotesSubdir, AppError> {
+    let not_under = || AppError::InvalidPath(format!("folder must be under notes/: {rel}"));
+    let normalized = notes::normalize_rel_path(rel)?;
+    let parts: Vec<&str> = normalized.split('/').collect();
+    if parts.len() < 2 || !parts[0].eq_ignore_ascii_case(NOTES_DIR) {
+        return Err(not_under());
     }
-    Ok(())
+    let abs = notes::resolve_in_vault(vault_root, &normalized)?;
+    let notes_root = vault_root.join(NOTES_DIR);
+    let canon_notes = notes::canonicalize_lenient(&notes_root).ok_or_else(not_under)?;
+    let canon = notes::canonicalize_lenient(&abs).ok_or_else(not_under)?;
+    if canon == canon_notes || !canon.starts_with(&canon_notes) {
+        return Err(not_under());
+    }
+    let lexically_inbox = parts.len() == 2
+        && parts[1]
+            .trim_end_matches(['.', ' '])
+            .eq_ignore_ascii_case(INBOX_NAME);
+    let same_as_inbox = notes::canonicalize_lenient(&notes_root.join(INBOX_NAME))
+        .is_some_and(|inbox| inbox == canon);
+    Ok(NotesSubdir {
+        abs,
+        canon,
+        reserved: lexically_inbox || same_as_inbox,
+    })
+}
+
+fn reserved_err() -> AppError {
+    AppError::Conflict("the _inbox folder is reserved and can't be moved or deleted".into())
 }
 
 #[tauri::command]
 pub async fn notes_create_dir(
+    active: tauri::State<'_, ActiveSession>,
     locks: tauri::State<'_, VaultLocks>,
     rel_dir: String,
 ) -> Result<(), AppError> {
+    require_session(&active)?;
     let vault_root = config::current_vault_root()?;
     let lock = locks.for_vault(&vault_root);
     let _guard = lock.lock().await;
-    notes_create_dir_impl(&vault_root, &rel_dir)
+    fsx::run_blocking(move || notes_create_dir_impl(&vault_root, &rel_dir)).await
 }
 
 fn notes_create_dir_impl(vault_root: &Path, rel_dir: &str) -> Result<(), AppError> {
-    ensure_notes_subdir(rel_dir)?;
-    let abs = notes::resolve_in_vault(vault_root, rel_dir)?;
-    if abs.exists() {
+    let dir = resolve_notes_subdir(vault_root, rel_dir)?;
+    if dir.abs.exists() {
         return Err(AppError::Conflict(format!(
             "folder already exists: {rel_dir}"
         )));
     }
-    fsx::ensure_dir(&abs)
+    fsx::ensure_dir(&dir.abs)
 }
 
 #[tauri::command]
 pub async fn notes_delete_dir(
+    active: tauri::State<'_, ActiveSession>,
     locks: tauri::State<'_, VaultLocks>,
     index: tauri::State<'_, TagIndex>,
     rel_dir: String,
 ) -> Result<(), AppError> {
+    require_session(&active)?;
     let vault_root = config::current_vault_root()?;
     let lock = locks.for_vault(&vault_root);
     let _guard = lock.lock().await;
-    let result = notes_delete_dir_impl(&vault_root, &rel_dir);
+    let root = vault_root.clone();
+    let result = fsx::run_blocking(move || notes_delete_dir_impl(&root, &rel_dir)).await;
     if result.is_ok() {
         index.invalidate(&vault_root);
     }
@@ -336,26 +413,31 @@ pub async fn notes_delete_dir(
 }
 
 fn notes_delete_dir_impl(vault_root: &Path, rel_dir: &str) -> Result<(), AppError> {
-    ensure_notes_subdir(rel_dir)?;
-    ensure_not_reserved(rel_dir)?;
-    let abs = notes::resolve_in_vault(vault_root, rel_dir)?;
-    if !abs.is_dir() {
+    let dir = resolve_notes_subdir(vault_root, rel_dir)?;
+    if dir.reserved {
+        return Err(reserved_err());
+    }
+    if !dir.abs.is_dir() {
         return Err(AppError::NotFound(rel_dir.to_string()));
     }
-    std::fs::remove_dir_all(&abs).map_err(|e| AppError::Io(e.to_string()))
+    // remove_dir_all removes a symlink itself, never its target.
+    std::fs::remove_dir_all(&dir.abs).map_err(|e| AppError::Io(e.to_string()))
 }
 
 #[tauri::command]
 pub async fn notes_rename_dir(
+    active: tauri::State<'_, ActiveSession>,
     locks: tauri::State<'_, VaultLocks>,
     index: tauri::State<'_, TagIndex>,
     from: String,
     to: String,
 ) -> Result<(), AppError> {
+    require_session(&active)?;
     let vault_root = config::current_vault_root()?;
     let lock = locks.for_vault(&vault_root);
     let _guard = lock.lock().await;
-    let result = notes_rename_dir_impl(&vault_root, &from, &to);
+    let root = vault_root.clone();
+    let result = fsx::run_blocking(move || notes_rename_dir_impl(&root, &from, &to)).await;
     if result.is_ok() {
         index.invalidate(&vault_root);
     }
@@ -363,21 +445,27 @@ pub async fn notes_rename_dir(
 }
 
 fn notes_rename_dir_impl(vault_root: &Path, from: &str, to: &str) -> Result<(), AppError> {
-    ensure_notes_subdir(from)?;
-    ensure_notes_subdir(to)?;
-    ensure_not_reserved(from)?;
-    let from_abs = notes::resolve_in_vault(vault_root, from)?;
-    let to_abs = notes::resolve_in_vault(vault_root, to)?;
-    if !from_abs.is_dir() {
+    let src = resolve_notes_subdir(vault_root, from)?;
+    let dst = resolve_notes_subdir(vault_root, to)?;
+    if src.reserved || dst.reserved {
+        return Err(reserved_err());
+    }
+    if !src.abs.is_dir() {
         return Err(AppError::NotFound(from.to_string()));
     }
-    if to_abs.exists() {
+    let case_only = fsx::is_case_only_alias(&src.abs, &dst.abs);
+    if dst.abs.exists() && !case_only {
         return Err(AppError::Conflict(format!("target already exists: {to}")));
     }
-    if let Some(parent) = to_abs.parent() {
+    if !case_only && dst.canon.starts_with(&src.canon) {
+        return Err(AppError::InvalidPath(format!(
+            "cannot move a folder into itself: {from} -> {to}"
+        )));
+    }
+    if let Some(parent) = dst.abs.parent() {
         fsx::ensure_dir(parent)?;
     }
-    std::fs::rename(&from_abs, &to_abs).map_err(|e| AppError::Io(e.to_string()))
+    fsx::rename_entry(&src.abs, &dst.abs)
 }
 
 #[cfg(test)]
@@ -630,5 +718,215 @@ mod tests {
         notes_set_pinned_impl(v.path(), "notes/x.md", true).unwrap();
         let content = notes_read_impl(v.path(), "notes/x.md").unwrap();
         assert!(content.starts_with("---\npinned: true\n---\n"));
+    }
+
+    // ── regression: folder deletion can't escape to notes/ or _inbox ──
+
+    fn seeded_vault() -> tempfile::TempDir {
+        let v = vault();
+        fsx::atomic_write(&v.path().join("notes/_inbox/q.md"), b"quick").unwrap();
+        fsx::atomic_write(&v.path().join("notes/work/a.md"), b"# A").unwrap();
+        v
+    }
+
+    #[test]
+    fn delete_dir_rejects_notes_root_spellings() {
+        let v = seeded_vault();
+        for bad in [
+            "notes/.",
+            "notes/./",
+            "notes//",
+            "notes/",
+            "notes",
+            "./notes",
+            "notes/work/..",
+            "NOTES/.",
+        ] {
+            let err = notes_delete_dir_impl(v.path(), bad).unwrap_err();
+            assert!(
+                matches!(err, AppError::InvalidPath(_)),
+                "{bad:?} gave {err:?}"
+            );
+        }
+        assert!(v.path().join("notes/_inbox/q.md").is_file());
+        assert!(v.path().join("notes/work/a.md").is_file());
+    }
+
+    #[test]
+    fn delete_dir_rejects_inbox_bypass_spellings() {
+        let v = seeded_vault();
+        for bad in [
+            "notes/_inbox",
+            "notes/_inbox/",
+            "notes/_inbox/.",
+            "notes//_inbox",
+            "notes/./_inbox",
+            "notes/_INBOX",
+            "notes/_Inbox/",
+            "notes\\_inbox",
+        ] {
+            let err = notes_delete_dir_impl(v.path(), bad).unwrap_err();
+            assert!(
+                matches!(err, AppError::Conflict(_) | AppError::InvalidPath(_)),
+                "{bad:?} gave {err:?}"
+            );
+        }
+        assert!(v.path().join("notes/_inbox/q.md").is_file());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn delete_dir_rejects_win32_aliases_of_inbox() {
+        let v = seeded_vault();
+        for bad in [
+            "notes/_inbox.",
+            "notes/_inbox ",
+            "notes/_inbox::$INDEX_ALLOCATION",
+        ] {
+            assert!(notes_delete_dir_impl(v.path(), bad).is_err(), "{bad:?}");
+        }
+        assert!(v.path().join("notes/_inbox/q.md").is_file());
+    }
+
+    #[test]
+    fn rename_and_create_dir_use_the_same_normalization() {
+        let v = seeded_vault();
+        assert!(matches!(
+            notes_rename_dir_impl(v.path(), "notes/.", "notes/moved"),
+            Err(AppError::InvalidPath(_))
+        ));
+        assert!(matches!(
+            notes_rename_dir_impl(v.path(), "notes/_INBOX", "notes/moved"),
+            Err(AppError::Conflict(_))
+        ));
+        assert!(matches!(
+            notes_rename_dir_impl(v.path(), "notes//work", "notes/moved"),
+            Err(AppError::InvalidPath(_))
+        ));
+        assert!(matches!(
+            notes_rename_dir_impl(v.path(), "notes/work", "notes/./moved"),
+            Err(AppError::InvalidPath(_))
+        ));
+        assert!(matches!(
+            notes_create_dir_impl(v.path(), "notes/./x"),
+            Err(AppError::InvalidPath(_))
+        ));
+        assert!(matches!(
+            notes_create_dir_impl(v.path(), "notes/x/../y"),
+            Err(AppError::InvalidPath(_))
+        ));
+        assert!(matches!(
+            notes_rename_impl(v.path(), "notes/work/./a.md", "notes/b.md"),
+            Err(AppError::InvalidPath(_))
+        ));
+        assert!(v.path().join("notes/work/a.md").is_file());
+    }
+
+    #[test]
+    fn rename_dir_refuses_moving_into_itself_or_onto_inbox() {
+        let v = seeded_vault();
+        assert!(matches!(
+            notes_rename_dir_impl(v.path(), "notes/work", "notes/work/sub"),
+            Err(AppError::InvalidPath(_))
+        ));
+        assert!(matches!(
+            notes_rename_dir_impl(v.path(), "notes/work", "notes/_inbox"),
+            Err(AppError::Conflict(_))
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_dir_refuses_symlink_to_notes_root() {
+        use std::os::unix::fs::symlink;
+        let v = seeded_vault();
+        symlink(v.path().join("notes"), v.path().join("notes/alias")).unwrap();
+        assert!(matches!(
+            notes_delete_dir_impl(v.path(), "notes/alias"),
+            Err(AppError::InvalidPath(_))
+        ));
+        assert!(v.path().join("notes/_inbox/q.md").is_file());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn delete_dir_refuses_junction_to_notes_root() {
+        let v = seeded_vault();
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(v.path().join("notes").join("alias"))
+            .arg(v.path().join("notes"))
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        assert!(matches!(
+            notes_delete_dir_impl(v.path(), "notes/alias"),
+            Err(AppError::InvalidPath(_))
+        ));
+        assert!(v.path().join("notes/_inbox/q.md").is_file());
+        // Clean up the junction itself so tempdir teardown is trivial.
+        std::fs::remove_dir(v.path().join("notes").join("alias")).unwrap();
+    }
+
+    // ── case-only renames ──────────────────────────────────────────────
+
+    #[test]
+    fn notes_rename_case_only_succeeds() {
+        let v = vault();
+        fsx::atomic_write(&v.path().join("notes/Note.md"), b"# T").unwrap();
+        let meta = notes_rename_impl(v.path(), "notes/Note.md", "notes/note.md").unwrap();
+        assert_eq!(meta.rel_path, "notes/note.md");
+        let names: Vec<String> = std::fs::read_dir(v.path().join("notes"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".md"))
+            .collect();
+        assert_eq!(names, vec!["note.md".to_string()]);
+    }
+
+    #[test]
+    fn rename_dir_case_only_succeeds() {
+        let v = vault();
+        fsx::atomic_write(&v.path().join("notes/Work/a.md"), b"# A").unwrap();
+        notes_rename_dir_impl(v.path(), "notes/Work", "notes/work").unwrap();
+        let dirs = notes_list_dirs_impl(v.path()).unwrap();
+        assert!(dirs.contains(&"notes/work".to_string()), "{dirs:?}");
+        assert!(!dirs.contains(&"notes/Work".to_string()), "{dirs:?}");
+        assert!(v.path().join("notes/work/a.md").is_file());
+    }
+
+    #[test]
+    fn notes_create_avoids_reserved_and_overlong_names() {
+        let v = vault();
+        let meta = notes_create_impl(v.path(), "notes", "CON").unwrap();
+        assert_eq!(meta.rel_path, "notes/con-note.md");
+        let long = "word ".repeat(100);
+        let meta = notes_create_impl(v.path(), "notes", &long).unwrap();
+        let stem = meta
+            .rel_path
+            .trim_start_matches("notes/")
+            .trim_end_matches(".md");
+        assert!(stem.chars().count() <= notes::MAX_SLUG_CHARS);
+        assert!(!stem.ends_with('-'));
+    }
+
+    // ── front-matter quoting round trip ────────────────────────────────
+
+    #[test]
+    fn notes_create_title_round_trips_through_front_matter() {
+        let v = vault();
+        for title in [
+            r#"Say "hi" \ bye"#,
+            "two\nlines\npinned: true",
+            "tab\tand \\n literal",
+        ] {
+            let meta = notes_create_impl(v.path(), "notes", title).unwrap();
+            assert_eq!(meta.title, title.trim(), "title {title:?}");
+            assert!(!meta.pinned, "title {title:?} injected front matter");
+            let content = notes_read_impl(v.path(), &meta.rel_path).unwrap();
+            // Front matter is exactly one title line.
+            assert_eq!(content.matches('\n').count(), 4, "{content:?}");
+        }
     }
 }

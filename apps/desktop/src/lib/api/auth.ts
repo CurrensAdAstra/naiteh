@@ -1,14 +1,6 @@
-import { invoke } from "@tauri-apps/api/core";
-
-import type { AuditLogEntry, AuthUser, LoginResult } from "../types";
-
-function hasTauriRuntime(): boolean {
-  if (typeof window === "undefined") return true;
-  const maybeWindow = window as unknown as {
-    __TAURI_INTERNALS__?: { invoke?: unknown };
-  };
-  return typeof maybeWindow.__TAURI_INTERNALS__?.invoke === "function";
-}
+import type { AuditLogEntry, AuthUser, LoginResult, UserRole } from "../types";
+import { hasTauriRuntime, invoke } from "./invoke";
+import { notePasswordChangeRequired } from "./passwordChangeFlags";
 
 /**
  * Authenticates and returns an opaque bearer token + session record.
@@ -16,13 +8,22 @@ function hasTauriRuntime(): boolean {
  * resolves it against an in-memory session map. When `remember` is set,
  * the backend persists the session so `authResume` can restore it on the
  * next launch without a password.
+ *
+ * `mustChangePassword` on the result means the account has to set a new
+ * password before it may use the app (see authStore).
  */
-export function authLogin(
+export async function authLogin(
   username: string,
   password: string,
   remember: boolean,
 ): Promise<LoginResult> {
-  return invoke<LoginResult>("auth_login", { username, password, remember });
+  const result = await invoke<LoginResult>("auth_login", {
+    username,
+    password,
+    remember,
+  });
+  notePasswordChangeRequired(result);
+  return result;
 }
 
 /**
@@ -31,14 +32,48 @@ export function authLogin(
  * (no remembered session, expired, or the account was disabled). Also
  * `null` outside the desktop runtime, where there's no backend to ask.
  */
-export function authResume(): Promise<LoginResult | null> {
-  if (!hasTauriRuntime()) return Promise.resolve(null);
-  return invoke<LoginResult | null>("auth_resume");
+export async function authResume(): Promise<LoginResult | null> {
+  if (!hasTauriRuntime()) return null;
+  const result = await invoke<LoginResult | null>("auth_resume");
+  if (result !== null) notePasswordChangeRequired(result);
+  return result;
 }
 
 /** Revokes the token on the backend. Safe to call with stale tokens. */
 export function authLogout(token: string): Promise<void> {
   return invoke<void>("auth_logout", { token });
+}
+
+/**
+ * Change the signed-in user's own password. Backend rules: the new
+ * password is at least 8 characters, differs from the current one, and
+ * is not the username. Clears the session's must-change flag.
+ */
+export function authChangePassword(
+  token: string,
+  currentPassword: string,
+  newPassword: string,
+): Promise<void> {
+  return invoke<void>("auth_change_password", {
+    token,
+    currentPassword,
+    newPassword,
+  });
+}
+
+/** Admin only. Returns the full user list after creation. */
+export function authCreateUser(
+  token: string,
+  username: string,
+  password: string,
+  role: UserRole,
+): Promise<AuthUser[]> {
+  return invoke<AuthUser[]>("auth_create_user", {
+    token,
+    username,
+    password,
+    role,
+  });
 }
 
 export function authListUsers(token: string): Promise<AuthUser[]> {
@@ -64,6 +99,11 @@ export function authListAuditLogs(
   return invoke<AuditLogEntry[]>("auth_list_audit_logs", { token, limit });
 }
 
+/**
+ * Append a work event to the audit log. The backend only accepts a fixed
+ * allowlist of action names (login/logout, vault_switch, evernote_import,
+ * note/journal events…) — never pass user-provided text as `action`.
+ */
 export function authLogAction(
   token: string,
   action: string,

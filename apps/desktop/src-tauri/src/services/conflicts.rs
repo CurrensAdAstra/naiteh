@@ -1,9 +1,10 @@
 //! Sync-conflict discovery and resolution.
 //!
-//! When `services::git::pull_ff_only` hits a merge conflict, it saves
-//! the remote version next to the original as
-//! `<stem>.conflict-<timestamp>.<ext>` and leaves HEAD untouched. This
-//! module finds those pairs and provides the two trivial resolutions:
+//! When a pull hits conflicting edits, `services::git` saves the remote
+//! version next to the original as `<stem>.conflict-<timestamp>.<ext>`,
+//! leaves the live file holding the local version, and records a pending
+//! merge in `.naiteh/sync-state.json`. This module finds those pairs and
+//! provides the two trivial resolutions:
 //!
 //!   - **Keep ours** — delete the `.conflict-*` sidecar; the live file
 //!     already reflects our edit.
@@ -12,9 +13,16 @@
 //!
 //! Anything more nuanced (true 3-way merging, picking lines from both)
 //! is left to the user — they open both files in the editor, edit by
-//! hand, then call "keep ours" to drop the sidecar.
+//! hand, then call "keep ours" to drop the sidecar. Once every sidecar of
+//! a pull is gone, `services::git` records the merge (see
+//! `git::finalize_pending_merge`) and the next sync uploads it.
+//!
+//! Every path handled here is containment-checked: no absolute paths, no
+//! `..`, nothing inside `.git/`, nothing that resolves outside the vault,
+//! and no reading or writing through symlinks (a malicious remote could
+//! commit one).
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -22,7 +30,7 @@ use crate::domain::AppError;
 use crate::services::fs as fsx;
 use crate::services::notes;
 
-const CONFLICT_MARKER: &str = ".conflict-";
+pub(crate) const CONFLICT_MARKER: &str = ".conflict-";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -35,6 +43,13 @@ pub struct ConflictPair {
     /// (e.g. `2026-05-09T10-00-00`). Opaque to the backend; the UI may
     /// re-parse it.
     pub timestamp: String,
+}
+
+/// True when a vault-relative path (either separator) names a conflict
+/// sidecar. Used by `services::git` to keep sidecars out of commits.
+pub(crate) fn is_sidecar_path(rel: &str) -> bool {
+    let name = rel.rsplit(['/', '\\']).next().unwrap_or(rel);
+    name.contains(CONFLICT_MARKER)
 }
 
 /// Walk the vault and collect every conflict sidecar. Stable order
@@ -60,7 +75,16 @@ fn walk(vault_root: &Path, dir: &Path, out: &mut Vec<ConflictPair>) -> Result<()
         if name.starts_with(".git") || name == ".naiteh" {
             continue;
         }
-        if p.is_dir() {
+        // Never follow symlinks while walking (a synced link could point
+        // anywhere, or loop).
+        let ft = match entry.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        if ft.is_symlink() {
+            continue;
+        }
+        if ft.is_dir() {
             walk(vault_root, &p, out)?;
         } else if let Some(pair) = parse_conflict_pair(vault_root, &p) {
             out.push(pair);
@@ -128,8 +152,7 @@ pub fn resolve_keep_theirs(vault_root: &Path, conflict_rel_path: &str) -> Result
             "cannot derive original path from sidecar: {conflict_rel_path}"
         ))
     })?;
-    notes::check_rel_path(&original_rel)?;
-    let live_abs = vault_root.join(&original_rel);
+    let live_abs = safe_vault_target(vault_root, &original_rel)?;
 
     let bytes = std::fs::read(&conflict_abs).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => AppError::NotFound(conflict_rel_path.to_string()),
@@ -165,13 +188,71 @@ fn derive_original_rel(conflict_rel: &str) -> Option<String> {
 }
 
 fn guard_conflict(vault_root: &Path, rel: &str) -> Result<PathBuf, AppError> {
-    notes::check_rel_path(rel)?;
-    if !rel.contains(CONFLICT_MARKER) {
+    if !is_sidecar_path(rel) {
         return Err(AppError::InvalidPath(format!(
             "not a conflict sidecar: {rel}"
         )));
     }
-    Ok(vault_root.join(rel))
+    safe_vault_target(vault_root, rel)
+}
+
+/// Lexical shape check for a vault-relative path coming from a remote
+/// tree or the frontend: non-empty, relative, no `..`, no `.git`
+/// component, and (on Windows) no `:` (drive prefixes / NTFS streams).
+pub(crate) fn check_safe_rel(rel: &str) -> Result<(), AppError> {
+    notes::check_rel_path(rel)?;
+    if cfg!(windows) && rel.contains(':') {
+        return Err(AppError::InvalidPath(format!("':' not allowed: {rel}")));
+    }
+    for c in Path::new(rel).components() {
+        if let Component::Normal(seg) = c {
+            let seg = seg.to_string_lossy();
+            if seg.eq_ignore_ascii_case(".git") {
+                return Err(AppError::InvalidPath(format!(
+                    "path inside .git not allowed: {rel}"
+                )));
+            }
+        }
+    }
+    // Also catch `.git` spelled with the other separator on platforms
+    // where it isn't one (a `\` inside a git tree path on Unix).
+    if rel
+        .split(['/', '\\'])
+        .any(|seg| seg.eq_ignore_ascii_case(".git") || seg == "..")
+    {
+        return Err(AppError::InvalidPath(format!("unsafe path: {rel}")));
+    }
+    Ok(())
+}
+
+/// Resolve a vault-relative path for reading or writing a sync file.
+///
+/// On top of [`check_safe_rel`]: every *existing* component between the
+/// vault root and the target (the target included) must not be a symlink
+/// or junction, and the deepest existing ancestor must canonicalize to a
+/// location inside the canonical vault root
+/// ([`notes::resolve_in_vault`]). The returned path is the lexical join so
+/// atomic writes land at the intended name.
+pub(crate) fn safe_vault_target(vault_root: &Path, rel: &str) -> Result<PathBuf, AppError> {
+    check_safe_rel(rel)?;
+    let target = notes::resolve_in_vault(vault_root, rel)?;
+    let mut cur = vault_root.to_path_buf();
+    for c in Path::new(rel).components() {
+        if let Component::Normal(seg) = c {
+            cur.push(seg);
+            match std::fs::symlink_metadata(&cur) {
+                Ok(md) if md.file_type().is_symlink() => {
+                    return Err(AppError::InvalidPath(format!(
+                        "refusing to follow a symlink: {rel}"
+                    )));
+                }
+                Ok(_) => {}
+                // Nothing deeper exists; the non-existent tail has no links.
+                Err(_) => break,
+            }
+        }
+    }
+    Ok(target)
 }
 
 #[cfg(test)]
@@ -328,5 +409,102 @@ mod tests {
         let v = tempdir().unwrap();
         let err = resolve_keep_ours(v.path(), "notes/ghost.conflict-ts.md").unwrap_err();
         assert!(matches!(err, AppError::NotFound(_)));
+    }
+
+    #[test]
+    fn resolution_rejects_git_dir_and_absolute_paths() {
+        let v = tempdir().unwrap();
+        touch(v.path(), ".git/x.conflict-ts.md", b"junk");
+        for bad in [
+            ".git/x.conflict-ts.md",
+            "notes/.GIT/x.conflict-ts.md",
+            "/etc/x.conflict-ts.md",
+            "notes/../../x.conflict-ts.md",
+            "notes\\..\\..\\x.conflict-ts.md",
+        ] {
+            let err = resolve_keep_ours(v.path(), bad).unwrap_err();
+            assert!(matches!(err, AppError::InvalidPath(_)), "{bad}: {err:?}");
+            let err = resolve_keep_theirs(v.path(), bad).unwrap_err();
+            assert!(matches!(err, AppError::InvalidPath(_)), "{bad}: {err:?}");
+        }
+        assert!(v.path().join(".git/x.conflict-ts.md").exists());
+    }
+
+    #[test]
+    fn safe_vault_target_accepts_new_nested_paths() {
+        let v = tempdir().unwrap();
+        let p = safe_vault_target(v.path(), "notes/new/dir/a.conflict-ts.md").unwrap();
+        assert_eq!(p, v.path().join("notes/new/dir/a.conflict-ts.md"));
+    }
+
+    #[test]
+    fn is_sidecar_path_checks_the_file_name_only() {
+        assert!(is_sidecar_path("notes/a.conflict-ts.md"));
+        assert!(is_sidecar_path("notes\\a.conflict-ts.md"));
+        assert!(!is_sidecar_path("notes.conflict-x/a.md"));
+        assert!(!is_sidecar_path("notes/a.md"));
+    }
+
+    /// Create a directory symlink, or return false where the platform
+    /// refuses (Windows without Developer Mode / admin).
+    fn try_symlink_dir(target: &Path, link: &Path) -> bool {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(target, link).is_ok()
+        }
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_dir(target, link).is_ok()
+        }
+    }
+
+    fn try_symlink_file(target: &Path, link: &Path) -> bool {
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(target, link).is_ok()
+        }
+        #[cfg(windows)]
+        {
+            std::os::windows::fs::symlink_file(target, link).is_ok()
+        }
+    }
+
+    #[test]
+    fn keep_theirs_refuses_to_write_through_a_symlinked_dir() {
+        let v = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        std::fs::create_dir_all(v.path().join("notes")).unwrap();
+        if !try_symlink_dir(outside.path(), &v.path().join("notes/evil")) {
+            eprintln!("skipping: cannot create symlinks here");
+            return;
+        }
+        touch(outside.path(), "a.conflict-ts.md", b"theirs");
+        let err = resolve_keep_theirs(v.path(), "notes/evil/a.conflict-ts.md").unwrap_err();
+        assert!(matches!(err, AppError::InvalidPath(_)), "{err:?}");
+        assert!(!outside.path().join("a.md").exists());
+        let err = resolve_keep_ours(v.path(), "notes/evil/a.conflict-ts.md").unwrap_err();
+        assert!(matches!(err, AppError::InvalidPath(_)), "{err:?}");
+        assert!(outside.path().join("a.conflict-ts.md").exists());
+    }
+
+    #[test]
+    fn keep_theirs_refuses_a_symlinked_sidecar() {
+        let v = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        touch(outside.path(), "secret.txt", b"secret");
+        touch(v.path(), "notes/a.md", b"ours");
+        if !try_symlink_file(
+            &outside.path().join("secret.txt"),
+            &v.path().join("notes/a.conflict-ts.md"),
+        ) {
+            eprintln!("skipping: cannot create symlinks here");
+            return;
+        }
+        let err = resolve_keep_theirs(v.path(), "notes/a.conflict-ts.md").unwrap_err();
+        assert!(matches!(err, AppError::InvalidPath(_)), "{err:?}");
+        assert_eq!(
+            std::fs::read_to_string(v.path().join("notes/a.md")).unwrap(),
+            "ours"
+        );
     }
 }

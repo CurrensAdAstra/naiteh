@@ -4,17 +4,29 @@ on:
     branches: [main]
   pull_request:
 
+# Least privilege: CI only needs to read the repo.
+permissions:
+  contents: read
+
 env:
   # pnpm version comes from package.json "packageManager"; specifying it
   # here too made pnpm/action-setup@v4 fail with "multiple versions".
   NODE_VERSION: 20
+
+# Third-party actions are pinned to full commit SHAs (the trailing comment
+# names the tag the SHA was resolved from). Bump them deliberately.
+# dtolnay/rust-toolchain is pinned to the commit of its `1.90.0` branch and
+# also gets `toolchain:` explicitly, so the SHA pin can't drift the version.
+# Pinned rather than @stable so rustfmt output is reproducible against what
+# contributors run locally (rustfmt can reformat differently across
+# toolchain versions). Keep in sync with rust-version in Cargo.toml.
 
 jobs:
   guards:
     name: Guards
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
 
@@ -52,7 +64,7 @@ jobs:
             --include='*.css' --include='*.scss' \
             --exclude='tokens.css' || true)
           if [ -n "$violations" ]; then
-            echo "::error::Hex color literals must live only in tokens.css (see architecture.md §5.2)."
+            echo "::error::Hex color literals must live only in tokens.css (see architecture.md §4.2 Theme)."
             echo "$violations"
             exit 1
           fi
@@ -69,7 +81,7 @@ jobs:
             --exclude='tokens.css' \
             | grep -v 'var(--font-' || true)
           if [ -n "$violations" ]; then
-            echo "::error::font-family must reference a --font-* token (see architecture.md §5.2)."
+            echo "::error::font-family must reference a --font-* token (see architecture.md §4.2 Theme)."
             echo "$violations"
             exit 1
           fi
@@ -83,7 +95,7 @@ jobs:
             --include='*.rs' \
             --exclude-dir=services || true)
           if [ -n "$violations" ]; then
-            echo "::error::All writes must go through services/fs.rs::atomic_write (see architecture.md §9)."
+            echo "::error::All writes must go through services/fs.rs::atomic_write (see architecture.md §6 Data & API Reference -> vault/wiki/concurrency-safety.md)."
             echo "$violations"
             exit 1
           fi
@@ -99,9 +111,9 @@ jobs:
     name: Frontend
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
@@ -116,11 +128,16 @@ jobs:
         run: pnpm -C apps/desktop build
 
   rust:
-    name: Rust
-    runs-on: ubuntu-latest
+    name: Rust (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Install Tauri v2 system deps
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - name: Install Tauri v2 system deps (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -131,31 +148,35 @@ jobs:
             libsoup-3.0-dev \
             libjavascriptcoregtk-4.1-dev \
             libssh2-1-dev
-      # Pinned rather than @stable so rustfmt output is reproducible
-      # against what contributors run locally (rustfmt can reformat
-      # differently across toolchain versions).
-      - uses: dtolnay/rust-toolchain@1.90.0
+      - uses: dtolnay/rust-toolchain@4aab473fa1157d90c6dc14f879ca54797e16fea0 # 1.90.0 branch
         with:
+          toolchain: 1.90.0
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: apps/desktop/src-tauri
+          key: rust-${{ matrix.os }}
+      # Formatting is platform-independent; check it once.
       - name: cargo fmt --check
+        if: runner.os == 'Linux'
         run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --all -- --check
       # tauri::generate_context! embeds the frontend dist at compile time,
       # so clippy/test need it to exist. This job doesn't build the
       # frontend (that's the Frontend/build jobs), so stub it.
       - name: Stub frontend dist for generate_context!
+        shell: bash
         run: |
           mkdir -p apps/desktop/dist
           printf '<!doctype html><title>ci</title>' > apps/desktop/dist/index.html
       - name: cargo clippy (deny warnings)
+        shell: bash
         run: |
           cargo clippy \
             --manifest-path apps/desktop/src-tauri/Cargo.toml \
             --all-targets --all-features \
             -- -D warnings
       - name: cargo test
+        shell: bash
         run: |
           cargo test \
             --manifest-path apps/desktop/src-tauri/Cargo.toml \
@@ -167,12 +188,20 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          # One cheap bundle per OS: enough to smoke-test packaging without
+          # producing every installer format on every push.
+          - os: ubuntu-latest
+            bundles: deb
+          - os: macos-latest
+            bundles: app
+          - os: windows-latest
+            bundles: nsis
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Install Tauri v2 system deps (Linux)
-        if: matrix.os == 'ubuntu-latest'
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -183,16 +212,18 @@ jobs:
             libsoup-3.0-dev \
             libjavascriptcoregtk-4.1-dev \
             libssh2-1-dev
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
-      - uses: dtolnay/rust-toolchain@1.90.0 # pinned; see the Rust job
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@4aab473fa1157d90c6dc14f879ca54797e16fea0 # 1.90.0 branch
+        with:
+          toolchain: 1.90.0
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
           workspaces: apps/desktop/src-tauri
           key: build-${{ matrix.os }}
       - run: pnpm install --frozen-lockfile
-      - name: Tauri debug build
-        run: pnpm -C apps/desktop tauri build --debug
+      - name: Tauri debug build (${{ matrix.bundles }})
+        run: pnpm -C apps/desktop tauri build --debug --bundles ${{ matrix.bundles }}

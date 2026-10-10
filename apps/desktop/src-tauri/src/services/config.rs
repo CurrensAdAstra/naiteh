@@ -1,4 +1,4 @@
-//! App-level config (per-OS) — see architecture.md §8.
+//! App-level config (per-OS) — see vault/wiki/app-config.md.
 //!
 //! - macOS:   `~/Library/Application Support/naiteh/config.json`
 //! - Linux:   `~/.config/naiteh/config.json`           (or `$XDG_CONFIG_HOME/naiteh`)
@@ -54,6 +54,94 @@ pub struct CalendarConfig {
 #[serde(default, rename_all = "camelCase")]
 pub struct JournalConfig {
     pub split_ratio: f32,
+}
+
+/// The IPC shape of [`AppConfig`]: identical except that `ai` is an
+/// [`AiConfigView`], so the API key never reaches the renderer. Every
+/// command that returns app config returns this view; the on-disk
+/// `config.json` keeps the full [`AppConfig`] (key included) unchanged.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppConfigView {
+    pub active_vault: Option<String>,
+    pub known_vaults: Vec<String>,
+    pub theme: String,
+    pub editor: EditorConfig,
+    pub calendar: CalendarConfig,
+    pub journal: JournalConfig,
+    pub ai: AiConfigView,
+}
+
+/// Wire shape of the AI settings: `{ hasApiKey, model, baseUrl }`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AiConfigView {
+    pub has_api_key: bool,
+    pub model: String,
+    pub base_url: String,
+}
+
+impl From<&AiConfig> for AiConfigView {
+    fn from(ai: &AiConfig) -> Self {
+        Self {
+            has_api_key: ai.api_key.as_deref().is_some_and(|k| !k.trim().is_empty()),
+            model: ai.model.clone(),
+            base_url: ai.base_url.clone(),
+        }
+    }
+}
+
+impl From<&AppConfig> for AppConfigView {
+    fn from(cfg: &AppConfig) -> Self {
+        Self {
+            active_vault: cfg.active_vault.clone(),
+            known_vaults: cfg.known_vaults.clone(),
+            theme: cfg.theme.clone(),
+            editor: cfg.editor.clone(),
+            calendar: cfg.calendar.clone(),
+            journal: cfg.journal.clone(),
+            ai: AiConfigView::from(&cfg.ai),
+        }
+    }
+}
+
+/// Validate an AI endpoint base URL: it must parse, and use `https` —
+/// or plain `http` only for a loopback host (`localhost`, `127.0.0.1`,
+/// `[::1]`), e.g. a local Ollama. Anything else would send the API key
+/// and document text in clear text, or to a non-web scheme. Used both
+/// when saving settings and right before every AI request.
+pub fn validate_ai_base_url(raw: &str) -> Result<(), AppError> {
+    let url = reqwest::Url::parse(raw.trim())
+        .map_err(|e| AppError::Validation(format!("AI base URL is not a valid URL: {e}")))?;
+    match url.scheme() {
+        "https" => {
+            if url.host().is_none() {
+                return Err(AppError::Validation("AI base URL has no host".into()));
+            }
+            Ok(())
+        }
+        "http" => {
+            // The WHATWG parser normalizes hosts (lowercase domains,
+            // canonical IPv4 such as `127.1` → `127.0.0.1`, bracketed
+            // compressed IPv6), so exact comparison is sound.
+            let loopback = matches!(
+                url.host_str().map(str::to_ascii_lowercase).as_deref(),
+                Some("localhost" | "127.0.0.1" | "[::1]")
+            );
+            if loopback {
+                Ok(())
+            } else {
+                Err(AppError::Validation(
+                    "AI base URL must use https (plain http is allowed only for localhost, \
+                     127.0.0.1 or [::1])"
+                        .into(),
+                ))
+            }
+        }
+        other => Err(AppError::Validation(format!(
+            "AI base URL scheme must be https, not {other}"
+        ))),
+    }
 }
 
 impl Default for AppConfig {
@@ -223,6 +311,60 @@ mod tests {
         std::fs::write(config_path(dir.path()), b"{ broken").unwrap();
         let err = load(dir.path()).unwrap_err();
         assert!(matches!(err, AppError::ConfigCorrupt(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn view_hides_the_api_key() {
+        let cfg = AppConfig {
+            ai: AiConfig {
+                api_key: Some("sk-secret".into()),
+                ..AiConfig::default()
+            },
+            ..AppConfig::default()
+        };
+        let view = AppConfigView::from(&cfg);
+        assert!(view.ai.has_api_key);
+        let json = serde_json::to_value(&view).unwrap();
+        assert!(!json.to_string().contains("sk-secret"));
+        assert_eq!(
+            json["ai"],
+            serde_json::json!({
+                "hasApiKey": true,
+                "model": "gpt-4o-mini",
+                "baseUrl": "https://api.openai.com/v1"
+            })
+        );
+        assert!(json.get("activeVault").is_some());
+        assert!(!AppConfigView::from(&AppConfig::default()).ai.has_api_key);
+    }
+
+    #[test]
+    fn ai_base_url_validation() {
+        for ok in [
+            "https://api.openai.com/v1",
+            "https://example.com",
+            "http://localhost:11434/v1",
+            "http://LOCALHOST:11434/v1",
+            "http://127.0.0.1:11434/v1",
+            "http://[::1]:11434/v1",
+        ] {
+            assert!(validate_ai_base_url(ok).is_ok(), "{ok} should be accepted");
+        }
+        for bad in [
+            "",
+            "not a url",
+            "http://api.openai.com/v1",
+            "http://192.168.1.10:11434/v1",
+            "http://localhost.evil.com/v1",
+            "file:///etc/passwd",
+            "ftp://example.com",
+            "javascript:alert(1)",
+        ] {
+            assert!(
+                matches!(validate_ai_base_url(bad), Err(AppError::Validation(_))),
+                "{bad:?} should be rejected"
+            );
+        }
     }
 
     #[test]

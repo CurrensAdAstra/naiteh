@@ -5,9 +5,10 @@ import { aiImprove } from "../../lib/api/ai";
 import { aiReady } from "../../lib/aiProvider";
 import { formatAppError } from "../../lib/types";
 import {
+  currentOpenKey,
+  readCurrentDoc,
   readCurrentSelection,
   replaceRange,
-  useEditorStore,
   type CurrentSelection,
 } from "../../state/editorStore";
 import { selectEditorConfig, useSettingsStore } from "../../state/settingsStore";
@@ -31,7 +32,18 @@ interface PendingResult {
   /** Range in the document that the result should replace if applied. */
   from: number;
   to: number;
+  /** Document the request was made against (editorStore `open.key`). */
+  key: string;
+  /**
+   * Document text from the start up to `to` when the request was made.
+   * Applying is only safe while this prefix is unchanged: the range
+   * offsets are still valid and the replaced text is what the AI saw.
+   */
+  prefix: string;
 }
+
+const STALE_MESSAGE =
+  "The note changed since AI Assist ran, so the result wasn't applied. Copy it instead, or run AI Assist again.";
 
 export function AiPanel() {
   const setOpen = useUIStore((s) => s.setAiPanelOpen);
@@ -39,7 +51,6 @@ export function AiPanel() {
   // Reading selectEditorConfig keeps a single subscription path consistent
   // with EditorPanel even though we don't currently use the editor prefs.
   useSettingsStore(selectEditorConfig);
-  const open = useEditorStore((s) => s.open);
 
   const [scope, setScope] = useState<Scope>("selection");
   const [instruction, setInstruction] = useState("");
@@ -52,8 +63,10 @@ export function AiPanel() {
   const aiNotReady = config !== null && !aiReady(config.ai);
 
   function pickRange(): CurrentSelection | null {
-    if (scope === "document" && open !== null) {
-      return { text: open.content, from: 0, to: open.content.length };
+    if (scope === "document") {
+      const doc = readCurrentDoc();
+      if (doc === null) return null;
+      return { text: doc, from: 0, to: doc.length };
     }
     return readCurrentSelection();
   }
@@ -74,11 +87,23 @@ export function AiPanel() {
       );
       return;
     }
+    const key = currentOpenKey();
+    const doc = readCurrentDoc();
+    if (key === null || doc === null) {
+      setError("No document open. Open a note to use AI Assist.");
+      return;
+    }
 
     setBusy(true);
     try {
       const reply = await aiImprove(range.text, instruction);
-      setResult({ text: reply, from: range.from, to: range.to });
+      setResult({
+        text: reply,
+        from: range.from,
+        to: range.to,
+        key,
+        prefix: doc.slice(0, range.to),
+      });
     } catch (e) {
       setError(formatAppError(e));
     } finally {
@@ -88,6 +113,21 @@ export function AiPanel() {
 
   function handleApply() {
     if (result === null) return;
+    setError(null);
+    const doc = readCurrentDoc();
+    if (doc === null) {
+      setError("Editor is not available. Open a note first.");
+      return;
+    }
+    // Refuse when a different note is open now, or the text up to the end
+    // of the target range changed while the request was running.
+    if (
+      currentOpenKey() !== result.key ||
+      doc.slice(0, result.to) !== result.prefix
+    ) {
+      setError(STALE_MESSAGE);
+      return;
+    }
     const ok = replaceRange(result.from, result.to, result.text);
     if (!ok) {
       setError("Editor is not available. Open a note first.");

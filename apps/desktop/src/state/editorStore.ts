@@ -26,8 +26,23 @@ export interface CurrentSelection {
   to: number;
 }
 
+/** Last autosave failure, scoped to the note it happened on. */
+export interface SaveError {
+  key: string;
+  message: string;
+}
+
 interface EditorState {
   open: OpenFile | null;
+  /**
+   * Bumped whenever the open document's text is replaced from outside the
+   * editor (fresh open, re-open of the same path, reload after sync). The
+   * CodeMirror view is rebuilt on `(key, revision)` so it never keeps
+   * showing stale text the store has already moved past.
+   */
+  revision: number;
+  /** Most recent autosave failure (null when the last save succeeded). */
+  saveError: SaveError | null;
   /**
    * Live CodeMirror view; set by EditorPanel on mount. Stored here (rather
    * than in a ref) so sibling panels — most importantly AiPanel — can read
@@ -38,12 +53,30 @@ interface EditorState {
   openNote: (relPath: string, content: string) => void;
   openJournal: (date: string, relPath: string, content: string) => void;
   closeNote: () => void;
+  /** Close the note *and* drop the view / error state (logout, vault switch). */
+  resetEditor: () => void;
   setContent: (content: string) => void;
-  markSaved: () => void;
+  /**
+   * Record that `content` was written to disk for the note identified by
+   * `key`. No-op when a different note is open now. Only the written text
+   * becomes `savedContent` — edits typed during the write stay dirty.
+   */
+  markSaved: (key: string, content: string) => void;
+  /**
+   * Replace the open document with fresh disk content (e.g. after a sync
+   * pull). Marks it clean and bumps `revision` so the view reloads.
+   */
+  reloadOpen: (key: string, content: string) => void;
+  /**
+   * Point the open document at a new location (rename / folder move)
+   * while keeping the in-memory content and dirty state.
+   */
+  retargetOpen: (fromKey: string, source: OpenSource) => void;
+  setSaveError: (key: string, message: string | null) => void;
   setView: (view: EditorView | null) => void;
 }
 
-function keyFor(source: OpenSource): string {
+export function keyFor(source: OpenSource): string {
   return source.kind === "note"
     ? `note:${source.relPath}`
     : `journal:${source.date}`;
@@ -51,41 +84,121 @@ function keyFor(source: OpenSource): string {
 
 export const useEditorStore = create<EditorState>((set) => ({
   open: null,
+  revision: 0,
+  saveError: null,
   view: null,
   openNote: (relPath, content) =>
-    set({
+    set((s) => ({
       open: {
         source: { kind: "note", relPath },
         key: keyFor({ kind: "note", relPath }),
         savedContent: content,
         content,
       },
-    }),
+      revision: s.revision + 1,
+    })),
   openJournal: (date, relPath, content) =>
-    set({
+    set((s) => ({
       open: {
         source: { kind: "journal", date, relPath },
         key: keyFor({ kind: "journal", date, relPath }),
         savedContent: content,
         content,
       },
-    }),
+      revision: s.revision + 1,
+    })),
   closeNote: () => set({ open: null }),
+  resetEditor: () => {
+    cancelPendingOpens();
+    set({ open: null, view: null, saveError: null });
+  },
   setContent: (content) =>
     set((state) =>
-      state.open === null ? state : { open: { ...state.open, content } },
-    ),
-  markSaved: () =>
-    set((state) =>
-      state.open === null
+      state.open === null || state.open.content === content
         ? state
-        : { open: { ...state.open, savedContent: state.open.content } },
+        : { open: { ...state.open, content } },
     ),
+  markSaved: (key, content) =>
+    set((state) => {
+      if (state.open === null || state.open.key !== key) return state;
+      if (state.open.savedContent === content) return state;
+      return { open: { ...state.open, savedContent: content } };
+    }),
+  reloadOpen: (key, content) =>
+    set((state) => {
+      if (state.open === null || state.open.key !== key) return state;
+      return {
+        open: { ...state.open, content, savedContent: content },
+        revision: state.revision + 1,
+        saveError: state.saveError?.key === key ? null : state.saveError,
+      };
+    }),
+  retargetOpen: (fromKey, source) =>
+    set((state) => {
+      if (state.open === null || state.open.key !== fromKey) return state;
+      return {
+        open: { ...state.open, source, key: keyFor(source) },
+        saveError: state.saveError?.key === fromKey ? null : state.saveError,
+      };
+    }),
+  setSaveError: (key, message) =>
+    set((state) => {
+      if (message === null) {
+        return state.saveError?.key === key ? { saveError: null } : state;
+      }
+      return { saveError: { key, message } };
+    }),
   setView: (view) => set({ view }),
 }));
 
 export function isDirty(open: OpenFile): boolean {
   return open.content !== open.savedContent;
+}
+
+// ── open-request sequencing ─────────────────────────────────────────────
+//
+// Opening a document is async (flush + IPC read). Each request takes a
+// ticket; only the newest ticket may apply its result, so clicking A then
+// B never ends with A open because A's read resolved last.
+
+let openTicket = 0;
+
+/** Start a new open request; returns its ticket. */
+export function beginOpen(): number {
+  openTicket += 1;
+  return openTicket;
+}
+
+/** True while `ticket` is still the most recent open request. */
+export function isLatestOpen(ticket: number): boolean {
+  return ticket === openTicket;
+}
+
+/** Invalidate every in-flight open request (logout, vault switch). */
+export function cancelPendingOpens(): void {
+  openTicket += 1;
+}
+
+// ── view helpers ────────────────────────────────────────────────────────
+
+function hasLiveView(view: EditorView | null): view is EditorView {
+  return view !== null && view.state !== undefined;
+}
+
+/** Key of the open document, or null when nothing is open. */
+export function currentOpenKey(): string | null {
+  return useEditorStore.getState().open?.key ?? null;
+}
+
+/**
+ * The open document's current text — from the live view when mounted
+ * (authoritative), otherwise from the store. Null when nothing is open.
+ */
+export function readCurrentDoc(): string | null {
+  const { open, view } = useEditorStore.getState();
+  if (open === null) return null;
+  if (hasLiveView(view)) return view.state.doc.toString();
+  return open.content;
 }
 
 /**
@@ -105,62 +218,73 @@ export function readCurrentSelection(): CurrentSelection | null {
 }
 
 /**
+ * Mirror the view's document into `open.content` for the note identified
+ * by `key`. The view's updateListener normally does this already (inside
+ * `dispatch`); calling it again is idempotent and covers views without
+ * that listener (tests, a view mid-teardown).
+ */
+function syncStoreFromView(key: string, view: EditorView): void {
+  const doc = view.state.doc.toString();
+  useEditorStore.setState((s) =>
+    s.open === null || s.open.key !== key || s.open.content === doc
+      ? s
+      : { open: { ...s.open, content: doc } },
+  );
+}
+
+/**
  * Replace the entire editor document, preserving the cursor at its
- * current offset clamped to the new length. The store's `open.content`
- * is updated unconditionally so callers don't need to coordinate with
- * the CodeMirror updateListener (which is essential for tests using a
- * stubbed view, and idempotent in production where the listener fires
- * setContent with the same value).
+ * current offset clamped to the new length. Afterwards the store's
+ * `open.content` always equals the view's document.
  */
 export function replaceWholeDocument(insert: string): boolean {
   const state = useEditorStore.getState();
-  if (state.open === null) return false;
+  const open = state.open;
+  if (open === null) return false;
   const view = state.view;
-  // The mounted-view path is the production case. In tests a stubbed
-  // view may be present without a real `state`/`focus`; we still want
-  // the store update below to fire.
-  if (view !== null && view.state !== undefined) {
+  if (hasLiveView(view)) {
     const cursor = Math.min(view.state.selection.main.head, insert.length);
     view.dispatch({
       changes: { from: 0, to: view.state.doc.length, insert },
       selection: { anchor: cursor, head: cursor },
     });
     if (typeof view.focus === "function") view.focus();
+    syncStoreFromView(open.key, view);
+    return true;
   }
   useEditorStore.setState((s) =>
-    s.open === null ? s : { open: { ...s.open, content: insert } },
+    s.open === null || s.open.key !== open.key
+      ? s
+      : { open: { ...s.open, content: insert } },
   );
   return true;
 }
 
 /**
  * Replace the supplied range in the current editor view. Returns true on
- * success, false when no view is mounted.
+ * success, false when no note is open or the range is out of bounds.
+ *
+ * The store is re-synced from the view *after* the dispatch rather than
+ * splicing `insert` into `open.content` a second time: the view's
+ * updateListener has already mirrored the change synchronously, so a
+ * second splice would duplicate the inserted text.
  */
 export function replaceRange(from: number, to: number, insert: string): boolean {
-  const view = useEditorStore.getState().view;
-  const open = useEditorStore.getState().open;
+  const { view, open } = useEditorStore.getState();
   if (open === null) return false;
-  if (view === null || view.state === undefined) {
+  if (!hasLiveView(view)) {
+    if (from < 0 || from > to || to > open.content.length) return false;
     const next = `${open.content.slice(0, from)}${insert}${open.content.slice(to)}`;
     useEditorStore.setState({ open: { ...open, content: next } });
     return true;
   }
+  if (from < 0 || from > to || to > view.state.doc.length) return false;
   view.dispatch({
     changes: { from, to, insert },
     selection: { anchor: from, head: from + insert.length },
   });
-  view.focus();
-  useEditorStore.setState((s) =>
-    s.open === null
-      ? s
-      : {
-          open: {
-            ...s.open,
-            content: `${s.open.content.slice(0, from)}${insert}${s.open.content.slice(to)}`,
-          },
-        },
-  );
+  if (typeof view.focus === "function") view.focus();
+  syncStoreFromView(open.key, view);
   return true;
 }
 
@@ -168,7 +292,7 @@ export function insertAtCursor(insert: string): boolean {
   const open = useEditorStore.getState().open;
   if (open === null) return false;
   const view = useEditorStore.getState().view;
-  if (view === null || view.state === undefined) {
+  if (!hasLiveView(view)) {
     return replaceRange(open.content.length, open.content.length, insert);
   }
   const range = view.state.selection.main;

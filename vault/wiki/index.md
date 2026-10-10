@@ -2,7 +2,7 @@
 title: "naiteh LLM Wiki — Index"
 tags: [naiteh-wiki, index]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-06-28T00:00:00+09:00
+updated: 2026-10-10T18:00:00+09:00
 pinned: true
 ---
 
@@ -16,20 +16,22 @@ storage location alongside `journal/` and `note/`.
 > **Split of responsibilities**
 > - **LLM wiki (this directory)** → *data*: domain model, schemas, IPC command
 >   spec, vault layout, config keys, glossary. Single source of truth for facts.
-> - **Implementation docs (`architecture.md` in the code repo)** → *how it is
->   built, run, and maintained*: narrative, design rationale, repo layout,
->   roadmap. Lives with the code.
+> - **Implementation docs (`architecture.md` and `docs/` in the code repo)** →
+>   *how it is built, run, and maintained*: narrative, design rationale, repo
+>   layout, roadmap, design proposals, work-session logs. Lives with the code.
 
 ## Pages
+
+The wiki is eight pages: this index plus the seven below.
 
 | Page | Contents |
 |------|----------|
 | [Product Overview](product-overview.md) | What naiteh is, features, non-goals, tech stack |
-| [Vault & Data](vault-and-data.md) | Vault layout on disk, front-matter schema |
-| [Domain Model](domain-model.md) | IPC-boundary entity types (journal, notes, timeline, sync, auth, …) |
-| [IPC API](ipc-api.md) | Every Tauri command, `AppError` taxonomy, menu events |
-| [App Config](app-config.md) | App-level + per-vault config schema and paths |
-| [Concurrency & Safety](concurrency-safety.md) | Locking, atomic writes, path containment, privacy boundary |
+| [Vault & Data](vault-and-data.md) | Vault layout on disk, where a vault may live, rel-path normal form, slug rules, front-matter schema |
+| [Domain Model](domain-model.md) | IPC-boundary entity types (journal, notes, timeline, sync, auth, config view, …) |
+| [IPC API](ipc-api.md) | Every Tauri command, session gate, threading, `AppError` taxonomy, sync pipeline, Evernote import, menu events |
+| [App Config](app-config.md) | App-level + per-vault config schema and paths, IPC view vs disk, CLI hooks |
+| [Concurrency & Safety](concurrency-safety.md) | Locking, tag-index generations, autosave ordering, atomic writes, path containment, privacy boundary |
 | [Glossary](glossary.md) | Term definitions |
 
 ## Conventions

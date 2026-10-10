@@ -6,13 +6,24 @@
   "scripts": {
     "dev": "pnpm -C apps/desktop dev",
     "build": "pnpm -C apps/desktop build",
+    "preview": "pnpm -C apps/desktop preview",
     "tauri": "pnpm -C apps/desktop tauri",
+    "tauri:dev": "pnpm -C apps/desktop tauri dev",
+    "tauri:build": "pnpm -C apps/desktop tauri build",
+    "windows-installer": "pnpm -C apps/desktop tauri build --bundles nsis",
     "lint": "pnpm -r lint",
     "typecheck": "pnpm -r typecheck",
-    "test": "pnpm -r test"
+    "test": "pnpm -r test",
+    "rust:prep": "node scripts/ensure-dist.mjs",
+    "test:rust": "pnpm rust:prep && cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --all --all-features",
+    "fmt": "cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --all",
+    "fmt:check": "cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --all -- --check",
+    "clippy": "pnpm rust:prep && cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets --all-features -- -D warnings",
+    "check": "pnpm typecheck && pnpm lint && pnpm test && pnpm fmt:check && pnpm clippy && pnpm test:rust",
+    "clean": "node -e \"require('fs').rmSync('apps/desktop/dist',{recursive:true,force:true})\" && cargo clean --manifest-path apps/desktop/src-tauri/Cargo.toml"
   },
   "engines": {
     "node": ">=20",
-    "pnpm": ">=9"
+    "pnpm": ">=10"
   }
 }

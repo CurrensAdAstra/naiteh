@@ -10,9 +10,14 @@ import {
   syncStatus,
 } from "../../lib/api/sync";
 import { openByRelPath } from "../../lib/openByRelPath";
+import { reloadOpenDocument } from "../../lib/openDocument";
 import { formatRelative } from "../journal/formatRelative";
 import { formatAppError, isAppError } from "../../lib/types";
 import type { AppError, ConflictPair, SyncStatus } from "../../lib/types";
+import { discardPendingSave, flushPendingSave } from "../../state/autosave";
+import { useEditorStore } from "../../state/editorStore";
+import { useSyncStore } from "../../state/syncStore";
+import { notifyVaultContentChanged } from "../../state/vaultContentStore";
 import styles from "./SyncListPanel.module.css";
 
 interface ViewState {
@@ -39,14 +44,34 @@ export function SyncListPanel() {
   >(null);
   const [remoteDraft, setRemoteDraft] = useState("");
   const [conflicts, setConflicts] = useState<ConflictPair[]>([]);
+  const [conflictError, setConflictError] = useState<string | null>(null);
 
   const refreshConflicts = useCallback(async () => {
     try {
       const list = await syncListConflicts();
       setConflicts(list);
-    } catch {
-      // Non-fatal: conflict scan failing shouldn't blank the whole panel.
-      setConflicts([]);
+      setConflictError(null);
+    } catch (e) {
+      // Non-fatal: a failed conflict scan shouldn't blank the whole panel,
+      // but the user must know the list may be incomplete. Keep the last
+      // known conflicts rather than pretending there are none.
+      setConflictError(`Couldn't check for conflicts: ${formatAppError(e)}`);
+    }
+  }, []);
+
+  /**
+   * If the open note is the conflict sidecar that a resolution just
+   * removed, close it without saving so autosave can't recreate it.
+   */
+  const closeIfSidecarOpen = useCallback((pair: ConflictPair) => {
+    const open = useEditorStore.getState().open;
+    if (
+      open !== null &&
+      open.source.kind === "note" &&
+      open.source.relPath === pair.conflictRelPath
+    ) {
+      discardPendingSave(open.key);
+      useEditorStore.getState().closeNote();
     }
   }, []);
 
@@ -71,6 +96,22 @@ export function SyncListPanel() {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  /**
+   * After anything that may have rewritten vault files (sync, conflict
+   * resolution): push fresh disk text into the open editor, tell list
+   * panels to refetch, and refresh the status bar right away instead of
+   * waiting for its 30 s poll. Errors land in the panel's error banner.
+   */
+  async function afterVaultChanged() {
+    notifyVaultContentChanged();
+    await useSyncStore.getState().refresh();
+    try {
+      await reloadOpenDocument();
+    } catch (e) {
+      setError(`Couldn't reload the open note: ${formatAppError(e)}`);
+    }
+  }
 
   async function handleInit() {
     setBusy("init");
@@ -104,23 +145,38 @@ export function SyncListPanel() {
     setBusy("sync");
     setError(null);
     try {
+      // Get unsaved editor edits onto disk first so they're part of the
+      // sync instead of being overwritten by (or overwriting) pulled text.
+      await flushPendingSave();
       await syncNow();
       await refresh();
+      await afterVaultChanged();
     } catch (e) {
       setError(formatAppError(e));
-      // Conflicts may have been written even though sync_now itself errored.
+      // Files (and conflict sidecars) may have changed even though
+      // sync_now itself errored.
       await refreshConflicts();
+      await afterVaultChanged();
     } finally {
       setBusy(null);
     }
   }
 
-  async function handleKeepOurs(pair: ConflictPair) {
+  async function resolve(
+    pair: ConflictPair,
+    action: (conflictRelPath: string) => Promise<void>,
+  ) {
     setBusy("resolve");
     setError(null);
     try {
-      await syncResolveKeepOurs(pair.conflictRelPath);
-      await refreshConflicts();
+      await flushPendingSave();
+      await action(pair.conflictRelPath);
+      // Resolution removes the sidecar; never let autosave recreate it.
+      closeIfSidecarOpen(pair);
+      // Status too, not just the list: resolving the last sidecar clears
+      // `mergePending` and re-enables syncing.
+      await refresh();
+      await afterVaultChanged();
     } catch (e) {
       setError(formatAppError(e));
     } finally {
@@ -128,17 +184,12 @@ export function SyncListPanel() {
     }
   }
 
-  async function handleKeepTheirs(pair: ConflictPair) {
-    setBusy("resolve");
-    setError(null);
-    try {
-      await syncResolveKeepTheirs(pair.conflictRelPath);
-      await refreshConflicts();
-    } catch (e) {
-      setError(formatAppError(e));
-    } finally {
-      setBusy(null);
-    }
+  function handleKeepOurs(pair: ConflictPair) {
+    return resolve(pair, syncResolveKeepOurs);
+  }
+
+  function handleKeepTheirs(pair: ConflictPair) {
+    return resolve(pair, syncResolveKeepTheirs);
   }
 
   async function handleOpenSide(relPath: string) {
@@ -151,6 +202,11 @@ export function SyncListPanel() {
 
   const initialized = view.status !== null;
   const status = view.status;
+  const mergePending = status?.mergePending === true;
+  // The backend refuses to sync until every sidecar is resolved; only
+  // block the button when there's something visible to resolve, so an
+  // unexpected state still lets the backend explain itself.
+  const syncBlocked = mergePending && conflicts.length > 0;
 
   return (
     <div className={styles.panel} data-testid="list-panel-sync">
@@ -161,6 +217,15 @@ export function SyncListPanel() {
         {error !== null && (
           <p className={styles.error} role="alert">
             {error}
+          </p>
+        )}
+        {conflictError !== null && (
+          <p
+            className={styles.error}
+            role="alert"
+            data-testid="sync-conflict-error"
+          >
+            {conflictError}
           </p>
         )}
 
@@ -192,9 +257,15 @@ export function SyncListPanel() {
             >
               <StatusRow
                 label="Status"
-                value={status.dirty ? "Pending changes" : "Up to date"}
+                value={
+                  mergePending
+                    ? "Merge pending"
+                    : status.dirty
+                      ? "Pending changes"
+                      : "Up to date"
+                }
                 valueClass={
-                  status.dirty
+                  mergePending || status.dirty
                     ? (styles.valueDirty ?? "")
                     : (styles.valueClean ?? "")
                 }
@@ -227,6 +298,19 @@ export function SyncListPanel() {
                 />
               )}
             </section>
+
+            {mergePending && (
+              <p
+                className={styles.mergeNotice}
+                role="status"
+                data-testid="sync-merge-pending"
+              >
+                <strong>Resolve conflicts to finish sync.</strong>{" "}
+                {conflicts.length > 0
+                  ? "The last pull is waiting on the conflicts below — syncing resumes once every one is resolved."
+                  : "The last pull left conflicts that still need resolving."}
+              </p>
+            )}
 
             {conflicts.length > 0 && (
               <section
@@ -305,16 +389,24 @@ export function SyncListPanel() {
                 type="button"
                 className={`${styles.button} ${styles.primary}`}
                 onClick={() => void handleSyncNow()}
-                disabled={busy !== null}
+                disabled={busy !== null || syncBlocked}
+                aria-describedby="sync-now-help"
                 data-testid="sync-now-button"
               >
                 {busy === "sync" ? "Syncing…" : "Sync now"}
               </button>
-              <p className={styles.helpText}>
-                Stages local changes and {status.remoteUrl !== null
-                  ? "syncs them with the backup destination"
-                  : "saves them locally"}
-                .
+              <p className={styles.helpText} id="sync-now-help">
+                {syncBlocked ? (
+                  "Unavailable until all conflicts are resolved."
+                ) : (
+                  <>
+                    Stages local changes and{" "}
+                    {status.remoteUrl !== null
+                      ? "syncs them with the backup destination"
+                      : "saves them locally"}
+                    .
+                  </>
+                )}
               </p>
             </section>
 

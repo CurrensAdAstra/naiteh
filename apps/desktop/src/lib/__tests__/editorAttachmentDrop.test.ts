@@ -5,6 +5,7 @@ vi.mock("../api/attachments", () => ({
 }));
 vi.mock("../../state/editorStore", () => ({
   insertAtCursor: vi.fn(),
+  currentOpenKey: vi.fn(() => "note:notes/x.md"),
 }));
 
 import { attachmentsImportBytes } from "../api/attachments";
@@ -14,10 +15,11 @@ import {
   MAX_ATTACHMENT_BYTES,
   uploadAndInsert,
 } from "../editorAttachmentDrop";
-import { insertAtCursor } from "../../state/editorStore";
+import { currentOpenKey, insertAtCursor } from "../../state/editorStore";
 
 const mockedImportBytes = vi.mocked(attachmentsImportBytes);
 const mockedInsert = vi.mocked(insertAtCursor);
+const mockedOpenKey = vi.mocked(currentOpenKey);
 
 function makeFile(name: string, type: string, bytes = "hello"): File {
   return new File([bytes], name, { type });
@@ -83,6 +85,29 @@ describe("uploadAndInsert", () => {
     mockedImportBytes.mockReset();
     mockedInsert.mockReset();
     mockedInsert.mockReturnValue(true);
+    mockedOpenKey.mockReset();
+    mockedOpenKey.mockReturnValue("note:notes/x.md");
+  });
+
+  it("does not insert into a different note opened during the upload", async () => {
+    mockedImportBytes.mockResolvedValue({
+      relPath: "attachments/a.png",
+      fileName: "a.png",
+      markdown: "![a](attachments/a.png)",
+    });
+    mockedOpenKey
+      .mockReturnValueOnce("note:notes/x.md")
+      .mockReturnValue("note:notes/other.md");
+    const onError = vi.fn();
+
+    await uploadAndInsert([makeFile("a.png", "image/png")], onError);
+
+    expect(mockedInsert).not.toHaveBeenCalled();
+    const errorMessages = onError.mock.calls
+      .map((c) => c[0])
+      .filter((m): m is string => typeof m === "string");
+    expect(errorMessages).toHaveLength(1);
+    expect(errorMessages[0]).toMatch(/open note changed/i);
   });
 
   it("rejects an oversized file without calling the IPC", async () => {

@@ -18,7 +18,7 @@ interface ActivityIcon {
   Icon: LucideIcon;
 }
 
-// Order is normative — see architecture.md §5.3.
+// Order is normative — see architecture.md "ViewMode" (UI Architecture).
 const ICONS: readonly ActivityIcon[] = [
   { mode: "journal", label: "Journal", Icon: Notebook },
   { mode: "notes", label: "Notes", Icon: Folder },

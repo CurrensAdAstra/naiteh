@@ -6,14 +6,18 @@ use tauri::{AppHandle, Runtime};
 use tauri_plugin_dialog::DialogExt;
 
 use crate::domain::{AppError, AttachmentImport};
+use crate::services::fs as fsx;
+use crate::services::session::{require_session, ActiveSession};
 use crate::services::vault_lock::VaultLocks;
 use crate::services::{attachments, config};
 
 #[tauri::command]
 pub async fn attachments_import<R: Runtime>(
+    active: tauri::State<'_, ActiveSession>,
     app: AppHandle<R>,
     locks: tauri::State<'_, VaultLocks>,
 ) -> Result<AttachmentImport, AppError> {
+    require_session(&active)?;
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog().file().pick_file(move |file| {
         let _ = tx.send(file);
@@ -30,7 +34,8 @@ pub async fn attachments_import<R: Runtime>(
     let vault_root = config::current_vault_root()?;
     let lock = locks.for_vault(&vault_root);
     let _guard = lock.lock().await;
-    attachments::import(&vault_root, &source)
+    // Up to 50 MiB of copy — keep it off the async runtime threads.
+    fsx::run_blocking(move || attachments::import(&vault_root, &source)).await
 }
 
 /// Import an attachment from raw bytes — used by the editor's clipboard
@@ -43,13 +48,18 @@ pub async fn attachments_import<R: Runtime>(
 /// extension when the suggestion is unusable.
 #[tauri::command]
 pub async fn attachments_import_bytes(
+    active: tauri::State<'_, ActiveSession>,
     locks: tauri::State<'_, VaultLocks>,
     bytes: Vec<u8>,
     suggested_name: String,
     mime: Option<String>,
 ) -> Result<AttachmentImport, AppError> {
+    require_session(&active)?;
     let vault_root = config::current_vault_root()?;
     let lock = locks.for_vault(&vault_root);
     let _guard = lock.lock().await;
-    attachments::import_bytes(&vault_root, &bytes, &suggested_name, mime.as_deref())
+    fsx::run_blocking(move || {
+        attachments::import_bytes(&vault_root, &bytes, &suggested_name, mime.as_deref())
+    })
+    .await
 }

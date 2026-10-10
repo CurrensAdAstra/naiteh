@@ -2,8 +2,11 @@
 name = "naiteh"
 version = "0.0.0"
 description = "naiteh — local-first Markdown notes & journal"
+repository = "https://github.com/CurrensAdAstra/naiteh"
 edition = "2021"
-rust-version = "1.77"
+# Locked dependencies need >= 1.88 (time, darling, plist, serde_with); CI
+# pins and tests 1.90.0, so that is the declared minimum.
+rust-version = "1.90"
 
 [lib]
 name = "naiteh_lib"
@@ -19,10 +22,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "fs", "macros", "sync"] }
 git2 = { version = "0.19", default-features = false, features = ["https", "ssh"] }
-thiserror = "1"
-dirs = "5"
+thiserror = "2"
+dirs = "6"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+# 0.13 matches the version tauri already pulls in. `rustls` = rustls with the
+# aws-lc-rs provider + OS certificate store (rustls-platform-verifier).
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 sha2 = "0.10"
 quick-xml = "0.36"
 base64 = "0.22"

@@ -51,10 +51,13 @@ pub fn enml_to_markdown(
             Ok(Event::End(ref e)) => state.handle_end(e)?,
             Ok(Event::Empty(ref e)) => state.handle_empty(e)?,
             Ok(Event::Text(t)) => {
-                let s = t
-                    .unescape()
-                    .map_err(|err| AppError::ConfigCorrupt(format!("ENML text unescape: {err}")))?;
-                state.handle_text(&s);
+                // Not `t.unescape()`: quick-xml only knows the five XML
+                // entities, and ENML routinely carries HTML ones
+                // (`&nbsp;`, `&mdash;`, …). One of those used to fail
+                // the whole note.
+                let raw = std::str::from_utf8(t.as_ref())
+                    .map_err(|err| AppError::ConfigCorrupt(format!("ENML text utf-8: {err}")))?;
+                state.handle_text(&decode_entities(raw));
             }
             Ok(Event::CData(c)) => {
                 let s = std::str::from_utf8(c.as_ref())
@@ -95,8 +98,10 @@ struct ConverterState<'a> {
     /// We just finished a block element; the next block-level write
     /// should ensure a blank line is present.
     need_block_break: bool,
-    /// Set on `<a>` start, consumed on `</a>` end.
-    last_attr_href: Option<String>,
+    /// One entry per open `<a>`: the sanitized, Markdown-safe href, or
+    /// `None` when the anchor had no usable href (then its text is
+    /// emitted plain, without `[...]()` around it).
+    link_stack: Vec<Option<String>>,
 }
 
 #[derive(Debug)]
@@ -124,7 +129,7 @@ impl<'a> ConverterState<'a> {
             table: None,
             cell_buf: None,
             need_block_break: false,
-            last_attr_href: None,
+            link_stack: Vec::new(),
         }
     }
 
@@ -184,9 +189,11 @@ impl<'a> ConverterState<'a> {
             "i" | "em" => self.write_inline("*"),
             "s" | "strike" | "del" => self.write_inline("~~"),
             "a" => {
-                self.record_a_start(e);
-                self.flush_block_break();
-                self.out.push('[');
+                let href = attr_value(e, b"href").and_then(|h| sanitize_url(&h));
+                if href.is_some() {
+                    self.write_inline("[");
+                }
+                self.link_stack.push(href);
             }
             "table" => {
                 self.start_block();
@@ -197,10 +204,8 @@ impl<'a> ConverterState<'a> {
                     t.current_row.clear();
                 }
             }
-            "td" | "th" => {
-                if self.table.is_some() {
-                    self.cell_buf = Some(String::new());
-                }
+            "td" | "th" if self.table.is_some() => {
+                self.cell_buf = Some(String::new());
             }
             // Unknown elements: be a transparent passthrough so any
             // text content still surfaces.
@@ -256,9 +261,9 @@ impl<'a> ConverterState<'a> {
             "i" | "em" => self.write_inline("*"),
             "s" | "strike" | "del" => self.write_inline("~~"),
             "a" => {
-                // href stored under attribute; closed below
-                let href = self.last_attr_href.take().unwrap_or_default();
-                self.out.push_str(&format!("]({href})"));
+                if let Some(Some(href)) = self.link_stack.pop() {
+                    self.write_inline(&format!("]({href})"));
+                }
             }
             "table" => {
                 if let Some(t) = self.table.take() {
@@ -294,37 +299,16 @@ impl<'a> ConverterState<'a> {
                 self.need_block_break = true;
             }
             "img" => {
-                let mut src = String::new();
-                let mut alt = String::new();
-                for attr in e.attributes().with_checks(false).flatten() {
-                    let key = std::str::from_utf8(attr.key.local_name().as_ref())
-                        .unwrap_or("")
-                        .to_string();
-                    let val = attr
-                        .unescape_value()
-                        .map(|c| c.into_owned())
-                        .unwrap_or_default();
-                    match key.as_str() {
-                        "src" => src = val,
-                        "alt" => alt = val,
-                        _ => {}
-                    }
-                }
-                if !src.is_empty() {
+                let src = attr_value(e, b"src").and_then(|s| sanitize_url(&s));
+                let alt = attr_value(e, b"alt").unwrap_or_default();
+                if let Some(src) = src {
+                    let alt = escape_link_text(&alt);
                     self.write_inline(&format!("![{alt}]({src})"));
                 }
             }
             "en-todo" => {
-                let checked = e
-                    .attributes()
-                    .with_checks(false)
-                    .flatten()
-                    .find(|a| a.key.local_name().as_ref() == b"checked")
-                    .and_then(|a| {
-                        a.unescape_value()
-                            .ok()
-                            .map(|v| matches!(v.as_ref(), "true" | "True" | "TRUE" | "1"))
-                    })
+                let checked = attr_value(e, b"checked")
+                    .map(|v| matches!(v.trim(), "true" | "True" | "TRUE" | "1"))
                     .unwrap_or(false);
                 // A todo starts its own line; consume any pending block
                 // break so the text that follows stays on the same line
@@ -337,25 +321,19 @@ impl<'a> ConverterState<'a> {
                 self.out.push_str(if checked { "- [x] " } else { "- [ ] " });
             }
             "en-media" => {
-                let mut hash = String::new();
-                let mut mime = String::new();
-                for attr in e.attributes().with_checks(false).flatten() {
-                    let key = std::str::from_utf8(attr.key.local_name().as_ref())
-                        .unwrap_or("")
-                        .to_string();
-                    let val = attr
-                        .unescape_value()
-                        .map(|c| c.into_owned())
-                        .unwrap_or_default();
-                    match key.as_str() {
-                        "hash" => hash = val.to_ascii_lowercase(),
-                        "type" => mime = val,
-                        _ => {}
-                    }
-                }
+                let hash = attr_value(e, b"hash")
+                    .unwrap_or_default()
+                    .to_ascii_lowercase();
+                let mime = attr_value(e, b"type").unwrap_or_default();
                 let placeholder = match self.resources_md.get(&hash) {
                     Some(md) => md.clone(),
-                    None => format!("[missing attachment: {hash} ({mime})]"),
+                    // Attribute values are untrusted: escape them so a
+                    // crafted hash can't smuggle in link syntax.
+                    None => format!(
+                        "[missing attachment: {} ({})]",
+                        escape_md(&hash),
+                        escape_md(&mime)
+                    ),
                 };
                 self.write_inline(&placeholder);
             }
@@ -366,9 +344,9 @@ impl<'a> ConverterState<'a> {
     }
 
     fn handle_text(&mut self, text: &str) {
-        if self.cell_buf.is_some() {
+        if let Some(cell) = self.cell_buf.as_mut() {
             // Inside a table cell — buffer instead of writing.
-            self.cell_buf.as_mut().unwrap().push_str(text);
+            cell.push_str(text);
             return;
         }
 
@@ -456,8 +434,8 @@ impl<'a> ConverterState<'a> {
     }
 
     fn write_inline(&mut self, s: &str) {
-        if self.cell_buf.is_some() {
-            self.cell_buf.as_mut().unwrap().push_str(s);
+        if let Some(cell) = self.cell_buf.as_mut() {
+            cell.push_str(s);
         } else {
             self.flush_block_break();
             self.ensure_quote_prefix();
@@ -521,20 +499,280 @@ impl<'a> ConverterState<'a> {
     }
 }
 
-// `<a>` requires us to remember the href across the start/end pair.
-// Stashed on the state in `last_attr_href` rather than threaded through
-// every handler.
-impl<'a> ConverterState<'a> {
-    fn record_a_start(&mut self, e: &BytesStart<'_>) {
-        let href = e
-            .attributes()
-            .with_checks(false)
-            .flatten()
-            .find(|a| a.key.local_name().as_ref() == b"href")
-            .and_then(|a| a.unescape_value().ok().map(|c| c.into_owned()))
-            .unwrap_or_default();
-        self.last_attr_href = Some(href);
+/// Value of attribute `name` (by local name) with entities decoded
+/// leniently (see [`decode_entities`]). `None` if absent or not UTF-8.
+fn attr_value(e: &BytesStart<'_>, name: &[u8]) -> Option<String> {
+    e.attributes()
+        .with_checks(false)
+        .flatten()
+        .find(|a| a.key.local_name().as_ref() == name)
+        .and_then(|a| {
+            std::str::from_utf8(a.value.as_ref())
+                .ok()
+                .map(decode_entities)
+        })
+}
+
+/// Decode XML/HTML character references in `raw`, leniently.
+///
+/// Handles numeric references (`&#160;`, `&#xA0;`) and the common HTML
+/// named entities ENML exports actually contain. Anything unknown or
+/// malformed (`&foo;`, a bare `&`) is kept as literal text instead of
+/// failing the whole note.
+pub(crate) fn decode_entities(raw: &str) -> String {
+    if !raw.contains('&') {
+        return raw.to_string();
     }
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let after = &rest[amp + 1..];
+        // Entity names are short; don't scan arbitrarily far for ';'.
+        let semi = after
+            .char_indices()
+            .take(33)
+            .find(|&(_, c)| c == ';')
+            .map(|(i, _)| i);
+        let decoded = semi.and_then(|end| decode_reference(&after[..end]).map(|c| (c, end)));
+        match decoded {
+            Some((ch, end)) => {
+                out.push(ch);
+                rest = &after[end + 1..];
+            }
+            None => {
+                out.push('&');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// Decode the body of one `&...;` reference (without `&` and `;`).
+fn decode_reference(name: &str) -> Option<char> {
+    if let Some(num) = name.strip_prefix('#') {
+        let code = if let Some(hex) = num.strip_prefix(['x', 'X']) {
+            u32::from_str_radix(hex, 16).ok()?
+        } else {
+            num.parse::<u32>().ok()?
+        };
+        // NUL is not a legal character reference; map it to U+FFFD
+        // like browsers do rather than embedding a NUL in the note.
+        return match code {
+            0 => Some('\u{FFFD}'),
+            c => char::from_u32(c).or(Some('\u{FFFD}')),
+        };
+    }
+    named_entity(name)
+}
+
+/// HTML named entities commonly found in ENML. Case-sensitive, as in
+/// HTML (`&Eacute;` ≠ `&eacute;`).
+fn named_entity(name: &str) -> Option<char> {
+    Some(match name {
+        // XML's predefined five
+        "amp" => '&',
+        "lt" => '<',
+        "gt" => '>',
+        "quot" => '"',
+        "apos" => '\'',
+        // spaces & invisible formatting
+        "nbsp" => '\u{00A0}',
+        "ensp" => '\u{2002}',
+        "emsp" => '\u{2003}',
+        "thinsp" => '\u{2009}',
+        "shy" => '\u{00AD}',
+        "zwj" => '\u{200D}',
+        "zwnj" => '\u{200C}',
+        "lrm" => '\u{200E}',
+        "rlm" => '\u{200F}',
+        // punctuation
+        "hellip" => '…',
+        "mdash" => '—',
+        "ndash" => '–',
+        "lsquo" => '‘',
+        "rsquo" => '’',
+        "sbquo" => '‚',
+        "ldquo" => '“',
+        "rdquo" => '”',
+        "bdquo" => '„',
+        "bull" => '•',
+        "middot" => '·',
+        "laquo" => '«',
+        "raquo" => '»',
+        "lsaquo" => '‹',
+        "rsaquo" => '›',
+        "iexcl" => '¡',
+        "iquest" => '¿',
+        "sect" => '§',
+        "para" => '¶',
+        "dagger" => '†',
+        "Dagger" => '‡',
+        "prime" => '′',
+        "Prime" => '″',
+        "permil" => '‰',
+        // symbols
+        "copy" => '©',
+        "reg" => '®',
+        "trade" => '™',
+        "deg" => '°',
+        "plusmn" => '±',
+        "times" => '×',
+        "divide" => '÷',
+        "micro" => 'µ',
+        "frac12" => '½',
+        "frac14" => '¼',
+        "frac34" => '¾',
+        "sup1" => '¹',
+        "sup2" => '²',
+        "sup3" => '³',
+        "not" => '¬',
+        "minus" => '−',
+        "ne" => '≠',
+        "le" => '≤',
+        "ge" => '≥',
+        "infin" => '∞',
+        "larr" => '←',
+        "rarr" => '→',
+        "uarr" => '↑',
+        "darr" => '↓',
+        "harr" => '↔',
+        "hearts" => '♥',
+        "check" => '✓',
+        // currency
+        "euro" => '€',
+        "pound" => '£',
+        "yen" => '¥',
+        "cent" => '¢',
+        "curren" => '¤',
+        // common Latin-1 letters
+        "agrave" => 'à',
+        "aacute" => 'á',
+        "acirc" => 'â',
+        "atilde" => 'ã',
+        "auml" => 'ä',
+        "aring" => 'å',
+        "aelig" => 'æ',
+        "ccedil" => 'ç',
+        "egrave" => 'è',
+        "eacute" => 'é',
+        "ecirc" => 'ê',
+        "euml" => 'ë',
+        "igrave" => 'ì',
+        "iacute" => 'í',
+        "icirc" => 'î',
+        "iuml" => 'ï',
+        "ntilde" => 'ñ',
+        "ograve" => 'ò',
+        "oacute" => 'ó',
+        "ocirc" => 'ô',
+        "otilde" => 'õ',
+        "ouml" => 'ö',
+        "oslash" => 'ø',
+        "ugrave" => 'ù',
+        "uacute" => 'ú',
+        "ucirc" => 'û',
+        "uuml" => 'ü',
+        "yacute" => 'ý',
+        "yuml" => 'ÿ',
+        "szlig" => 'ß',
+        "Agrave" => 'À',
+        "Aacute" => 'Á',
+        "Acirc" => 'Â',
+        "Atilde" => 'Ã',
+        "Auml" => 'Ä',
+        "Aring" => 'Å',
+        "AElig" => 'Æ',
+        "Ccedil" => 'Ç',
+        "Egrave" => 'È',
+        "Eacute" => 'É',
+        "Ecirc" => 'Ê',
+        "Euml" => 'Ë',
+        "Ntilde" => 'Ñ',
+        "Oacute" => 'Ó',
+        "Ouml" => 'Ö',
+        "Oslash" => 'Ø',
+        "Uacute" => 'Ú',
+        "Uuml" => 'Ü',
+        _ => return None,
+    })
+}
+
+/// Make an untrusted URL safe to embed as a Markdown link destination.
+///
+/// - Drops `javascript:`, `vbscript:` and `data:` URLs (except
+///   `data:image/*` other than SVG, which can carry script). The scheme
+///   check ignores case and embedded whitespace/control characters,
+///   since browsers do (`java\tscript:` is `javascript:`).
+/// - Percent-encodes characters that would end or break the `(...)`
+///   destination: spaces, `(`, `)`, `<`, `>`, and all control
+///   characters (newlines included).
+///
+/// Returns `None` for an empty or disallowed URL.
+pub(crate) fn sanitize_url(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let squashed: String = trimmed
+        .chars()
+        .filter(|c| !c.is_whitespace() && !c.is_control())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    // Scheme = text before the first ':' if that comes before any of
+    // '/', '?', '#' (otherwise it's a relative path containing ':').
+    let scheme = squashed
+        .find(':')
+        .filter(|&colon| !squashed[..colon].contains(['/', '?', '#']))
+        .map(|colon| &squashed[..colon]);
+    match scheme {
+        Some("javascript") | Some("vbscript") | Some("livescript") => return None,
+        Some("data") => {
+            let is_raster_image =
+                squashed.starts_with("data:image/") && !squashed.starts_with("data:image/svg");
+            if !is_raster_image {
+                return None;
+            }
+        }
+        _ => {}
+    }
+    let mut out = String::with_capacity(trimmed.len());
+    for c in trimmed.chars() {
+        match c {
+            ' ' => out.push_str("%20"),
+            '(' => out.push_str("%28"),
+            ')' => out.push_str("%29"),
+            '<' => out.push_str("%3C"),
+            '>' => out.push_str("%3E"),
+            c if c.is_control() || c.is_whitespace() => {
+                let mut buf = [0u8; 4];
+                for b in c.encode_utf8(&mut buf).bytes() {
+                    out.push_str(&format!("%{b:02X}"));
+                }
+            }
+            c => out.push(c),
+        }
+    }
+    Some(out)
+}
+
+/// Escape text that will sit inside `[...]` / `![...]` so it can't
+/// close the bracket early or start a nested link.
+fn escape_link_text(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' | '[' | ']' => {
+                out.push('\\');
+                out.push(c);
+            }
+            '\n' | '\r' => out.push(' '),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 fn local_name(bytes: &[u8]) -> Result<String, AppError> {
@@ -679,6 +917,150 @@ mod tests {
     fn anchor_becomes_markdown_link() {
         let md = convert(r#"<en-note><p>See <a href="https://example.com">site</a></p></en-note>"#);
         assert_eq!(md, "See [site](https://example.com)");
+    }
+
+    #[test]
+    fn html_named_entities_do_not_fail_the_note() {
+        let md = convert(
+            "<en-note><p>a&nbsp;b &mdash; c&hellip; &copy;2026 &ldquo;q&rdquo; 5&deg;C &euro;9</p></en-note>",
+        );
+        assert_eq!(md, "a\u{a0}b — c… ©2026 “q” 5°C €9");
+    }
+
+    #[test]
+    fn numeric_entities_decode_and_unknown_entities_stay_literal() {
+        let md = convert("<en-note><p>&#169; &#xA9; &bogus; AT&amp;T &amp</p></en-note>");
+        assert_eq!(md, "© © &bogus; AT&T &amp");
+    }
+
+    #[test]
+    fn decode_entities_covers_required_set() {
+        for (name, ch) in [
+            ("nbsp", '\u{a0}'),
+            ("amp", '&'),
+            ("lt", '<'),
+            ("gt", '>'),
+            ("quot", '"'),
+            ("apos", '\''),
+            ("copy", '©'),
+            ("reg", '®'),
+            ("trade", '™'),
+            ("hellip", '…'),
+            ("mdash", '—'),
+            ("ndash", '–'),
+            ("lsquo", '‘'),
+            ("rsquo", '’'),
+            ("ldquo", '“'),
+            ("rdquo", '”'),
+            ("bull", '•'),
+            ("middot", '·'),
+            ("times", '×'),
+            ("divide", '÷'),
+            ("deg", '°'),
+            ("plusmn", '±'),
+            ("euro", '€'),
+            ("pound", '£'),
+            ("yen", '¥'),
+            ("cent", '¢'),
+            ("sect", '§'),
+            ("para", '¶'),
+            ("laquo", '«'),
+            ("raquo", '»'),
+            ("iexcl", '¡'),
+            ("iquest", '¿'),
+            ("shy", '\u{ad}'),
+            ("zwj", '\u{200d}'),
+            ("zwnj", '\u{200c}'),
+            ("ensp", '\u{2002}'),
+            ("emsp", '\u{2003}'),
+            ("thinsp", '\u{2009}'),
+        ] {
+            assert_eq!(
+                decode_entities(&format!("&{name};")),
+                ch.to_string(),
+                "{name}"
+            );
+        }
+        assert_eq!(decode_entities("&#0;"), "\u{FFFD}");
+        assert_eq!(decode_entities("&#x110000;"), "\u{FFFD}");
+    }
+
+    #[test]
+    fn entities_in_attributes_are_decoded() {
+        let md = convert(
+            r#"<en-note><p><a href="https://x.test/?a=1&amp;b=2&nbsp;c">go</a></p></en-note>"#,
+        );
+        assert_eq!(md, "[go](https://x.test/?a=1&b=2%C2%A0c)");
+    }
+
+    #[test]
+    fn dangerous_link_schemes_are_dropped_but_text_kept() {
+        for href in [
+            "javascript:alert(1)",
+            "JavaScript:alert(1)",
+            " java\tscript:alert(1)",
+            "vbscript:msgbox",
+            "data:text/html;base64,PHNjcmlwdD4=",
+        ] {
+            let md = convert(&format!(
+                r#"<en-note><p><a href="{href}">click</a></p></en-note>"#
+            ));
+            assert_eq!(md, "click", "href {href:?}");
+        }
+    }
+
+    #[test]
+    fn anchor_without_href_emits_plain_text() {
+        let md = convert(r#"<en-note><p><a name="top">here</a></p></en-note>"#);
+        assert_eq!(md, "here");
+    }
+
+    #[test]
+    fn link_urls_are_escaped_for_markdown() {
+        let md = convert(r#"<en-note><p><a href="https://x.test/a b(c)<d>">t</a></p></en-note>"#);
+        assert_eq!(md, "[t](https://x.test/a%20b%28c%29%3Cd%3E)");
+        let md = convert("<en-note><p><a href=\"https://x.test/a&#10;b\">t</a></p></en-note>");
+        assert_eq!(md, "[t](https://x.test/a%0Ab)");
+    }
+
+    #[test]
+    fn image_sources_are_sanitized() {
+        let md = convert(r#"<en-note><p><img src="javascript:alert(1)" alt="x"/></p></en-note>"#);
+        assert_eq!(md, "");
+        let md = convert(
+            r#"<en-note><p><img src="data:image/svg+xml;base64,AAAA" alt="x"/></p></en-note>"#,
+        );
+        assert_eq!(md, "");
+        let md = convert(
+            r#"<en-note><p><img src="data:image/png;base64,AAAA" alt="a]b"/></p></en-note>"#,
+        );
+        assert_eq!(md, "![a\\]b](data:image/png;base64,AAAA)");
+        let md = convert(r#"<en-note><p><img src="pics/my cat (1).png" alt="c"/></p></en-note>"#);
+        assert_eq!(md, "![c](pics/my%20cat%20%281%29.png)");
+    }
+
+    #[test]
+    fn missing_attachment_placeholder_escapes_attribute_values() {
+        let md = convert(
+            r#"<en-note><p><en-media hash="x](javascript:alert(1))" type="image/png"/></p></en-note>"#,
+        );
+        assert_eq!(
+            md, "[missing attachment: x\\](javascript:alert(1)) (image/png)]",
+            "the injected ']' must be escaped"
+        );
+    }
+
+    #[test]
+    fn sanitize_url_keeps_relative_paths_with_colons() {
+        assert_eq!(
+            sanitize_url("notes/a:b.md").as_deref(),
+            Some("notes/a:b.md")
+        );
+        assert_eq!(sanitize_url("   ").as_deref(), None);
+        assert_eq!(
+            sanitize_url("mailto:me@example.com").as_deref(),
+            Some("mailto:me@example.com")
+        );
     }
 
     #[test]

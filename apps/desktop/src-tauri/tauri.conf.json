@@ -26,6 +26,11 @@
   "bundle": {
     "active": true,
     "targets": "all",
+    "publisher": "naiteh",
+    "copyright": "© naiteh contributors",
+    "category": "Productivity",
+    "shortDescription": "Local-first Markdown notes & journal",
+    "longDescription": "naiteh is a local-first desktop app for Markdown notes and a daily journal. Notes are plain .md files on your disk, browsable by folder, tag, and an Agenda-style calendar timeline, with Git-backed Sync/Backup and an opt-in AI Assist panel.",
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",

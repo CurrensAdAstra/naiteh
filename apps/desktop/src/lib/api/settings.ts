@@ -1,14 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
-
 import type { AppConfig } from "../types";
-
-function hasTauriRuntime(): boolean {
-  if (typeof window === "undefined") return true;
-  const maybeWindow = window as unknown as {
-    __TAURI_INTERNALS__?: { invoke?: unknown };
-  };
-  return typeof maybeWindow.__TAURI_INTERNALS__?.invoke === "function";
-}
+import { hasTauriRuntime, invoke } from "./invoke";
 
 function defaultWebConfig(): AppConfig {
   return {
@@ -26,7 +17,7 @@ function defaultWebConfig(): AppConfig {
       splitRatio: 0.5,
     },
     ai: {
-      apiKey: null,
+      hasApiKey: false,
       model: "gpt-4o-mini",
       baseUrl: "https://api.openai.com/v1",
     },
@@ -54,24 +45,38 @@ export function appConfigSetEditor(
   });
 }
 
-export function appConfigSetAi(
-  apiKey: string | null,
-  model: string,
-  baseUrl: string | null,
-): Promise<AppConfig> {
+/**
+ * Update AI Assist settings. The API key is write-only: the backend
+ * never returns it (only `ai.hasApiKey`).
+ *
+ * - `apiKey` non-empty → replace the stored key
+ * - `apiKey: null`, `clearApiKey: false` → keep the stored key
+ * - `clearApiKey: true` → remove the stored key
+ * - `baseUrl: null` → keep the stored endpoint
+ */
+export interface AiSettingsUpdate {
+  apiKey: string | null;
+  clearApiKey: boolean;
+  model: string;
+  baseUrl: string | null;
+}
+
+export function appConfigSetAi(update: AiSettingsUpdate): Promise<AppConfig> {
   if (!hasTauriRuntime()) {
+    const defaults = defaultWebConfig();
     return Promise.resolve({
-      ...defaultWebConfig(),
+      ...defaults,
       ai: {
-        apiKey,
-        model,
-        baseUrl: baseUrl ?? "https://api.openai.com/v1",
+        hasApiKey: !update.clearApiKey && update.apiKey !== null,
+        model: update.model,
+        baseUrl: update.baseUrl ?? defaults.ai.baseUrl,
       },
     });
   }
   return invoke<AppConfig>("app_config_set_ai", {
-    apiKey,
-    model,
-    baseUrl,
+    apiKey: update.apiKey,
+    clearApiKey: update.clearApiKey,
+    model: update.model,
+    baseUrl: update.baseUrl,
   });
 }

@@ -1,6 +1,6 @@
 //! Per-vault mutual exclusion for write + sync paths.
 //!
-//! architecture.md §9 promises "sync_now takes a vault-level lock" so
+//! vault/wiki/concurrency-safety.md promises "no write while syncing" so
 //! autosave can't land between `git add_all` and `git commit`, and so a
 //! force-checkout from `git pull` can't race a `notes_write`. This
 //! module is that lock.

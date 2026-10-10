@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-// architecture.md §5.3
+// architecture.md "ViewMode" (UI Architecture)
 export type ViewMode =
   | "journal"
   | "notes"
@@ -9,12 +9,12 @@ export type ViewMode =
   | "tags"
   | "sync";
 
-// architecture.md §5.1
+// architecture.md "Layout (desktop, v1)" (UI Architecture)
 export const LIST_PANEL_MIN = 200;
 export const LIST_PANEL_MAX = 480;
 export const LIST_PANEL_DEFAULT = 280;
 
-// architecture.md §5.5
+// architecture.md "Journal mode (quick capture + activity summary)"
 export const JOURNAL_SPLIT_MIN = 0.1;
 export const JOURNAL_SPLIT_MAX = 0.9;
 export const JOURNAL_SPLIT_DEFAULT = 0.5;

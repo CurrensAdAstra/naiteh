@@ -46,7 +46,8 @@
   color: var(--color-text-muted);
 }
 
-.navGroupLabel:first-child {
+.navGroupLabel:first-child,
+.navTitle + .navGroupLabel {
   padding-top: 0;
 }
 
@@ -173,6 +174,7 @@
 }
 
 .itemName {
+  display: block;
   font-size: 14px;
   color: var(--color-text-primary);
 }
@@ -309,9 +311,7 @@
 
 /* ── wide content inside stacked rows ─────────────────────── */
 
-.vaultList,
-.accountList,
-.auditList {
+.vaultList {
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -374,76 +374,6 @@
   font-size: 11px;
 }
 
-.accountRow {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 8px 12px;
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
-}
-
-.accountMeta {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  min-width: 0;
-}
-
-.accountName {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--color-text-primary);
-}
-
-.accountRole {
-  font-size: 11px;
-  color: var(--color-text-muted);
-}
-
-.accountActive {
-  font-size: 11px;
-  color: var(--color-success);
-}
-
-.accountDisabled {
-  font-size: 11px;
-  color: var(--color-danger);
-}
-
-.auditList {
-  gap: 0;
-}
-
-.auditRow {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 8px;
-  padding: 6px 4px;
-  border-bottom: 1px solid var(--color-border);
-  font-size: 12px;
-}
-
-.auditTime {
-  color: var(--color-text-muted);
-  font-variant-numeric: tabular-nums;
-}
-
-.auditAction {
-  font-weight: 500;
-  color: var(--color-text-primary);
-}
-
-.auditUser {
-  color: var(--color-text-secondary);
-}
-
-.auditDetail {
-  color: var(--color-text-muted);
-}
-
 .progressReport {
   margin-top: 10px;
   font-size: 12px;
@@ -453,4 +383,29 @@
 .emptyNote {
   font-size: 13px;
   color: var(--color-text-muted);
+}
+
+.notice {
+  margin: 0 0 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-success);
+  border-radius: 6px;
+  color: var(--color-success);
+  font-size: 13px;
+}
+
+.keyStatus {
+  padding: 2px 8px;
+  border: 1px solid var(--color-success);
+  border-radius: 10px;
+  color: var(--color-success);
+  font-size: 12px;
+}
+
+.navTitle {
+  margin: 0 0 8px;
+  padding: 0 10px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--color-text-primary);
 }

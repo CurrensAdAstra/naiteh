@@ -77,8 +77,14 @@ export interface SyncStatus {
   branch: string;
   ahead: number;
   behind: number;
+  /** Uncommitted changes, ignoring `.conflict-…` sidecars. */
   dirty: boolean;
   lastSync: number | null;
+  /**
+   * A pull left conflicts behind: true until every conflict sidecar is
+   * resolved. The backend refuses to sync while this is set.
+   */
+  mergePending: boolean;
 }
 
 export interface ConflictPair {
@@ -120,13 +126,19 @@ export interface JournalConfig {
   splitRatio: number;
 }
 
+/**
+ * AI Assist config as the backend reports it. The API key itself is
+ * write-only (see `appConfigSetAi`) — only its presence crosses IPC.
+ */
 export interface AiConfig {
-  apiKey: string | null;
+  hasApiKey: boolean;
   model: string;
   baseUrl: string;
 }
 
 export type UserRole = "Admin" | "User";
+
+export const USER_ROLES: readonly UserRole[] = ["User", "Admin"];
 
 export interface AuthUser {
   username: string;
@@ -142,6 +154,8 @@ export interface AuthSession {
 export interface LoginResult {
   token: string;
   session: AuthSession;
+  /** The account must set a new password before using the app. */
+  mustChangePassword: boolean;
 }
 
 export interface AuditLogEntry {
@@ -180,6 +194,10 @@ export type AppError =
   | { kind: "AlreadyInitialized"; message: string }
   | { kind: "Conflict"; message: string }
   | { kind: "ConfigCorrupt"; message: string }
+  /**
+   * Bad credentials / not permitted — and, for every non-auth command,
+   * "no active session" (the backend session gate; see lib/api/invoke).
+   */
   | { kind: "Unauthorized"; message: string }
   | { kind: "Validation"; message: string }
   | { kind: "Network"; message: string }

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { journalRelPathFor as canonicalJournalRelPathFor } from "../../../lib/journalPath";
 import {
   addMonths,
   buildGridCells,
@@ -43,6 +44,10 @@ describe("dateUtils", () => {
     expect(journalRelPathFor("2026-05-09")).toBe(
       "journal/2026/05/2026-05-09.md",
     );
+  });
+
+  it("journalRelPathFor is the shared lib/journalPath helper, not a copy", () => {
+    expect(journalRelPathFor).toBe(canonicalJournalRelPathFor);
   });
 
   it("startOfMonth / endOfMonth return month boundaries", () => {

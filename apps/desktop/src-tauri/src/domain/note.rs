@@ -1,4 +1,4 @@
-//! Note metadata — see architecture.md §6.2.
+//! Note metadata — see vault/wiki/domain-model.md ("Notes").
 
 use serde::{Deserialize, Serialize};
 

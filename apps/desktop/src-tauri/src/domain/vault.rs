@@ -1,4 +1,4 @@
-//! Vault identity types — see architecture.md §6.4.
+//! Vault identity types — see vault/wiki/domain-model.md ("Vault").
 
 use serde::{Deserialize, Serialize};
 

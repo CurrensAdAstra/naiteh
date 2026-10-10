@@ -16,7 +16,7 @@
 import { EditorView } from "@codemirror/view";
 
 import { attachmentsImportBytes } from "./api/attachments";
-import { insertAtCursor } from "../state/editorStore";
+import { currentOpenKey, insertAtCursor } from "../state/editorStore";
 import { formatAppError } from "./types";
 
 /**
@@ -90,6 +90,9 @@ export async function uploadAndInsert(
   onError: (message: string | null) => void,
 ): Promise<void> {
   onError(null);
+  // Uploads are async; remember which note asked so the links never land
+  // in a different note the user switched to meanwhile.
+  const key = currentOpenKey();
   const snippets: string[] = [];
   for (const file of files) {
     if (file.size > MAX_ATTACHMENT_BYTES) {
@@ -114,6 +117,12 @@ export async function uploadAndInsert(
     }
   }
   if (snippets.length === 0) return;
+  if (currentOpenKey() !== key) {
+    onError(
+      "The open note changed during the upload — the attachment was saved but not inserted.",
+    );
+    return;
+  }
   const inserted = insertAtCursor(snippets.join("\n\n"));
   if (!inserted) {
     onError("Open a note before inserting attachments.");

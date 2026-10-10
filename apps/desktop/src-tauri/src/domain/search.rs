@@ -1,4 +1,4 @@
-//! Search & tag types — see architecture.md §6.5.
+//! Search & tag types — see vault/wiki/domain-model.md ("Search & Tags").
 
 use serde::{Deserialize, Serialize};
 

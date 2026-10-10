@@ -1,64 +1,90 @@
-//! Search IPC command — see architecture.md §7.6.
+//! Search IPC command — see vault/wiki/ipc-api.md ("Search & Tags").
 //!
 //! v1 is a naive case-insensitive substring scan over every Markdown file in
-//! `notes/` and `journal/`. Architecture.md §10 reserves a ripgrep-backed
-//! implementation for later.
+//! `notes/` and `journal/`. The architecture.md roadmap (v1.5, "Improved
+//! search") reserves an indexed / ripgrep-backed implementation for later.
+//!
+//! The file list and each document's title come from the in-memory index
+//! (`services::index`, invalidated by every write) instead of re-walking
+//! the vault and re-deriving metadata per call; only file *contents* are
+//! read here. The command is async and does its I/O on the blocking pool
+//! so a large vault never freezes the UI thread.
 
-use std::path::Path;
+use std::path::PathBuf;
 
 use crate::domain::{AppError, SearchHit};
 use crate::services::config;
-use crate::services::notes;
+use crate::services::fs as fsx;
+use crate::services::index::{TagIndex, TagSnapshot};
+use crate::services::session::{require_session, ActiveSession};
 
 const EXCERPT_MAX_CHARS: usize = 200;
 
 #[tauri::command]
-pub fn search_text(query: String, limit: u32) -> Result<Vec<SearchHit>, AppError> {
-    let vault_root = config::current_vault_root()?;
-    search_text_impl(&vault_root, &query, limit)
+pub async fn search_text(
+    active: tauri::State<'_, ActiveSession>,
+    index: tauri::State<'_, TagIndex>,
+    query: String,
+    limit: u32,
+) -> Result<Vec<SearchHit>, AppError> {
+    require_session(&active)?;
+    let needle = query.trim().to_string();
+    if needle.is_empty() || limit == 0 {
+        return Ok(Vec::new());
+    }
+    let index = index.inner().clone();
+    fsx::run_blocking(move || {
+        let vault_root = config::current_vault_root()?;
+        let snap = index.get_or_build(&vault_root)?;
+        Ok(search_snapshot(&snap, &needle, limit))
+    })
+    .await
 }
 
+#[cfg(test)]
 fn search_text_impl(
-    vault_root: &Path,
+    vault_root: &std::path::Path,
     query: &str,
     limit: u32,
 ) -> Result<Vec<SearchHit>, AppError> {
+    let snap = TagIndex::default().get_or_build(vault_root)?;
+    Ok(search_snapshot(&snap, query, limit))
+}
+
+/// Scan the documents listed in `snap` for `query` (case-insensitive),
+/// returning one hit per matching line, capped at `limit`. Documents are
+/// visited in `rel_path` order for stable output.
+fn search_snapshot(snap: &TagSnapshot, query: &str, limit: u32) -> Vec<SearchHit> {
     let needle = query.trim();
     if needle.is_empty() || limit == 0 {
-        return Ok(Vec::new());
+        return Vec::new();
     }
     let needle_lower = needle.to_lowercase();
     let cap = limit as usize;
 
-    let mut paths = notes::collect_md_files(&vault_root.join("notes"))?;
-    paths.extend(notes::collect_md_files(&vault_root.join("journal"))?);
-    paths.sort();
+    let mut docs: Vec<_> = snap.notes.iter().collect();
+    docs.sort_by(|a, b| a.meta.rel_path.cmp(&b.meta.rel_path));
 
     let mut hits: Vec<SearchHit> = Vec::new();
-    'files: for path in paths {
+    'files: for doc in docs {
         if hits.len() >= cap {
             break;
         }
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
-            Err(_) => continue,
+        // A file deleted outside the app since the index was built is
+        // simply skipped.
+        let Ok(content) = std::fs::read_to_string(PathBuf::from(&doc.meta.path)) else {
+            continue;
         };
         if !content.to_lowercase().contains(&needle_lower) {
             continue;
         }
-        let title = compute_title(&content, &path);
-        let rel_path = path
-            .strip_prefix(vault_root)
-            .map(|p| p.to_string_lossy().replace('\\', "/"))
-            .unwrap_or_else(|_| path.to_string_lossy().to_string());
-
         for (idx, line) in content.lines().enumerate() {
             if !line.to_lowercase().contains(&needle_lower) {
                 continue;
             }
             hits.push(SearchHit {
-                rel_path: rel_path.clone(),
-                title: title.clone(),
+                rel_path: doc.meta.rel_path.clone(),
+                title: doc.meta.title.clone(),
                 line: (idx + 1) as u32,
                 excerpt: truncate_excerpt(line),
             });
@@ -67,19 +93,7 @@ fn search_text_impl(
             }
         }
     }
-    Ok(hits)
-}
-
-fn compute_title(content: &str, path: &Path) -> String {
-    let (fm, body) = notes::parse_front_matter(content);
-    fm.title
-        .or_else(|| notes::first_h1(body))
-        .unwrap_or_else(|| {
-            path.file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("")
-                .to_string()
-        })
+    hits
 }
 
 fn truncate_excerpt(line: &str) -> String {
@@ -208,6 +222,45 @@ mod tests {
         let hits = search_text_impl(v.path(), "needle", 50).unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].rel_path, "notes/sub/a.md");
+    }
+
+    #[test]
+    fn uses_cached_index_snapshot_and_refreshes_after_invalidate() {
+        let v = tempdir().unwrap();
+        fsx::atomic_write(&v.path().join("notes/a.md"), b"needle one").unwrap();
+        let idx = TagIndex::default();
+        let snap = idx.get_or_build(v.path()).unwrap();
+        assert_eq!(search_snapshot(&snap, "needle", 50).len(), 1);
+
+        // A new file isn't visible until the index is invalidated (every
+        // write IPC does that) — proof that search no longer re-walks.
+        fsx::atomic_write(&v.path().join("notes/b.md"), b"needle two").unwrap();
+        let snap = idx.get_or_build(v.path()).unwrap();
+        assert_eq!(search_snapshot(&snap, "needle", 50).len(), 1);
+        idx.invalidate(v.path());
+        let snap = idx.get_or_build(v.path()).unwrap();
+        assert_eq!(search_snapshot(&snap, "needle", 50).len(), 2);
+    }
+
+    #[test]
+    fn content_edits_are_seen_without_reindexing() {
+        let v = tempdir().unwrap();
+        fsx::atomic_write(&v.path().join("notes/a.md"), b"old text").unwrap();
+        let idx = TagIndex::default();
+        let snap = idx.get_or_build(v.path()).unwrap();
+        fsx::atomic_write(&v.path().join("notes/a.md"), b"new needle").unwrap();
+        // Contents are always read fresh; only the file list is cached.
+        assert_eq!(search_snapshot(&snap, "needle", 50).len(), 1);
+    }
+
+    #[test]
+    fn deleted_file_in_snapshot_is_skipped() {
+        let v = tempdir().unwrap();
+        fsx::atomic_write(&v.path().join("notes/a.md"), b"needle").unwrap();
+        let idx = TagIndex::default();
+        let snap = idx.get_or_build(v.path()).unwrap();
+        std::fs::remove_file(v.path().join("notes/a.md")).unwrap();
+        assert!(search_snapshot(&snap, "needle", 50).is_empty());
     }
 
     #[test]

@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke } from "./invoke";
 
 export function aiImprove(text: string, instruction: string): Promise<string> {
   return invoke<string>("ai_improve", { text, instruction });

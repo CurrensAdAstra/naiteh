@@ -28,7 +28,7 @@ describe("ActivityBar", () => {
     });
   });
 
-  it("renders the seven ViewMode icons in the documented order", () => {
+  it("renders the six ViewMode icons (plus the Settings gear) in the documented order", () => {
     render(<ActivityBar />);
     const buttons = screen
       .getByRole("navigation", { name: /activity bar/i })

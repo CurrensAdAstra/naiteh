@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import {
   useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -65,6 +66,9 @@ export function CommandPalette() {
   const inputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
+  // Unique per instance so option ids never collide with other DOM ids.
+  const listboxId = useId();
+  const optionId = (command: Command) => `${listboxId}-option-${command.id}`;
 
   const commands = useMemo<Command[]>(
     () => [
@@ -122,6 +126,19 @@ export function CommandPalette() {
     setActiveIndex(0);
   }, [query]);
 
+  const activeCommand = filtered[activeIndex];
+  const activeOptionId =
+    activeCommand === undefined ? undefined : optionId(activeCommand);
+
+  // Keep the keyboard-highlighted option visible in a scrolled list.
+  useEffect(() => {
+    if (activeOptionId === undefined) return;
+    const el = document.getElementById(activeOptionId);
+    if (el !== null && typeof el.scrollIntoView === "function") {
+      el.scrollIntoView({ block: "nearest" });
+    }
+  }, [activeOptionId]);
+
   if (!open) return null;
 
   function close() {
@@ -141,7 +158,7 @@ export function CommandPalette() {
     }
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setActiveIndex((idx) => Math.min(filtered.length - 1, idx + 1));
+      setActiveIndex((idx) => Math.max(0, Math.min(filtered.length - 1, idx + 1)));
       return;
     }
     if (e.key === "ArrowUp") {
@@ -151,8 +168,7 @@ export function CommandPalette() {
     }
     if (e.key === "Enter") {
       e.preventDefault();
-      const command = filtered[activeIndex];
-      if (command !== undefined) run(command);
+      if (activeCommand !== undefined) run(activeCommand);
     }
   }
 
@@ -171,6 +187,8 @@ export function CommandPalette() {
         aria-modal="true"
         aria-label="Command palette"
       >
+        {/* ARIA 1.2 combobox: focus stays in the input and
+            aria-activedescendant points at the highlighted role="option". */}
         <input
           ref={inputRef}
           className={styles.input}
@@ -178,43 +196,50 @@ export function CommandPalette() {
           onChange={(e) => setQuery(e.currentTarget.value)}
           onKeyDown={handleKeyDown}
           placeholder="Type a command"
-          aria-controls="command-palette-results"
-          aria-activedescendant={filtered[activeIndex]?.id}
+          role="combobox"
+          aria-label="Command"
+          aria-autocomplete="list"
+          aria-expanded={filtered.length > 0}
+          aria-controls={listboxId}
+          aria-activedescendant={activeOptionId}
           data-testid="command-palette-input"
         />
         <ul
-          id="command-palette-results"
+          id={listboxId}
           className={styles.results}
           role="listbox"
           aria-label="Commands"
         >
-          {filtered.length === 0 ? (
-            <li className={styles.empty}>No matching commands</li>
-          ) : (
-            filtered.map((command, index) => {
-              const active = index === activeIndex;
-              const Icon = command.Icon;
-              return (
-                <li key={command.id} role="option" aria-selected={active}>
-                  <button
-                    id={command.id}
-                    type="button"
-                    className={`${styles.command} ${active ? styles.commandActive : ""}`}
-                    onMouseEnter={() => setActiveIndex(index)}
-                    onClick={() => run(command)}
-                    data-testid={`command-${command.id}`}
-                  >
-                    <Icon size={17} strokeWidth={1.7} aria-hidden="true" />
-                    <span className={styles.commandText}>
-                      <span className={styles.commandLabel}>{command.label}</span>
-                      <span className={styles.commandDetail}>{command.detail}</span>
-                    </span>
-                  </button>
-                </li>
-              );
-            })
-          )}
+          {filtered.map((command, index) => {
+            const active = index === activeIndex;
+            const Icon = command.Icon;
+            return (
+              <li
+                key={command.id}
+                id={optionId(command)}
+                role="option"
+                aria-selected={active}
+                className={`${styles.command} ${active ? styles.commandActive : ""}`}
+                onMouseEnter={() => setActiveIndex(index)}
+                // Keep focus (and so the combobox state) in the input.
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => run(command)}
+                data-testid={`command-${command.id}`}
+              >
+                <Icon size={17} strokeWidth={1.7} aria-hidden="true" />
+                <span className={styles.commandText}>
+                  <span className={styles.commandLabel}>{command.label}</span>
+                  <span className={styles.commandDetail}>{command.detail}</span>
+                </span>
+              </li>
+            );
+          })}
         </ul>
+        {filtered.length === 0 && (
+          <p className={styles.empty} role="status">
+            No matching commands
+          </p>
+        )}
       </section>
     </div>
   );

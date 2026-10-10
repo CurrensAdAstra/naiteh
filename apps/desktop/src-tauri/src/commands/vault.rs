@@ -1,8 +1,14 @@
-//! Vault IPC commands — see architecture.md §7.1.
+//! Vault IPC commands — see vault/wiki/ipc-api.md ("Vault") and
+//! vault-and-data.md ("Where a vault may live").
 //!
 //! Each public `vault_*` function is a thin Tauri-facing wrapper around an
-//! inner `*_impl` that takes the app config directory explicitly so it can be
-//! unit-tested against a tempdir.
+//! inner `*_impl` that takes the app config directory (and the vault-path
+//! policy) explicitly so it can be unit-tested against a tempdir.
+//!
+//! Vault roots are validated when chosen (`services::vault_path`): an
+//! absolute, canonical directory that is not a filesystem root, the home
+//! folder, or a system / app-data location. `vault_set_active` further
+//! requires an already-initialized vault.
 
 use std::path::{Path, PathBuf};
 
@@ -13,6 +19,8 @@ use tauri_plugin_dialog::DialogExt;
 use crate::domain::{AppError, VaultInfo};
 use crate::services::config;
 use crate::services::fs as fsx;
+use crate::services::session::{require_session, ActiveSession};
+use crate::services::vault_path::{self, VaultPathPolicy};
 
 const NAITEH_DIR: &str = ".naiteh";
 
@@ -33,7 +41,11 @@ fn vault_info_for(root: &Path) -> VaultInfo {
 // ── vault_pick_folder ────────────────────────────────────────────────────
 
 #[tauri::command]
-pub async fn vault_pick_folder<R: Runtime>(app: AppHandle<R>) -> Result<VaultInfo, AppError> {
+pub async fn vault_pick_folder<R: Runtime>(
+    active: tauri::State<'_, ActiveSession>,
+    app: AppHandle<R>,
+) -> Result<VaultInfo, AppError> {
+    require_session(&active)?;
     // The native folder picker (NSOpenPanel on macOS) must run on the main
     // thread. Calling `blocking_pick_folder()` from a Tauri worker thread
     // deadlocks; use the async callback form and bridge it via a oneshot
@@ -63,16 +75,21 @@ pub async fn vault_pick_folder<R: Runtime>(app: AppHandle<R>) -> Result<VaultInf
 // ── vault_init ───────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn vault_init(root: String) -> Result<VaultInfo, AppError> {
-    vault_init_impl(Path::new(&root))
+pub fn vault_init(
+    active: tauri::State<'_, ActiveSession>,
+    root: String,
+) -> Result<VaultInfo, AppError> {
+    require_session(&active)?;
+    vault_init_impl(&root, &VaultPathPolicy::system())
 }
 
-fn vault_init_impl(root: &Path) -> Result<VaultInfo, AppError> {
-    if !root.is_dir() {
-        return Err(AppError::InvalidPath(format!(
-            "not a directory: {}",
-            root.display()
-        )));
+/// Initialize `root` as a vault. The folder may be created if its parent
+/// exists. Returns the canonical root.
+fn vault_init_impl(root: &str, policy: &VaultPathPolicy) -> Result<VaultInfo, AppError> {
+    let root = vault_path::validate_new_root(root, policy)?;
+    if !root.exists() {
+        // Parent was verified to exist; create just this one level.
+        std::fs::create_dir(&root)?;
     }
     let naiteh_dir = root.join(NAITEH_DIR);
     if naiteh_dir.exists() {
@@ -89,7 +106,7 @@ fn vault_init_impl(root: &Path) -> Result<VaultInfo, AppError> {
     let stub = json!({ "version": 1 });
     fsx::write_json(&naiteh_dir.join("config.json"), &stub)?;
 
-    Ok(vault_info_for(root))
+    Ok(vault_info_for(&root))
 }
 
 // ── vault_create_default ─────────────────────────────────────────────────
@@ -103,21 +120,27 @@ const DEFAULT_VAULT_NAME: &str = "duramen";
 /// back to `duramen-2`, `duramen-3`, … if the name is taken),
 /// initialize it as a vault, and make it active.
 #[tauri::command]
-pub fn vault_create_default() -> Result<VaultInfo, AppError> {
+pub fn vault_create_default(
+    active: tauri::State<'_, ActiveSession>,
+) -> Result<VaultInfo, AppError> {
+    require_session(&active)?;
     let config_dir = config::default_app_config_dir()?;
     fsx::ensure_dir(&config_dir)?;
     let documents = dirs::document_dir()
         .or_else(dirs::home_dir)
         .ok_or_else(|| AppError::NotFound("no Documents directory on this system".into()))?;
-    vault_create_default_impl(&config_dir, &documents)
+    vault_create_default_impl(&config_dir, &documents, &VaultPathPolicy::system())
 }
 
-fn vault_create_default_impl(config_dir: &Path, documents: &Path) -> Result<VaultInfo, AppError> {
+fn vault_create_default_impl(
+    config_dir: &Path,
+    documents: &Path,
+    policy: &VaultPathPolicy,
+) -> Result<VaultInfo, AppError> {
+    fsx::ensure_dir(documents)?;
     let root = available_default_root(documents)?;
-    fsx::ensure_dir(&root)?;
-    let info = vault_init_impl(&root)?;
-    vault_set_active_impl(config_dir, &info.root)?;
-    Ok(info)
+    let info = vault_init_impl(&root.to_string_lossy(), policy)?;
+    vault_set_active_impl(config_dir, &info.root, policy)
 }
 
 fn available_default_root(documents: &Path) -> Result<PathBuf, AppError> {
@@ -140,7 +163,10 @@ fn available_default_root(documents: &Path) -> Result<PathBuf, AppError> {
 // ── vault_current / vault_set_active / vault_list_known ──────────────────
 
 #[tauri::command]
-pub fn vault_current() -> Result<Option<VaultInfo>, AppError> {
+pub fn vault_current(
+    active: tauri::State<'_, ActiveSession>,
+) -> Result<Option<VaultInfo>, AppError> {
+    require_session(&active)?;
     let dir = config::default_app_config_dir()?;
     fsx::ensure_dir(&dir)?;
     vault_current_impl(&dir)
@@ -155,24 +181,53 @@ fn vault_current_impl(config_dir: &Path) -> Result<Option<VaultInfo>, AppError> 
 }
 
 #[tauri::command]
-pub fn vault_set_active(root: String) -> Result<VaultInfo, AppError> {
+pub fn vault_set_active(
+    active: tauri::State<'_, ActiveSession>,
+    root: String,
+) -> Result<VaultInfo, AppError> {
+    require_session(&active)?;
     let dir = config::default_app_config_dir()?;
     fsx::ensure_dir(&dir)?;
-    vault_set_active_impl(&dir, &root)
+    vault_set_active_impl(&dir, &root, &VaultPathPolicy::system())
 }
 
-fn vault_set_active_impl(config_dir: &Path, root: &str) -> Result<VaultInfo, AppError> {
+/// Make `root` the active vault. It must pass the vault-path policy and
+/// already be a naiteh vault (`.naiteh/`, or `notes/` + `journal/`).
+/// The canonical path is what gets stored.
+fn vault_set_active_impl(
+    config_dir: &Path,
+    root: &str,
+    policy: &VaultPathPolicy,
+) -> Result<VaultInfo, AppError> {
+    let canonical = vault_path::validate_existing_root(root, policy)?;
+    if !vault_path::is_naiteh_vault(&canonical) {
+        return Err(AppError::InvalidPath(format!(
+            "{} is not a naiteh vault — create a new vault there instead",
+            canonical.display()
+        )));
+    }
+    let root_str = canonical.to_string_lossy().to_string();
     let mut cfg = config::load(config_dir)?;
-    cfg.active_vault = Some(root.to_string());
-    if !cfg.known_vaults.iter().any(|p| p == root) {
-        cfg.known_vaults.insert(0, root.to_string());
+    cfg.active_vault = Some(root_str.clone());
+    let same_as_root = |p: &String| {
+        p == &root_str
+            || Path::new(p)
+                .canonicalize()
+                .map(|c| vault_path::simplify(&c) == canonical)
+                .unwrap_or(false)
+    };
+    if !cfg.known_vaults.iter().any(same_as_root) {
+        cfg.known_vaults.insert(0, root_str);
     }
     config::save(config_dir, &cfg)?;
-    Ok(vault_info_for(Path::new(root)))
+    Ok(vault_info_for(&canonical))
 }
 
 #[tauri::command]
-pub fn vault_list_known() -> Result<Vec<VaultInfo>, AppError> {
+pub fn vault_list_known(
+    active: tauri::State<'_, ActiveSession>,
+) -> Result<Vec<VaultInfo>, AppError> {
+    require_session(&active)?;
     let dir = config::default_app_config_dir()?;
     fsx::ensure_dir(&dir)?;
     vault_list_known_impl(&dir)
@@ -193,13 +248,27 @@ mod tests {
     use crate::services::config::AppConfig;
     use tempfile::tempdir;
 
+    /// Tempdirs live under %LOCALAPPDATA% / $TMPDIR, which the system
+    /// policy refuses — tests use an empty policy unless they test it.
+    fn open_policy() -> VaultPathPolicy {
+        VaultPathPolicy::default()
+    }
+
+    fn s(p: &Path) -> String {
+        p.to_string_lossy().to_string()
+    }
+
+    fn canon(p: &Path) -> PathBuf {
+        vault_path::simplify(&p.canonicalize().unwrap())
+    }
+
     #[test]
     fn init_creates_required_structure() {
         let root_dir = tempdir().unwrap();
-        let info = vault_init_impl(root_dir.path()).unwrap();
+        let info = vault_init_impl(&s(root_dir.path()), &open_policy()).unwrap();
 
         assert!(info.initialized);
-        assert_eq!(info.root, root_dir.path().to_string_lossy());
+        assert_eq!(info.root, s(&canon(root_dir.path())));
 
         assert!(root_dir.path().join(".naiteh").is_dir());
         assert!(root_dir.path().join(".naiteh/config.json").is_file());
@@ -211,7 +280,7 @@ mod tests {
     #[test]
     fn init_preserves_underscore_prefix_on_inbox() {
         let root_dir = tempdir().unwrap();
-        vault_init_impl(root_dir.path()).unwrap();
+        vault_init_impl(&s(root_dir.path()), &open_policy()).unwrap();
         let inbox = root_dir.path().join("notes/_inbox");
         assert_eq!(
             inbox.file_name().unwrap().to_string_lossy(),
@@ -223,8 +292,8 @@ mod tests {
     #[test]
     fn init_twice_returns_already_initialized() {
         let root_dir = tempdir().unwrap();
-        vault_init_impl(root_dir.path()).unwrap();
-        let err = vault_init_impl(root_dir.path()).unwrap_err();
+        vault_init_impl(&s(root_dir.path()), &open_policy()).unwrap();
+        let err = vault_init_impl(&s(root_dir.path()), &open_policy()).unwrap_err();
         assert!(
             matches!(err, AppError::AlreadyInitialized(_)),
             "got {err:?}"
@@ -232,11 +301,33 @@ mod tests {
     }
 
     #[test]
-    fn init_on_missing_root_returns_invalid_path() {
+    fn init_creates_a_missing_folder_when_parent_exists() {
         let dir = tempdir().unwrap();
-        let bogus = dir.path().join("does-not-exist");
-        let err = vault_init_impl(&bogus).unwrap_err();
+        let fresh = dir.path().join("new-vault");
+        let info = vault_init_impl(&s(&fresh), &open_policy()).unwrap();
+        assert!(info.initialized);
+        assert!(fresh.join(".naiteh").is_dir());
+    }
+
+    #[test]
+    fn init_with_missing_parent_returns_invalid_path() {
+        let dir = tempdir().unwrap();
+        let bogus = dir.path().join("does-not-exist").join("vault");
+        let err = vault_init_impl(&s(&bogus), &open_policy()).unwrap_err();
         assert!(matches!(err, AppError::InvalidPath(_)), "got {err:?}");
+        assert!(!dir.path().join("does-not-exist").exists());
+    }
+
+    #[test]
+    fn init_rejects_relative_paths_and_denied_locations() {
+        let err = vault_init_impl("relative/vault", &open_policy()).unwrap_err();
+        assert!(matches!(err, AppError::InvalidPath(_)), "got {err:?}");
+
+        let home = tempdir().unwrap();
+        let policy = VaultPathPolicy::new(vec![home.path().to_path_buf()], vec![]);
+        let err = vault_init_impl(&s(home.path()), &policy).unwrap_err();
+        assert!(matches!(err, AppError::InvalidPath(_)), "got {err:?}");
+        assert!(!home.path().join(".naiteh").exists());
     }
 
     #[test]
@@ -250,9 +341,11 @@ mod tests {
     fn set_active_persists_and_adds_to_known() {
         let cfg_dir = tempdir().unwrap();
         let vault_dir = tempdir().unwrap();
-        let root_str = vault_dir.path().to_string_lossy().to_string();
+        vault_init_impl(&s(vault_dir.path()), &open_policy()).unwrap();
+        let root_str = s(&canon(vault_dir.path()));
 
-        let info = vault_set_active_impl(cfg_dir.path(), &root_str).unwrap();
+        let info =
+            vault_set_active_impl(cfg_dir.path(), &s(vault_dir.path()), &open_policy()).unwrap();
         assert_eq!(info.root, root_str);
 
         let cfg = config::load(cfg_dir.path()).unwrap();
@@ -264,26 +357,56 @@ mod tests {
     fn set_active_does_not_duplicate_in_known() {
         let cfg_dir = tempdir().unwrap();
         let vault_dir = tempdir().unwrap();
-        let root_str = vault_dir.path().to_string_lossy().to_string();
+        vault_init_impl(&s(vault_dir.path()), &open_policy()).unwrap();
+        let root_str = s(vault_dir.path());
 
-        vault_set_active_impl(cfg_dir.path(), &root_str).unwrap();
-        vault_set_active_impl(cfg_dir.path(), &root_str).unwrap();
+        vault_set_active_impl(cfg_dir.path(), &root_str, &open_policy()).unwrap();
+        vault_set_active_impl(cfg_dir.path(), &root_str, &open_policy()).unwrap();
 
         let cfg = config::load(cfg_dir.path()).unwrap();
         assert_eq!(cfg.known_vaults.len(), 1);
     }
 
     #[test]
+    fn set_active_requires_an_existing_naiteh_vault() {
+        let cfg_dir = tempdir().unwrap();
+        let plain = tempdir().unwrap();
+        let err =
+            vault_set_active_impl(cfg_dir.path(), &s(plain.path()), &open_policy()).unwrap_err();
+        assert!(matches!(err, AppError::InvalidPath(_)), "got {err:?}");
+
+        let missing = plain.path().join("nope");
+        assert!(vault_set_active_impl(cfg_dir.path(), &s(&missing), &open_policy()).is_err());
+        assert!(config::load(cfg_dir.path()).unwrap().active_vault.is_none());
+
+        // The notes/ + journal/ layout also counts as a vault.
+        std::fs::create_dir_all(plain.path().join("notes")).unwrap();
+        std::fs::create_dir_all(plain.path().join("journal")).unwrap();
+        vault_set_active_impl(cfg_dir.path(), &s(plain.path()), &open_policy()).unwrap();
+    }
+
+    #[test]
+    fn set_active_refuses_a_vault_in_a_denied_location() {
+        let cfg_dir = tempdir().unwrap();
+        let home = tempdir().unwrap();
+        // A "vault" sitting directly in the home folder (e.g. via a
+        // planted .naiteh) is still refused.
+        std::fs::create_dir_all(home.path().join(".naiteh")).unwrap();
+        let policy = VaultPathPolicy::new(vec![home.path().to_path_buf()], vec![]);
+        let err = vault_set_active_impl(cfg_dir.path(), &s(home.path()), &policy).unwrap_err();
+        assert!(matches!(err, AppError::InvalidPath(_)), "got {err:?}");
+    }
+
+    #[test]
     fn current_returns_active_after_set() {
         let cfg_dir = tempdir().unwrap();
         let vault_dir = tempdir().unwrap();
-        vault_init_impl(vault_dir.path()).unwrap();
-        let root_str = vault_dir.path().to_string_lossy().to_string();
-        vault_set_active_impl(cfg_dir.path(), &root_str).unwrap();
+        vault_init_impl(&s(vault_dir.path()), &open_policy()).unwrap();
+        vault_set_active_impl(cfg_dir.path(), &s(vault_dir.path()), &open_policy()).unwrap();
 
         let current = vault_current_impl(cfg_dir.path()).unwrap();
         let info = current.expect("expected Some");
-        assert_eq!(info.root, root_str);
+        assert_eq!(info.root, s(&canon(vault_dir.path())));
         assert!(info.initialized);
     }
 
@@ -308,14 +431,11 @@ mod tests {
     fn list_known_reflects_init_state_on_disk() {
         let cfg_dir = tempdir().unwrap();
         let initialized_vault = tempdir().unwrap();
-        vault_init_impl(initialized_vault.path()).unwrap();
+        vault_init_impl(&s(initialized_vault.path()), &open_policy()).unwrap();
         let pristine_vault = tempdir().unwrap();
 
         let cfg = AppConfig {
-            known_vaults: vec![
-                initialized_vault.path().to_string_lossy().to_string(),
-                pristine_vault.path().to_string_lossy().to_string(),
-            ],
+            known_vaults: vec![s(initialized_vault.path()), s(pristine_vault.path())],
             ..AppConfig::default()
         };
         config::save(cfg_dir.path(), &cfg).unwrap();
@@ -332,7 +452,7 @@ mod tests {
         let cfg_dir = tempfile::tempdir().unwrap();
         let docs = tempfile::tempdir().unwrap();
 
-        let info = vault_create_default_impl(cfg_dir.path(), docs.path()).unwrap();
+        let info = vault_create_default_impl(cfg_dir.path(), docs.path(), &open_policy()).unwrap();
 
         assert_eq!(info.name, "duramen");
         assert!(info.initialized);
@@ -352,7 +472,7 @@ mod tests {
         let docs = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(docs.path().join("duramen")).unwrap();
 
-        let info = vault_create_default_impl(cfg_dir.path(), docs.path()).unwrap();
+        let info = vault_create_default_impl(cfg_dir.path(), docs.path(), &open_policy()).unwrap();
         assert_eq!(info.name, "duramen-2");
         assert!(info.initialized);
     }

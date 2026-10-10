@@ -3,7 +3,6 @@ import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import { EditorView, basicSetup } from "codemirror";
 import { Lock, Paperclip, Sparkles, Star, Unlock } from "lucide-react";
 import {
-  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -12,8 +11,6 @@ import {
 } from "react";
 
 import { attachmentsImport } from "../lib/api/attachments";
-import { journalSave } from "../lib/api/journal";
-import { notesWrite } from "../lib/api/notes";
 import { resolveFenceLanguage } from "../lib/codeBlockLanguages";
 import { editorAttachmentDrop } from "../lib/editorAttachmentDrop";
 import {
@@ -23,6 +20,12 @@ import {
 import { markdownKeymap } from "../lib/markdownKeymap";
 import { formatAppError, isAppError } from "../lib/types";
 import {
+  flushPendingSave,
+  onSaved,
+  scheduleSave,
+} from "../state/autosave";
+import {
+  currentOpenKey,
   insertAtCursor,
   isDirty,
   replaceWholeDocument,
@@ -35,24 +38,19 @@ import { useUIStore } from "../state/uiStore";
 import { TagsBar } from "./TagsBar";
 import styles from "./EditorPanel.module.css";
 
-const AUTOSAVE_DELAY_MS = 800;
-
-async function persist(source: OpenSource, content: string): Promise<void> {
-  if (source.kind === "note") {
-    await notesWrite(source.relPath, content);
-  } else {
-    await journalSave(source.date, content);
-  }
-}
-
 function auditDetail(source: OpenSource): string {
   return source.kind === "note" ? source.relPath : source.date;
 }
 
 export function EditorPanel() {
   const open = useEditorStore((s) => s.open);
+  const revision = useEditorStore((s) => s.revision);
+  const saveError = useEditorStore((s) =>
+    s.saveError !== null && s.saveError.key === s.open?.key
+      ? s.saveError.message
+      : null,
+  );
   const setContent = useEditorStore((s) => s.setContent);
-  const markSaved = useEditorStore((s) => s.markSaved);
   const setView = useEditorStore((s) => s.setView);
   const editorConfig = useSettingsStore(selectEditorConfig);
   const editorReadOnly = useUIStore((s) => s.editorReadOnly);
@@ -66,29 +64,28 @@ export function EditorPanel() {
   const editorKey = open?.key ?? null;
   const dirty = open !== null && isDirty(open);
 
-  const save = useCallback(
-    async (source: OpenSource, content: string) => {
-      try {
-        await persist(source, content);
-        markSaved();
+  // Audit-log every successful write (autosave, flush, Cmd+S).
+  useEffect(
+    () =>
+      onSaved((source) => {
         void logAction(
           source.kind === "note" ? "note_save" : "journal_save",
           auditDetail(source),
         ).catch(() => {});
-      } catch (e) {
-        console.error("autosave failed:", formatAppError(e));
-      }
-    },
-    [markSaved, logAction],
+      }),
+    [logAction],
   );
 
-  // Build / rebuild the CodeMirror view whenever a different file is opened.
-  // We intentionally avoid `open` in the dep array — every keystroke would
-  // tear the editor down. Read the latest savedContent via getState().
+  // Build / rebuild the CodeMirror view whenever a different file is
+  // opened, or the open file's text was replaced from outside the editor
+  // (`revision` bump: re-open, reload after sync). We intentionally avoid
+  // `open` in the dep array — every keystroke would tear the editor down.
+  // Seed from the *current* content (not savedContent) so a remount while
+  // dirty never shows stale text.
   useEffect(() => {
     const container = containerRef.current;
     if (container === null || editorKey === null) return;
-    const initial = useEditorStore.getState().open?.savedContent ?? "";
+    const initial = useEditorStore.getState().open?.content ?? "";
     const wrapCompartment = new Compartment();
     const readOnlyCompartment = new Compartment();
     wrapCompartmentRef.current = wrapCompartment;
@@ -112,7 +109,12 @@ export function EditorPanel() {
         readOnlyCompartment.of(initialReadOnly),
         editorAttachmentDrop({ onError: setAttachmentError }),
         EditorView.updateListener.of((update) => {
-          if (update.docChanged) {
+          // Only mirror into the store while this view still belongs to
+          // the open document (guards the brief window before a rebuild).
+          if (
+            update.docChanged &&
+            useEditorStore.getState().open?.key === editorKey
+          ) {
             setContent(update.state.doc.toString());
           }
         }),
@@ -126,9 +128,9 @@ export function EditorPanel() {
       viewRef.current = null;
       wrapCompartmentRef.current = null;
       readOnlyCompartmentRef.current = null;
-      setView(null);
+      if (useEditorStore.getState().view === view) setView(null);
     };
-  }, [editorKey, setContent, setView]);
+  }, [editorKey, revision, setContent, setView]);
 
   // Live-apply the line-wrapping preference to the existing view.
   useEffect(() => {
@@ -154,30 +156,27 @@ export function EditorPanel() {
     });
   }, [editorReadOnly]);
 
-  // Debounced autosave when the editor content drifts from disk.
+  // Debounced autosave when the editor content drifts from disk. The
+  // pending save lives in state/autosave (not in this effect), so it is
+  // *not* cancelled when the open document changes: it still writes the
+  // captured content to the captured source, and callers that move off a
+  // document flush it explicitly first.
   useEffect(() => {
     if (open === null || !isDirty(open)) return;
-    const source = open.source;
-    const content = open.content;
-    const handle = setTimeout(() => {
-      void save(source, content);
-    }, AUTOSAVE_DELAY_MS);
-    return () => clearTimeout(handle);
-  }, [open, save]);
+    scheduleSave(open.source, open.content);
+  }, [open]);
 
   // Cmd/Ctrl-S = explicit save.
   useEffect(() => {
     function handler(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key === "s") {
         e.preventDefault();
-        const current = useEditorStore.getState().open;
-        if (current === null) return;
-        void save(current.source, current.content);
+        void flushPendingSave();
       }
     }
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [save]);
+  }, []);
 
   const headerLabel =
     open === null
@@ -216,9 +215,25 @@ export function EditorPanel() {
               className={dirty ? styles.statusDirty : styles.statusSaved}
               data-testid="editor-status"
             >
-              {editorReadOnly ? "Read-only" : dirty ? "● Unsaved" : "Saved"}
+              {editorReadOnly
+                ? "Read-only"
+                : dirty
+                  ? saveError !== null
+                    ? "● Save failed"
+                    : "● Unsaved"
+                  : "Saved"}
             </span>
           </div>
+          {saveError !== null && dirty && (
+            <div
+              className={styles.inlineError}
+              role="alert"
+              data-testid="editor-save-error"
+            >
+              Couldn&rsquo;t save: {saveError}. Your changes are kept and
+              will be retried.
+            </div>
+          )}
           {attachmentError !== null && (
             <div className={styles.inlineError} role="alert">
               {attachmentError}
@@ -247,8 +262,15 @@ function AttachmentButton({ readOnly, onError }: AttachmentButtonProps) {
   async function handleImport() {
     onError(null);
     setBusy(true);
+    const key = currentOpenKey();
     try {
       const attachment = await attachmentsImport();
+      if (currentOpenKey() !== key) {
+        onError(
+          `Attached ${attachment.relPath}, but the open note changed — insert its link manually.`,
+        );
+        return;
+      }
       const ok = insertAtCursor(attachment.markdown);
       if (!ok) {
         onError("Open a note before inserting an attachment.");

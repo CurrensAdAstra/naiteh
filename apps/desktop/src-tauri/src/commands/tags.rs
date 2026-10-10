@@ -1,4 +1,4 @@
-//! Tags IPC commands — see architecture.md §7.6 / §4.3.
+//! Tags IPC commands — see vault/wiki/ipc-api.md ("Search & Tags").
 //!
 //! Tag data is read out of an in-memory `TagIndex` (built lazily,
 //! invalidated by every write IPC) rather than re-scanning every
@@ -8,15 +8,27 @@ use std::collections::HashMap;
 
 use crate::domain::{AppError, NoteMeta, TagCount};
 use crate::services::config;
+use crate::services::fs as fsx;
 use crate::services::index::{TagIndex, TagSnapshot};
+use crate::services::session::{require_session, ActiveSession};
 
 // ── tags_list ────────────────────────────────────────────────────────────
 
+/// Async + `run_blocking`: a cold index build reads every note, which
+/// must not happen on the main (UI) thread.
 #[tauri::command]
-pub fn tags_list(index: tauri::State<'_, TagIndex>) -> Result<Vec<TagCount>, AppError> {
-    let vault_root = config::current_vault_root()?;
-    let snap = index.get_or_build(&vault_root)?;
-    Ok(tags_list_from_snapshot(&snap))
+pub async fn tags_list(
+    active: tauri::State<'_, ActiveSession>,
+    index: tauri::State<'_, TagIndex>,
+) -> Result<Vec<TagCount>, AppError> {
+    require_session(&active)?;
+    let index = index.inner().clone();
+    fsx::run_blocking(move || {
+        let vault_root = config::current_vault_root()?;
+        let snap = index.get_or_build(&vault_root)?;
+        Ok(tags_list_from_snapshot(&snap))
+    })
+    .await
 }
 
 fn tags_list_from_snapshot(snap: &TagSnapshot) -> Vec<TagCount> {
@@ -41,13 +53,19 @@ fn tags_list_from_snapshot(snap: &TagSnapshot) -> Vec<TagCount> {
 // ── tags_notes ───────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn tags_notes(
+pub async fn tags_notes(
+    active: tauri::State<'_, ActiveSession>,
     index: tauri::State<'_, TagIndex>,
     tag: String,
 ) -> Result<Vec<NoteMeta>, AppError> {
-    let vault_root = config::current_vault_root()?;
-    let snap = index.get_or_build(&vault_root)?;
-    Ok(tags_notes_from_snapshot(&snap, &tag))
+    require_session(&active)?;
+    let index = index.inner().clone();
+    fsx::run_blocking(move || {
+        let vault_root = config::current_vault_root()?;
+        let snap = index.get_or_build(&vault_root)?;
+        Ok(tags_notes_from_snapshot(&snap, &tag))
+    })
+    .await
 }
 
 fn tags_notes_from_snapshot(snap: &TagSnapshot, tag: &str) -> Vec<NoteMeta> {
@@ -177,7 +195,10 @@ mod tests {
             b"---\ntitle: \"Old\"\ntags: [work]\n---\n",
         )
         .unwrap();
-        std::fs::File::open(v.path().join("notes/old.md"))
+        // Write access is required for set_modified on Windows.
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(v.path().join("notes/old.md"))
             .unwrap()
             .set_modified(now - Duration::from_secs(60))
             .unwrap();
@@ -186,7 +207,9 @@ mod tests {
             b"---\ntitle: \"New\"\ntags: [work]\n---\n",
         )
         .unwrap();
-        std::fs::File::open(v.path().join("notes/new.md"))
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(v.path().join("notes/new.md"))
             .unwrap()
             .set_modified(now)
             .unwrap();

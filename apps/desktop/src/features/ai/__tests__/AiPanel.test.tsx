@@ -15,7 +15,7 @@ vi.mock("../../../lib/api/ai", () => ({
 import { aiImprove } from "../../../lib/api/ai";
 const mockedImprove = vi.mocked(aiImprove);
 
-function configWithAi(apiKey: string | null): AppConfig {
+function configWithAi(hasApiKey: boolean): AppConfig {
   return {
     activeVault: "/v",
     knownVaults: ["/v"],
@@ -24,7 +24,7 @@ function configWithAi(apiKey: string | null): AppConfig {
     calendar: { subView: "timeline" },
     journal: { splitRatio: 0.5 },
     ai: {
-      apiKey,
+      hasApiKey,
       model: "gpt-4o-mini",
       baseUrl: "https://api.openai.com/v1",
     },
@@ -83,12 +83,12 @@ describe("AiPanel", () => {
   beforeEach(() => {
     mockedImprove.mockReset();
     useEditorStore.setState({ open: null, view: null });
-    useSettingsStore.setState({ config: configWithAi("sk-test"), loading: false });
+    useSettingsStore.setState({ config: configWithAi(true), loading: false });
     useUIStore.setState({ aiPanelOpen: true });
   });
 
   it("warns when no API key is configured and disables Run", async () => {
-    useSettingsStore.setState({ config: configWithAi(null), loading: false });
+    useSettingsStore.setState({ config: configWithAi(false), loading: false });
     render(<AiPanel />);
     expect(screen.getByTestId("ai-panel-key-missing")).toBeInTheDocument();
     expect(screen.getByTestId("ai-run")).toBeDisabled();
@@ -151,6 +151,82 @@ describe("AiPanel", () => {
       to: 10,
       insert: "REPLACEMENT",
     });
+  });
+
+  it("refuses to apply when a different note was opened meanwhile", async () => {
+    const fake = makeFakeView({ doc: "alpha beta gamma", selFrom: 6, selTo: 10 });
+    setOpenWithView(fake.view);
+    mockedImprove.mockResolvedValue("REPLACEMENT");
+
+    const user = userEvent.setup();
+    render(<AiPanel />);
+    fireEvent.change(screen.getByTestId("ai-instruction"), {
+      target: { value: "x" },
+    });
+    await user.click(screen.getByTestId("ai-run"));
+    const apply = await screen.findByTestId("ai-result-apply");
+
+    // The user switches notes while reviewing the result. Same text, even
+    // — the key alone must block the apply.
+    useEditorStore.setState({
+      open: {
+        source: { kind: "note", relPath: "notes/other.md" },
+        key: "note:notes/other.md",
+        content: "alpha beta gamma",
+        savedContent: "alpha beta gamma",
+      },
+    });
+    await user.click(apply);
+
+    expect(fake.dispatched).toHaveLength(0);
+    expect(await screen.findByTestId("ai-error")).toHaveTextContent(
+      /note changed/i,
+    );
+    expect(screen.getByTestId("ai-result")).toBeInTheDocument();
+  });
+
+  it("refuses to apply when the text in the target range changed", async () => {
+    const state = { doc: "alpha beta gamma", selFrom: 6, selTo: 10 };
+    const fake = makeFakeView(state);
+    setOpenWithView(fake.view);
+    mockedImprove.mockResolvedValue("REPLACEMENT");
+
+    const user = userEvent.setup();
+    render(<AiPanel />);
+    fireEvent.change(screen.getByTestId("ai-instruction"), {
+      target: { value: "x" },
+    });
+    await user.click(screen.getByTestId("ai-run"));
+    const apply = await screen.findByTestId("ai-result-apply");
+
+    state.doc = "alpha BETA gamma";
+    await user.click(apply);
+
+    expect(fake.dispatched).toHaveLength(0);
+    expect(await screen.findByTestId("ai-error")).toHaveTextContent(
+      /note changed/i,
+    );
+  });
+
+  it("still applies when only text after the range changed", async () => {
+    const state = { doc: "alpha beta gamma", selFrom: 6, selTo: 10 };
+    const fake = makeFakeView(state);
+    setOpenWithView(fake.view);
+    mockedImprove.mockResolvedValue("B");
+
+    const user = userEvent.setup();
+    render(<AiPanel />);
+    fireEvent.change(screen.getByTestId("ai-instruction"), {
+      target: { value: "x" },
+    });
+    await user.click(screen.getByTestId("ai-run"));
+    const apply = await screen.findByTestId("ai-result-apply");
+
+    state.doc = "alpha beta gamma delta";
+    await user.click(apply);
+
+    expect(fake.dispatched).toHaveLength(1);
+    expect(state.doc).toBe("alpha B gamma delta");
   });
 
   it("Whole-document scope sends the entire doc to ai_improve", async () => {

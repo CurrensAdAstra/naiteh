@@ -13,15 +13,22 @@ interface SyncState {
   reset: () => void;
 }
 
+// Refreshes can overlap (30 s poll + explicit refresh after "Sync now");
+// only the newest request may write its result.
+let refreshTicket = 0;
+
 export const useSyncStore = create<SyncState>((set) => ({
   status: null,
   notInitialized: false,
   loaded: false,
   refresh: async () => {
+    const ticket = ++refreshTicket;
     try {
       const next = await syncStatus();
+      if (ticket !== refreshTicket) return;
       set({ status: next, notInitialized: false, loaded: true });
     } catch (e) {
+      if (ticket !== refreshTicket) return;
       if (
         isAppError(e) &&
         e.kind === "NotFound" &&
@@ -34,5 +41,8 @@ export const useSyncStore = create<SyncState>((set) => ({
       }
     }
   },
-  reset: () => set({ status: null, notInitialized: false, loaded: false }),
+  reset: () => {
+    refreshTicket += 1;
+    set({ status: null, notInitialized: false, loaded: false });
+  },
 }));

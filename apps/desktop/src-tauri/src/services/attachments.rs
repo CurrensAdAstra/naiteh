@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use crate::domain::{AppError, AttachmentImport};
 use crate::services::fs as fsx;
 use crate::services::fs_naming;
+use crate::services::notes;
 
 const DIR: &str = "attachments";
 
@@ -120,10 +121,15 @@ fn pick_paste_name(suggested: &str, mime: Option<&str>) -> String {
     format!("paste-{stamp}.{ext}")
 }
 
+/// Pick a free path under `attachments/`. Every candidate goes through
+/// `notes::resolve_in_vault`, so a synced `attachments -> /elsewhere`
+/// symlink (or a hostile name) can't redirect the write outside the
+/// vault.
 fn available_target(vault_root: &Path, file_name: &str) -> Result<PathBuf, AppError> {
-    let dir = vault_root.join(DIR);
+    let dir = notes::resolve_in_vault(vault_root, DIR)?;
     fsx::ensure_dir(&dir)?;
-    let path = dir.join(file_name);
+    let resolve = |name: &str| notes::resolve_in_vault(vault_root, &format!("{DIR}/{name}"));
+    let path = resolve(file_name)?;
     if !path.exists() {
         return Ok(path);
     }
@@ -136,7 +142,7 @@ fn available_target(vault_root: &Path, file_name: &str) -> Result<PathBuf, AppEr
             Some(ext) if !ext.is_empty() => format!("{stem}-{idx}.{ext}"),
             _ => format!("{stem}-{idx}"),
         };
-        let candidate = dir.join(candidate_name);
+        let candidate = resolve(&candidate_name)?;
         if !candidate.exists() {
             return Ok(candidate);
         }
@@ -293,6 +299,44 @@ mod tests {
         let vault = tempdir().unwrap();
         let err = import_bytes(vault.path(), &[], "x.png", Some("image/png")).unwrap_err();
         assert!(matches!(err, AppError::InvalidPath(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn import_bytes_strips_directories_from_suggested_name() {
+        let vault = tempdir().unwrap();
+        let result = import_bytes(vault.path(), b"x", "../../evil.png", None).unwrap();
+        assert_eq!(result.rel_path, "attachments/evil.png");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn import_refuses_symlinked_attachments_dir_escaping_vault() {
+        use std::os::unix::fs::symlink;
+        let vault = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        symlink(outside.path(), vault.path().join("attachments")).unwrap();
+        let err = import_bytes(vault.path(), b"x", "a.png", None).unwrap_err();
+        assert!(matches!(err, AppError::InvalidPath(_)), "got {err:?}");
+        assert!(std::fs::read_dir(outside.path()).unwrap().next().is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn import_refuses_junctioned_attachments_dir_escaping_vault() {
+        let vault = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        // Directory junctions need no special privilege on Windows.
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(vault.path().join("attachments"))
+            .arg(outside.path())
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let err = import_bytes(vault.path(), b"x", "a.png", None).unwrap_err();
+        assert!(matches!(err, AppError::InvalidPath(_)), "got {err:?}");
+        assert!(std::fs::read_dir(outside.path()).unwrap().next().is_none());
     }
 
     #[test]

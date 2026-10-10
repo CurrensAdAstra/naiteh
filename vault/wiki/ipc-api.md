@@ -2,7 +2,7 @@
 title: "IPC API (Tauri Commands)"
 tags: [naiteh-wiki, ipc, api, commands]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-06-29T09:00:00+09:00
+updated: 2026-10-10T18:00:00+09:00
 pinned: false
 ---
 
@@ -19,7 +19,7 @@ pub enum AppError {
     AlreadyInitialized(String), // vault init re-run on an existing vault
     Conflict(String),           // dirty-tree pull, sync conflict, etc.
     ConfigCorrupt(String),
-    Unauthorized(String),       // auth / session-token failures
+    Unauthorized(String),       // not signed in, bad/expired token, bad credentials, lockout
     Validation(String),         // semantic input check (empty field, …)
     Network(String),            // transport didn't reach the remote
     Upstream(String),           // remote replied with error / bad body
@@ -31,6 +31,48 @@ The frontend's `formatAppError` (`src/lib/types.ts`) prefixes the ambiguous
 categories — `Network` ("Network error — …"), `Upstream` ("Service error — …"),
 `Cancelled` ("Operation cancelled") — and shows the backend's message verbatim
 for the rest. A network failure is never mislabelled as I/O.
+
+On the wire the `kind` is the variant name, e.g.
+`{ "kind": "Unauthorized", "message": "not signed in" }`.
+
+## Session gate
+
+Signing in is enforced by the backend, not just by hiding UI. A Tauri-managed
+`ActiveSession` (`services/session.rs`) records who is signed in to this app
+instance: `auth_login` and `auth_resume` set it, `auth_logout` clears it (only
+when called with the active token). **Every command except the auth commands
+calls `require_session` first** and fails with
+`Unauthorized("not signed in")` — or `Unauthorized("session expired; sign in
+again")` — when there is no live session. Gated commands take **no token
+parameter**; the frontend calls them exactly as before.
+
+| Group | Commands | Gate |
+|---|---|---|
+| Exempt (pre-login) | `auth_login`, `auth_resume`, `auth_logout` | none — they create / end the session |
+| Token-gated | `auth_change_password`, `auth_create_user`, `auth_list_users`, `auth_set_user_active`, `auth_list_audit_logs`, `auth_log_action` | the `token` argument (admin role where noted) |
+| Session-gated | **every other command** (vault, journal, quick capture, timeline, notes, tags, search, sync, app config, AI, attachments, evernote, workspace) | `ActiveSession` |
+
+No non-auth command is exempt: the frontend calls nothing but `auth_resume` /
+`auth_login` before sign-in (theme, vault and settings load after it). A unit
+test (`lib.rs` `every_registered_command_is_gated`) parses the registered
+command list and fails if any command's first statement isn't the gate.
+
+Sessions (the active session and every bearer token) expire after **12 h idle**
+or **7 days** from sign-in, whichever comes first; expired tokens are pruned.
+
+**Frontend handling.** Every `src/lib/api/*` wrapper calls the backend through
+one `invoke` (`src/lib/api/invoke.ts`). When a **non-`auth_*`** command fails
+with `Unauthorized` (app restarted without a remembered session, session
+expired, token revoked, account disabled), it calls the registered handler,
+which flushes pending autosaves, signs the user out, and shows "Your session
+ended. Sign in again to continue." on the login screen. For `auth_*` commands
+`Unauthorized` is an ordinary form error (wrong password, not an admin).
+
+`mustChangePassword` is enforced by the gate as well as the UI: when
+`auth_login` / `auth_resume` return `mustChangePassword: true`, the backend
+issues the token (so `auth_change_password` works) but does **not** open the
+active session, so every gated command stays `Unauthorized`. A successful
+`auth_change_password` opens it. The frontend withholds the shell until then.
 
 ## Vault
 
@@ -45,6 +87,15 @@ vault_list_known() -> Result<Vec<VaultInfo>, AppError>
 // with -2, -3, … if taken), initialize it, make it active.
 vault_create_default() -> Result<VaultInfo, AppError>
 ```
+
+**Root validation** (`services/vault_path.rs`; rules in
+[Vault & Data](vault-and-data.md#where-a-vault-may-live)). `vault_init`,
+`vault_set_active` and `vault_create_default` require an absolute path, resolve
+it canonically, and refuse filesystem roots, the home folder itself, and
+system / app-data locations (`InvalidPath`). `vault_init` may create the folder
+if its parent exists; `vault_set_active` requires the folder to already be a
+naiteh vault (`.naiteh/`, or `notes/` + `journal/`). The stored / returned
+`root` is the canonical path.
 
 ## Journal
 
@@ -91,6 +142,31 @@ notes_delete_dir(rel_dir: String) -> Result<(), AppError>   // recursive
 notes_rename_dir(from: String, to: String) -> Result<(), AppError>
 ```
 
+Every vault-relative path (notes, journal, attachments, Evernote import) goes
+through `notes::normalize_rel_path` / `resolve_in_vault`, which reject — among
+the rules in [Concurrency & Safety](concurrency-safety.md) — any `.git`
+component (case-insensitive; on Windows also the `GIT~N` 8.3 alias) with
+`InvalidPath`, so no IPC can write into the repository internals. Paths must
+already be in the normal form described in
+[Vault & Data → Vault-relative paths](vault-and-data.md#vault-relative-paths);
+nothing is silently "fixed up".
+
+- `notes_create` names the file from the title by the
+  [slug rules](vault-and-data.md#file-names-and-slugs) (`-1`, `-2`, … on
+  collision) and writes `title:` as a double-quoted, escaped YAML string, so
+  any title round-trips and can't inject front-matter keys.
+- `notes_rename` / `notes_rename_dir` allow a **case-only** rename
+  (`Note.md` → `note.md`) even on case-insensitive filesystems; any other
+  existing target is a `Conflict`. A folder can't be moved into itself
+  (`InvalidPath`).
+- The folder commands resolve their argument via `resolve_notes_subdir`: it
+  must normalize cleanly and lie strictly below `notes/` both lexically and
+  after canonicalization (never `notes/` itself, never via a symlink /
+  junction out of `notes/`). `notes/_inbox` — by any spelling or filesystem
+  alias — is reserved (`Conflict`).
+- `on-note-save` [hooks](app-config.md#cli-hooks) fire after `notes_write`,
+  `notes_create`, `notes_rename` and `notes_set_pinned`.
+
 ## Search & Tags
 
 ```rust
@@ -100,7 +176,25 @@ tags_notes(tag: String) -> Result<Vec<NoteMeta>, AppError>
 ```
 
 `tags_*` read the in-memory tag index (built lazily, invalidated by every write).
-`search_text` still scans the vault per call (future index extension).
+`search_text` takes its **file list and each hit's `title`** from that same
+index snapshot (`notes/` + `journal/` Markdown, visited in `relPath` order) and
+reads only file **contents** per call: a case-insensitive substring match, one
+hit per matching line (`line` is 1-based, `excerpt` is the trimmed line cut to
+200 chars + `…`), capped at `limit`. A blank query or `limit = 0` returns `[]`.
+Content edits are seen immediately; a file created outside the app appears
+after the next index invalidation, and a file deleted since the index was built
+is skipped.
+
+## Threading
+
+Every command that reads or walks the vault — `notes_list`, `notes_read`,
+`notes_list_dirs`, `quick_list`, `journal_open`, `journal_month_meta`,
+`activity_recent`, `timeline_*`, `tags_*`, `search_text` — is `async` and does
+its filesystem work on the blocking pool (`services::fs::run_blocking`), as do
+the vault-mutating notes / journal / attachment / Evernote commands and the
+Argon2-running auth commands. A synchronous Tauri command would run on the
+main (UI) thread, so a vault walk there would freeze the window. Sync commands
+use `spawn_blocking` likewise (see below).
 
 ## Sync (Git-backed, exposed as Sync/Backup)
 
@@ -118,6 +212,55 @@ sync_resolve_keep_ours(conflict_rel_path: String) -> Result<(), AppError>
 sync_resolve_keep_theirs(conflict_rel_path: String) -> Result<(), AppError>
 ```
 
+All sync commands are `async` and run their git / filesystem work on the
+blocking pool (never the main thread). Sync operations are serialized by a
+process-wide gate; the per-vault lock is held only for the local phases, so
+note saves never wait on the network (see [Concurrency & Safety](concurrency-safety.md)).
+
+**`sync_now` / `sync_pull` pipeline** (`services/git.rs`):
+
+1. *prepare* (locked) — keep `.gitignore` complete; if a pending merge exists,
+   either record it (all its sidecars resolved) or fail with `Conflict`
+   ("… still need a decision"); then commit local edits (`sync_now`) or refuse
+   a dirty tree (`sync_pull`). Conflict sidecars are never committed.
+2. *fetch* (unlocked) — download `refs/heads/<branch>` into
+   `refs/remotes/origin/<branch>`. An empty destination is fine.
+3. *integrate* (locked) — up to date / fast-forward / three-way merge. Colliding
+   edits: the merged result goes to the working tree (local version for the
+   collided files), remote versions become `*.conflict-<ts>.*` sidecars, a
+   pending merge (remote OID + sidecar list) is saved to
+   `.naiteh/sync-state.json`, and the command returns `Conflict`. Nothing is
+   uploaded until resolved.
+4. *push* (`sync_now`, unlocked) — a rejected update returns `Conflict`
+   ("sync again").
+
+**Convergence.** Once every sidecar of the pending pull is gone ("Keep mine",
+"Keep theirs", or hand-edit then "Keep mine"), the merge is recorded as a commit
+whose parents are the local head and the pending remote commit, with the
+working tree as content — immediately by the resolve command that removed the
+last sidecar, otherwise by the next sync — and the next `sync_now` pushes it.
+
+**Joining an existing destination.** If local and remote histories are
+unrelated and local history is only naiteh's own automatic commits
+(`naiteh: initial sync` / `naiteh: sync`, no merges) that never synced with
+the current tracking ref, naiteh joins the remote: local files are laid on top
+of the remote history (`naiteh: join existing vault`); files present on both
+sides with different content become sidecars (resolved as above);
+`.gitignore` / `.naiteh/*` take the remote's version. Any other unrelated
+history returns `Conflict` explaining that the destination holds a different
+vault.
+
+**Network limits.** Each fetch / push has a 300 s deadline (aborted from
+libgit2 progress callbacks → `Network("… timed out …")`) plus 15 s connect /
+60 s read timeouts. Credentials: each method is tried at most once per
+operation — SSH username, SSH agent, `~/.ssh/id_ed25519`, `~/.ssh/id_rsa`, the
+configured git credential helper (HTTPS), then default — after which the
+command fails with `Unauthorized` instead of looping.
+
+**Path safety.** Sidecar writes and conflict resolution reject absolute paths,
+`..`, any `.git` component, paths resolving outside the vault, and any symlink
+along the path.
+
 The UI never exposes "git", "commit", "rebase", or "remote URL" to casual users
 — it shows "Sync now", "Backup destination", etc. Power users see Git terms in
 advanced settings.
@@ -133,42 +276,111 @@ ai_list_models() -> Result<Vec<String>, AppError>
 returns the revised text. API key attached only when configured (local providers
 send none). Errors when `text`/`instruction` is empty, upstream returns non-2xx,
 or the request times out (60 s). `ai_list_models` queries `GET {base_url}/models`.
+Both re-validate the stored base URL (rule below) **before** sending anything and
+fail with `Validation` if it doesn't pass.
 
-App-config setters:
+App-config commands — all return the **`AppConfigView`** (no API key; see
+[App Config](app-config.md#ipc-view-vs-disk)):
 
 ```rust
-app_config_get() -> Result<AppConfig, AppError>
-app_config_set_editor(font_size: u16, line_wrapping: bool) -> Result<AppConfig, AppError>
-app_config_set_ai(api_key: Option<String>, model: String, base_url: Option<String>) -> Result<AppConfig, AppError>
+app_config_get() -> Result<AppConfigView, AppError>
+app_config_set_editor(font_size: u16, line_wrapping: bool) -> Result<AppConfigView, AppError>
+app_config_set_ai(
+    api_key: Option<String>,   // Some(non-empty) = replace; None / blank = keep
+    clear_api_key: bool,       // true = remove the stored key (wins over api_key)
+    model: String,             // required, trimmed
+    base_url: Option<String>,  // None / blank = keep current
+) -> Result<AppConfigView, AppError>
 ```
+
+Wire arguments are camelCase (`apiKey`, `clearApiKey`, `model`, `baseUrl`).
+**Base-URL rule:** must parse as a URL with scheme `https`, or `http` only when
+the host is `localhost`, `127.0.0.1` or `[::1]`; anything else → `Validation`
+(nothing is saved).
 
 ## Auth & Audit
 
 ```rust
-auth_login(username: String, password: String, remember: bool) -> Result<LoginResult, AppError>
+auth_login(username: String, password: String, remember: bool) -> Result<LoginResult, AppError>   // async
 auth_resume() -> Result<Option<LoginResult>, AppError>
 auth_logout(token: String)
-auth_list_users(token: String) -> Result<Vec<AuthUser>, AppError>
-auth_set_user_active(token: String, username: String, active: bool) -> Result<Vec<AuthUser>, AppError>
-auth_list_audit_logs(token: String, limit: u32) -> Result<Vec<AuditLogEntry>, AppError>
+auth_change_password(token: String, current_password: String, new_password: String) -> Result<(), AppError>  // async
+auth_create_user(token: String, username: String, password: String, role: UserRole) -> Result<Vec<AuthUser>, AppError>  // async, admin
+auth_list_users(token: String) -> Result<Vec<AuthUser>, AppError>                                  // admin
+auth_set_user_active(token: String, username: String, active: bool) -> Result<Vec<AuthUser>, AppError>  // admin
+auth_list_audit_logs(token: String, limit: u32) -> Result<Vec<AuditLogEntry>, AppError>             // admin
 auth_log_action(token: String, action: String, detail: Option<String>) -> Result<(), AppError>
 ```
 
-`auth_login` returns `{ token, session }`; the token is a 256-bit hex string the
-frontend stores in memory and passes to every subsequent auth IPC. The backend
-resolves it via an in-process session map (`services::auth::SessionStore`) — no
-path lets the frontend impersonate a user by passing a name string.
-Account-management and audit reads require an **admin** token; `auth_log_action`
-accepts any live token. `auth_set_user_active` refuses to deactivate `admin`.
+`auth_login` / `auth_resume` return
+`{ "token": "…64 hex…", "session": { "username": "admin", "role": "Admin" }, "mustChangePassword": true }`.
+The token is a 256-bit hex string the frontend keeps in memory and passes to the
+auth IPCs. The backend resolves it via an in-process session map
+(`services::auth::SessionStore`) — no path lets the frontend impersonate a user
+by passing a name string. Account management and audit reads require an
+**admin** token; `auth_change_password` and `auth_log_action` accept any live
+token. The Argon2-running commands (`auth_login`, `auth_change_password`,
+`auth_create_user`) are `async` and hash on the blocking pool.
+
+**`mustChangePassword`** is true while the account still has the seeded default
+password (the first-run `admin`/`admin`, or — for older `auth.json` files without
+the flag — any account whose password equals its username, detected and
+persisted on login, and on `auth_resume` via one Argon2 check so a remembered
+session can't skip it). Until it is changed the session gate stays closed (see
+"Session gate"), and the UI forces the change before continuing.
+
+**Login hardening.** Unknown usernames still run one Argon2 verification (against
+a fixed dummy hash), so response time doesn't reveal which names exist. The
+password is checked before the disabled flag: a wrong password on a disabled
+account gets the same `Unauthorized("invalid username or password")` as any
+other credential failure; only the correct password reveals
+`"account is disabled"`. After **5** failed attempts for a username (counted per
+canonical name, existing or not) it is locked for **5 minutes**:
+`Unauthorized("too many failed sign-in attempts; try again in N seconds")`. A
+success resets the counter. All in-memory (cleared on restart). If `auth.json`
+exists but contains **no active admin**, every login fails with
+`ConfigCorrupt` ("…no active administrator account…") — the default admin is
+never re-seeded into an existing file.
+
+**`auth_change_password`** — the signed-in user changes their own password.
+Verifies `current_password` (Argon2; wrong → `Unauthorized("current password is
+incorrect")`). Policy for `new_password` (→ `Validation`): at least 8 characters
+(max 1024), different from the current password, not equal to the username
+(case-insensitive). On success: re-hash with Argon2id, clear
+`mustChangePassword`, revoke that user's other in-memory tokens (the calling
+token stays valid), delete their remembered session, and open the session gate
+for the calling token. Audited as
+`password_changed`.
+
+**`auth_create_user`** (admin) — username 1–32 chars of `[A-Za-z0-9._-]`
+(→ `Validation`), unique case-insensitively (→ `Conflict`); password policy as
+above (not equal to the new username). New accounts are active with
+`mustChangePassword: false`. Returns the full user list. Audited as
+`user_created` (detail `"<name> (<Role>)"`).
+
+**`auth_set_user_active`** refuses (→ `Conflict`) to disable the acting admin's
+own account or the last active admin. Disabling an account revokes its tokens
+and its remembered session.
+
+**`auth_log_action`** accepts only these client-originated actions (anything
+else → `Validation`): `logout`, `note_open`, `note_save`, `note_create`,
+`note_rename`, `note_delete`, `notes_create_dir`, `notes_rename_dir`,
+`notes_delete_dir`, `journal_open`, `journal_save`, `quick_note_create`,
+`vault_switch`, `evernote_import`. `detail` is truncated to 512 characters.
+Backend-written actions (`login_success`, `login_failure`, `session_resume`,
+`user_enabled`, `user_disabled`, `user_created`, `password_changed`) cannot be
+forged from the renderer.
 
 **Remember me.** When `auth_login` is called with `remember: true`, the backend
 persists `{ token, username, expiresAt }` to `remembered-session.json` in the
 app-config dir (30-day TTL). On startup the frontend calls `auth_resume`, which
-re-installs that token into the `SessionStore` and returns the session —
-skipping the login screen — but only after re-checking the account is still
-present and active (a role change or deactivation between runs is honoured; a
-stale record is pruned). `remember: false` and `auth_logout` both delete the
-file. The file sits in the same trust boundary as `auth.json` and the AI key:
+re-installs that token into the `SessionStore`, marks the active session (unless
+`mustChangePassword`), and
+returns the `LoginResult` (incl. `mustChangePassword`) — skipping the login
+screen — but only after re-checking the account is still present and active (a
+role change or deactivation between runs is honoured; a stale record is
+pruned). `remember: false`, `auth_logout`, a password change, and disabling the
+account all delete the file. The file sits in the same trust boundary as `auth.json` and the AI key:
 only the local OS user can read it.
 
 ## Attachments
@@ -212,6 +424,40 @@ struct ImportProgress {
 On the wire the frontend receives camelCase keys: `fileIndex`, `totalFiles`,
 `fileName`, `noteDone`, `noteTotal`.
 
+Import behaviour (`services/evernote/`):
+
+- **Streaming.** Each `.enex` is read by a streaming reader (`EnexReader`): one
+  note is parsed, converted, written and dropped before the next, so neither
+  the file nor its note list is held in memory. A cheap counting pass first
+  supplies `noteTotal`.
+- **Per-note vault lock.** The vault mutex is taken **per note** (held only
+  while that note's files are written), not for the whole import, so autosave
+  and other writes interleave with a long import. The tag index is invalidated
+  after each file that imported anything.
+- **All-or-nothing per note.** A note is converted to Markdown before anything
+  is written; a note that fails to convert writes nothing, and a write that
+  fails part-way removes that note's freshly created folder. The failure is
+  counted in `failedCount` with a `note "<title>": …` entry in `errors`; the
+  import continues with the next note.
+- **Malformed files.** A file that is malformed from the start imports nothing
+  (`failedCount += 1`, one entry in `errors`, other selected files still
+  import). If the stream breaks after some notes landed, those notes are kept
+  and the error is recorded the same way.
+- **Lenient entities.** Unknown or malformed HTML entities in ENML (`&foo;`, a
+  bare `&`) are kept as literal text instead of failing the note.
+- **Links.** `<a href>` targets are sanitized before they reach Markdown:
+  `javascript:` / `vbscript:` / `livescript:` and non-raster `data:` URLs
+  (anything but `data:image/*` other than SVG) are dropped — the scheme check
+  ignores case and embedded whitespace / control characters — and spaces,
+  `(`, `)`, `<`, `>` and control characters are percent-encoded.
+- **Layout & names.** `notes/<notebook-slug>/<note-slug>/index.md` with the
+  note's attachments beside it; slugs follow the
+  [slug rules](vault-and-data.md#file-names-and-slugs), with `-2`, `-3`, … on
+  collision. Attachment names are de-duplicated case-insensitively, and an
+  attachment that would be named `index.md` (any case) is renamed (e.g.
+  `index-2.md`) so it can never overwrite the note body. Dropped resources
+  (e.g. ink) become per-note `warnings`.
+
 ## Native menu events
 
 Custom native-menu items emit `menu:*` events that `shell/useMenuEvents` routes
@@ -236,5 +482,8 @@ the Activity Bar gear, the status-bar user name, or the palette.
 Every IPC that mutates the vault — the `notes_*` writers, `journal_save`,
 `quick_create`, `attachments_*`, `evernote_import`, the `sync_*` commands, and
 the conflict-resolution commands — acquires the per-vault mutex
-(`services/vault_lock.rs`) before touching files and invalidates the tag index on
-success. See [Concurrency & Safety](concurrency-safety.md).
+(`services/vault_lock.rs`) before touching files and, when note files changed,
+invalidates the tag index on success. Two exceptions to "hold it for the whole
+command": `evernote_import` takes the lock per note, and the sync commands hold
+it only for their local phases (never across the network). See
+[Concurrency & Safety](concurrency-safety.md).

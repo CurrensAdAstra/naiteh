@@ -1,14 +1,5 @@
-import { invoke } from "@tauri-apps/api/core";
-
 import type { VaultInfo } from "../types";
-
-function hasTauriRuntime(): boolean {
-  if (typeof window === "undefined") return true;
-  const maybeWindow = window as unknown as {
-    __TAURI_INTERNALS__?: { invoke?: unknown };
-  };
-  return typeof maybeWindow.__TAURI_INTERNALS__?.invoke === "function";
-}
+import { hasTauriRuntime, invoke } from "./invoke";
 
 function desktopRequired(): Promise<never> {
   return Promise.reject({

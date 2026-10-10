@@ -1,4 +1,4 @@
-//! Evernote import report types — see architecture.md §6.9.
+//! Evernote import report types — see vault/wiki/domain-model.md ("Attachments, Workspace, Evernote import").
 
 use serde::{Deserialize, Serialize};
 

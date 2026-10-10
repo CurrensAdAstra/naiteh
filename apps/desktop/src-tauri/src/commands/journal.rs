@@ -1,4 +1,5 @@
-//! Journal IPC commands — see architecture.md §7.3 / §7.4.
+//! Journal IPC commands — see vault/wiki/ipc-api.md ("Journal", "Quick
+//! capture", "Activity & Timeline").
 //!
 //! Each public `*` command is a thin wrapper that resolves the active vault
 //! and delegates to a `*_impl` taking the vault root explicitly so it can be
@@ -16,6 +17,7 @@ use crate::services::fs as fsx;
 use crate::services::hooks;
 use crate::services::index::TagIndex;
 use crate::services::notes;
+use crate::services::session::{require_session, ActiveSession};
 use crate::services::timeline;
 use crate::services::vault_lock::VaultLocks;
 
@@ -25,13 +27,16 @@ const INBOX_DIR: &str = "_inbox";
 
 #[tauri::command]
 pub async fn quick_create(
+    active: tauri::State<'_, ActiveSession>,
     locks: tauri::State<'_, VaultLocks>,
     index: tauri::State<'_, TagIndex>,
 ) -> Result<NoteMeta, AppError> {
+    require_session(&active)?;
     let vault_root = config::current_vault_root()?;
     let lock = locks.for_vault(&vault_root);
     let _guard = lock.lock().await;
-    let result = quick_create_impl(&vault_root);
+    let root = vault_root.clone();
+    let result = fsx::run_blocking(move || quick_create_impl(&root)).await;
     if result.is_ok() {
         index.invalidate(&vault_root);
     }
@@ -39,7 +44,7 @@ pub async fn quick_create(
 }
 
 fn quick_create_impl(vault_root: &Path) -> Result<NoteMeta, AppError> {
-    let inbox = vault_root.join("notes").join(INBOX_DIR);
+    let inbox = notes::resolve_in_vault(vault_root, &format!("notes/{INBOX_DIR}"))?;
     fsx::ensure_dir(&inbox)?;
     let stem = Local::now().format("%Y-%m-%dT%H-%M-%S").to_string();
     let target = unique_path(&inbox, &stem);
@@ -60,9 +65,16 @@ fn unique_path(dir: &Path, stem: &str) -> PathBuf {
 // ── quick_list ───────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn quick_list(limit: u32) -> Result<Vec<NoteMeta>, AppError> {
-    let vault_root = config::current_vault_root()?;
-    quick_list_impl(&vault_root, limit)
+pub async fn quick_list(
+    active: tauri::State<'_, ActiveSession>,
+    limit: u32,
+) -> Result<Vec<NoteMeta>, AppError> {
+    require_session(&active)?;
+    fsx::run_blocking(move || {
+        let vault_root = config::current_vault_root()?;
+        quick_list_impl(&vault_root, limit)
+    })
+    .await
 }
 
 fn quick_list_impl(vault_root: &Path, limit: u32) -> Result<Vec<NoteMeta>, AppError> {
@@ -89,26 +101,39 @@ fn quick_list_impl(vault_root: &Path, limit: u32) -> Result<Vec<NoteMeta>, AppEr
 // ── activity_recent ──────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn activity_recent(
+pub async fn activity_recent(
+    active: tauri::State<'_, ActiveSession>,
     index: tauri::State<'_, TagIndex>,
     limit: u32,
 ) -> Result<Vec<TimelineItem>, AppError> {
-    let vault_root = config::current_vault_root()?;
-    let snap = index.get_or_build(&vault_root)?;
-    Ok(timeline::recent(&snap.notes, limit as usize))
+    require_session(&active)?;
+    let index = index.inner().clone();
+    fsx::run_blocking(move || {
+        let vault_root = config::current_vault_root()?;
+        let snap = index.get_or_build(&vault_root)?;
+        Ok(timeline::recent(&snap.notes, limit as usize))
+    })
+    .await
 }
 
 // ── journal_open ─────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn journal_open(date: String) -> Result<JournalOpenResult, AppError> {
-    let vault_root = config::current_vault_root()?;
-    journal_open_impl(&vault_root, &date)
+pub async fn journal_open(
+    active: tauri::State<'_, ActiveSession>,
+    date: String,
+) -> Result<JournalOpenResult, AppError> {
+    require_session(&active)?;
+    fsx::run_blocking(move || {
+        let vault_root = config::current_vault_root()?;
+        journal_open_impl(&vault_root, &date)
+    })
+    .await
 }
 
 fn journal_open_impl(vault_root: &Path, date: &str) -> Result<JournalOpenResult, AppError> {
     validate_date(date)?;
-    let path = journal_path_for(vault_root, date);
+    let path = journal_path_for(vault_root, date)?;
     let path_str = path.to_string_lossy().to_string();
     match std::fs::read_to_string(&path) {
         Ok(content) => Ok(JournalOpenResult {
@@ -129,24 +154,29 @@ fn journal_open_impl(vault_root: &Path, date: &str) -> Result<JournalOpenResult,
 
 #[tauri::command]
 pub async fn journal_save(
+    active: tauri::State<'_, ActiveSession>,
     locks: tauri::State<'_, VaultLocks>,
     index: tauri::State<'_, TagIndex>,
     date: String,
     content: String,
 ) -> Result<JournalSaveResult, AppError> {
+    require_session(&active)?;
     let vault_root = config::current_vault_root()?;
     let lock = locks.for_vault(&vault_root);
     let _guard = lock.lock().await;
-    let result = journal_save_impl(&vault_root, &date, &content);
+    let root = vault_root.clone();
+    let date_for_save = date.clone();
+    let result =
+        fsx::run_blocking(move || journal_save_impl(&root, &date_for_save, &content)).await;
     if result.is_ok() {
         index.invalidate(&vault_root);
         if let Ok(config_dir) = config::default_app_config_dir() {
-            let rel = format!("journal/{}/{}/{date}.md", &date[0..4], &date[5..7]);
+            // `date` passed validate_date inside journal_save_impl.
             hooks::fire(
                 &config_dir,
                 hooks::HookEvent::JournalSave,
                 &vault_root,
-                Some(&rel),
+                Some(&journal_rel_path(&date)),
             );
         }
     }
@@ -159,7 +189,7 @@ fn journal_save_impl(
     content: &str,
 ) -> Result<JournalSaveResult, AppError> {
     validate_date(date)?;
-    let path = journal_path_for(vault_root, date);
+    let path = journal_path_for(vault_root, date)?;
     fsx::atomic_write(&path, content.as_bytes())?;
     let mtime = notes::mtime_secs(&path);
     Ok(JournalSaveResult {
@@ -171,9 +201,17 @@ fn journal_save_impl(
 // ── journal_month_meta ───────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn journal_month_meta(year: u16, month: u8) -> Result<Vec<DayMeta>, AppError> {
-    let vault_root = config::current_vault_root()?;
-    journal_month_meta_impl(&vault_root, year, month)
+pub async fn journal_month_meta(
+    active: tauri::State<'_, ActiveSession>,
+    year: u16,
+    month: u8,
+) -> Result<Vec<DayMeta>, AppError> {
+    require_session(&active)?;
+    fsx::run_blocking(move || {
+        let vault_root = config::current_vault_root()?;
+        journal_month_meta_impl(&vault_root, year, month)
+    })
+    .await
 }
 
 fn journal_month_meta_impl(
@@ -184,10 +222,7 @@ fn journal_month_meta_impl(
     if !(1..=12).contains(&month) {
         return Err(AppError::InvalidPath(format!("invalid month: {month}")));
     }
-    let dir = vault_root
-        .join("journal")
-        .join(format!("{year:04}"))
-        .join(format!("{month:02}"));
+    let dir = notes::resolve_in_vault(vault_root, &format!("journal/{year:04}/{month:02}"))?;
     if !dir.is_dir() {
         return Ok(Vec::new());
     }
@@ -227,28 +262,42 @@ fn journal_month_meta_impl(
 // ── timeline_range ───────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn timeline_range(
+pub async fn timeline_range(
+    active: tauri::State<'_, ActiveSession>,
     index: tauri::State<'_, TagIndex>,
     from: String,
     to: String,
 ) -> Result<Vec<TimelineDay>, AppError> {
+    require_session(&active)?;
     let from_d = parse_date(&from)?;
     let to_d = parse_date(&to)?;
     if from_d > to_d {
         return Err(AppError::InvalidPath(format!("from > to: {from} > {to}")));
     }
-    let vault_root = config::current_vault_root()?;
-    let snap = index.get_or_build(&vault_root)?;
-    Ok(timeline::range(&snap.notes, from_d, to_d))
+    let index = index.inner().clone();
+    fsx::run_blocking(move || {
+        let vault_root = config::current_vault_root()?;
+        let snap = index.get_or_build(&vault_root)?;
+        Ok(timeline::range(&snap.notes, from_d, to_d))
+    })
+    .await
 }
 
 // ── timeline_pinned ──────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn timeline_pinned(index: tauri::State<'_, TagIndex>) -> Result<Vec<TimelineItem>, AppError> {
-    let vault_root = config::current_vault_root()?;
-    let snap = index.get_or_build(&vault_root)?;
-    Ok(timeline::pinned(&snap.notes))
+pub async fn timeline_pinned(
+    active: tauri::State<'_, ActiveSession>,
+    index: tauri::State<'_, TagIndex>,
+) -> Result<Vec<TimelineItem>, AppError> {
+    require_session(&active)?;
+    let index = index.inner().clone();
+    fsx::run_blocking(move || {
+        let vault_root = config::current_vault_root()?;
+        let snap = index.get_or_build(&vault_root)?;
+        Ok(timeline::pinned(&snap.notes))
+    })
+    .await
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────
@@ -277,14 +326,17 @@ fn parse_date(date: &str) -> Result<NaiveDate, AppError> {
         .map_err(|e| AppError::InvalidPath(format!("invalid date '{date}': {e}")))
 }
 
-fn journal_path_for(vault_root: &Path, date: &str) -> PathBuf {
-    let year = &date[0..4];
-    let month = &date[5..7];
-    vault_root
-        .join("journal")
-        .join(year)
-        .join(month)
-        .join(format!("{date}.md"))
+/// Vault-relative (`/`-separated) path of the entry for a validated
+/// `YYYY-MM-DD` date.
+fn journal_rel_path(date: &str) -> String {
+    format!("journal/{}/{}/{date}.md", &date[0..4], &date[5..7])
+}
+
+/// Absolute path of the entry for a validated date, resolved through
+/// `notes::resolve_in_vault` so a synced `journal -> /elsewhere`
+/// symlink can't redirect reads or writes outside the vault.
+fn journal_path_for(vault_root: &Path, date: &str) -> Result<PathBuf, AppError> {
+    notes::resolve_in_vault(vault_root, &journal_rel_path(date))
 }
 
 #[cfg(test)]
@@ -294,7 +346,9 @@ mod tests {
 
     fn touch(path: &Path, contents: &[u8], mtime: SystemTime) {
         fsx::atomic_write(path, contents).unwrap();
-        let f = std::fs::File::open(path).unwrap();
+        // set_modified needs write access on Windows (FILE_WRITE_ATTRIBUTES);
+        // a read-only File::open handle fails with PermissionDenied there.
+        let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
         f.set_modified(mtime).unwrap();
     }
 
@@ -477,7 +531,54 @@ mod tests {
         let result = journal_open_impl(vault.path(), "2026-05-09").unwrap();
         assert!(!result.exists);
         assert_eq!(result.content, "");
-        assert!(result.path.ends_with("journal/2026/05/2026-05-09.md"));
+        // Component-wise comparison: separator-agnostic on Windows.
+        assert!(
+            Path::new(&result.path).ends_with("journal/2026/05/2026-05-09.md"),
+            "got {}",
+            result.path
+        );
+        assert_eq!(
+            Path::new(&result.path),
+            vault
+                .path()
+                .join("journal")
+                .join("2026")
+                .join("05")
+                .join("2026-05-09.md")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn journal_save_refuses_symlinked_journal_escaping_vault() {
+        use std::os::unix::fs::symlink;
+        let vault = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        symlink(outside.path(), vault.path().join("journal")).unwrap();
+        let err = journal_save_impl(vault.path(), "2026-05-09", "x").unwrap_err();
+        assert!(matches!(err, AppError::InvalidPath(_)), "got {err:?}");
+        assert!(std::fs::read_dir(outside.path()).unwrap().next().is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn journal_save_refuses_junctioned_journal_escaping_vault() {
+        let vault = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let status = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(vault.path().join("journal"))
+            .arg(outside.path())
+            .stdout(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let err = journal_save_impl(vault.path(), "2026-05-09", "x").unwrap_err();
+        assert!(matches!(err, AppError::InvalidPath(_)), "got {err:?}");
+        let err = journal_open_impl(vault.path(), "2026-05-09").unwrap_err();
+        assert!(matches!(err, AppError::InvalidPath(_)), "got {err:?}");
+        assert!(std::fs::read_dir(outside.path()).unwrap().next().is_none());
+        std::fs::remove_dir(vault.path().join("journal")).unwrap();
     }
 
     #[test]

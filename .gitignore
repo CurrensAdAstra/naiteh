@@ -13,8 +13,13 @@ apps/desktop/vitest.config.{js,d.ts}
 target/
 **/target/
 
+# Local secrets / env
+.env
+.env.*
+
 # Editor / OS
 .DS_Store
+Thumbs.db
 .vscode/
 .idea/
 *.swp

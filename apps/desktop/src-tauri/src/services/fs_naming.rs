@@ -11,11 +11,20 @@ use std::path::Path;
 
 use crate::services::notes;
 
+/// Longest extension kept by [`sanitize_file_name`].
+const MAX_EXT_CHARS: usize = 16;
+
 /// Slugify the stem and lowercase-alnum the extension, producing a
 /// filesystem-safe name. Empty / all-punctuation input becomes
-/// `"attachment"` (optionally with the extension).
+/// `"attachment"` (optionally with the extension). Inherits
+/// [`notes::slugify`]'s guarantees: length-capped stem, no trailing
+/// dots/spaces, no Windows reserved device names (`con.txt` →
+/// `con-note.txt`).
 pub fn sanitize_file_name(input: &str) -> String {
-    let p = Path::new(input);
+    // Only the final path component is a name; a hostile suggestion
+    // like `../../x.png` or `C:\x.png` must not carry its directories.
+    let last = input.rsplit(['/', '\\']).next().unwrap_or(input);
+    let p = Path::new(last);
     let stem = p
         .file_stem()
         .and_then(|s| s.to_str())
@@ -27,6 +36,7 @@ pub fn sanitize_file_name(input: &str) -> String {
             let ext = ext
                 .chars()
                 .filter(|c| c.is_ascii_alphanumeric())
+                .take(MAX_EXT_CHARS)
                 .collect::<String>()
                 .to_ascii_lowercase();
             if ext.is_empty() {
@@ -108,6 +118,28 @@ mod tests {
         assert_eq!(sanitize_file_name("???.png"), "untitled.png");
         // No stem at all → the "attachment" fallback.
         assert_eq!(sanitize_file_name(""), "attachment");
+    }
+
+    #[test]
+    fn sanitize_avoids_windows_reserved_names() {
+        assert_eq!(sanitize_file_name("CON.txt"), "con-note.txt");
+        assert_eq!(sanitize_file_name("nul"), "nul-note");
+        assert_eq!(sanitize_file_name("Com3.PNG"), "com3-note.png");
+    }
+
+    #[test]
+    fn sanitize_caps_stem_and_extension_length() {
+        let name = format!("{}.{}", "x".repeat(300), "e".repeat(40));
+        let out = sanitize_file_name(&name);
+        let (stem, ext) = out.rsplit_once('.').unwrap();
+        assert_eq!(stem.chars().count(), notes::MAX_SLUG_CHARS);
+        assert_eq!(ext.len(), MAX_EXT_CHARS);
+    }
+
+    #[test]
+    fn sanitize_drops_directory_components() {
+        assert_eq!(sanitize_file_name("../../evil.png"), "evil.png");
+        assert_eq!(sanitize_file_name("C:\\dir\\Shot.png"), "shot.png");
     }
 
     #[test]

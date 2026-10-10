@@ -1,4 +1,5 @@
-// Side-effectful services — see architecture.md §8 / §9.
+// Side-effectful services — see vault/wiki/app-config.md and
+// vault/wiki/concurrency-safety.md.
 
 pub mod attachments;
 pub mod auth;
@@ -11,7 +12,9 @@ pub mod git;
 pub mod hooks;
 pub mod index;
 pub mod notes;
+pub mod session;
 pub mod sync_state;
 pub mod timeline;
 pub mod vault_lock;
+pub mod vault_path;
 pub mod workspace;

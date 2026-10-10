@@ -1,4 +1,5 @@
-//! Journal, calendar, and timeline types — see architecture.md §6.1 / §6.3.
+//! Journal, calendar, and timeline types — see vault/wiki/domain-model.md
+//! ("Journal", "Activity / Timeline").
 
 use serde::{Deserialize, Serialize};
 

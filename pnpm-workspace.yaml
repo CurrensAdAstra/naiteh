@@ -1,2 +1,7 @@
 packages:
   - "apps/*"
+
+# pnpm 10 skips dependency lifecycle scripts unless allow-listed here.
+# esbuild (via Vite) needs its postinstall to fetch the platform binary.
+onlyBuiltDependencies:
+  - esbuild

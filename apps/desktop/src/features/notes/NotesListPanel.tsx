@@ -7,7 +7,7 @@ import {
   Pencil,
   Trash2,
 } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   notesCreate,
@@ -16,19 +16,40 @@ import {
   notesDeleteDir,
   notesList,
   notesListDirs,
-  notesRead,
   notesRename,
   notesRenameDir,
 } from "../../lib/api/notes";
+import { openDocument } from "../../lib/openDocument";
 import { formatAppError } from "../../lib/types";
 import type { NoteMeta } from "../../lib/types";
 import { useAuthStore } from "../../state/authStore";
-import { useEditorStore } from "../../state/editorStore";
+import {
+  discardPendingSave,
+  flushPendingSave,
+  suspendAutosave,
+} from "../../state/autosave";
+import {
+  keyFor,
+  useEditorStore,
+  type OpenSource,
+} from "../../state/editorStore";
 import { useUIStore } from "../../state/uiStore";
+import {
+  notifyVaultContentChanged,
+  useVaultContentStore,
+} from "../../state/vaultContentStore";
 import { buildTree, type FolderNode } from "./buildTree";
 import styles from "./NotesListPanel.module.css";
 
 const INDENT_PX = 12;
+
+/** True when `source` is a note stored somewhere under `folderPath`. */
+function noteInside(
+  source: OpenSource,
+  folderPath: string,
+): source is Extract<OpenSource, { kind: "note" }> {
+  return source.kind === "note" && source.relPath.startsWith(`${folderPath}/`);
+}
 
 interface ContextActions {
   rename: (note: NoteMeta) => void;
@@ -46,8 +67,6 @@ export function NotesListPanel() {
   const [dirs, setDirs] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-  const openNote = useEditorStore((s) => s.openNote);
-  const closeNote = useEditorStore((s) => s.closeNote);
   const logAction = useAuthStore((s) => s.logAction);
   const openRelPath = useEditorStore((s) =>
     s.open !== null && s.open.source.kind === "note"
@@ -69,29 +88,28 @@ export function NotesListPanel() {
     }
   }, []);
 
-  // True when the editor's open note lives inside `folderPath`.
-  const openNoteInside = useCallback(
-    (folderPath: string) =>
-      openRelPath !== null && openRelPath.startsWith(`${folderPath}/`),
-    [openRelPath],
-  );
-
+  // Refetch on mount and whenever vault files change elsewhere (sync,
+  // other panels). Our own mutations refresh directly and record the
+  // version they announced so they don't trigger a second fetch here.
+  const contentVersion = useVaultContentStore((s) => s.version);
+  const seenVersionRef = useRef<number | null>(null);
   useEffect(() => {
+    if (seenVersionRef.current === contentVersion) return;
+    seenVersionRef.current = contentVersion;
     void refresh();
-  }, [refresh]);
+  }, [contentVersion, refresh]);
 
-  const handleOpen = useCallback(
-    async (note: NoteMeta) => {
-      try {
-        const content = await notesRead(note.relPath);
-        openNote(note.relPath, content);
-        void logAction("note_open", note.relPath).catch(() => {});
-      } catch (e) {
-        setError(formatAppError(e));
-      }
-    },
-    [logAction, openNote],
-  );
+  const announceChange = useCallback(() => {
+    seenVersionRef.current = notifyVaultContentChanged();
+  }, []);
+
+  const handleOpen = useCallback(async (note: NoteMeta) => {
+    try {
+      await openDocument({ kind: "note", relPath: note.relPath });
+    } catch (e) {
+      setError(formatAppError(e));
+    }
+  }, []);
 
   const handleNewNote = useCallback(async () => {
     const title = window.prompt("New note title:");
@@ -100,6 +118,7 @@ export function NotesListPanel() {
     try {
       const meta = await notesCreate("notes", title);
       void logAction("note_create", meta.relPath).catch(() => {});
+      announceChange();
       await refresh();
       await handleOpen(meta);
     } catch (e) {
@@ -107,7 +126,25 @@ export function NotesListPanel() {
     } finally {
       setCreating(false);
     }
-  }, [handleOpen, logAction, refresh]);
+  }, [announceChange, handleOpen, logAction, refresh]);
+
+  /**
+   * Run a file-moving operation without racing autosave: flush pending
+   * edits to the *current* path, then hold timer-driven writes until the
+   * operation settles so nothing writes to a path that is going away.
+   */
+  const withAutosaveHeld = useCallback(
+    async <T,>(op: () => Promise<T>): Promise<T> => {
+      await flushPendingSave();
+      const resume = suspendAutosave();
+      try {
+        return await op();
+      } finally {
+        resume();
+      }
+    },
+    [],
+  );
 
   const handleRename = useCallback(
     async (note: NoteMeta) => {
@@ -121,23 +158,30 @@ export function NotesListPanel() {
       const segments = note.relPath.split("/");
       segments[segments.length - 1] = ensured;
       const targetRelPath = segments.join("/");
+      const oldKey = keyFor({ kind: "note", relPath: note.relPath });
       try {
-        const updated = await notesRename(note.relPath, targetRelPath);
-        void logAction(
-          "note_rename",
-          `${note.relPath} -> ${updated.relPath}`,
-        ).catch(() => {});
+        await withAutosaveHeld(async () => {
+          const updated = await notesRename(note.relPath, targetRelPath);
+          // Anything typed during the rename is still in memory; don't let
+          // it be written to the old path. Keep the editor's content and
+          // point it at the new path — if it's dirty, autosave writes it
+          // there.
+          discardPendingSave(oldKey);
+          useEditorStore
+            .getState()
+            .retargetOpen(oldKey, { kind: "note", relPath: updated.relPath });
+          void logAction(
+            "note_rename",
+            `${note.relPath} -> ${updated.relPath}`,
+          ).catch(() => {});
+        });
+        announceChange();
         await refresh();
-        if (openRelPath === note.relPath) {
-          // The currently open note moved — re-open it from the new path.
-          const content = await notesRead(updated.relPath);
-          openNote(updated.relPath, content);
-        }
       } catch (e) {
         setError(formatAppError(e));
       }
     },
-    [logAction, openNote, openRelPath, refresh],
+    [announceChange, logAction, refresh, withAutosaveHeld],
   );
 
   const handleDelete = useCallback(
@@ -146,16 +190,24 @@ export function NotesListPanel() {
         `Delete "${note.title}"?\n\nFile: ${note.relPath}\nThis cannot be undone from naiteh.`,
       );
       if (!ok) return;
+      const key = keyFor({ kind: "note", relPath: note.relPath });
       try {
-        await notesDelete(note.relPath);
-        void logAction("note_delete", note.relPath).catch(() => {});
-        if (openRelPath === note.relPath) closeNote();
+        await withAutosaveHeld(async () => {
+          await notesDelete(note.relPath);
+          // The file is gone: drop any held save so it can't resurrect it.
+          discardPendingSave(key);
+          if (useEditorStore.getState().open?.key === key) {
+            useEditorStore.getState().closeNote();
+          }
+          void logAction("note_delete", note.relPath).catch(() => {});
+        });
+        announceChange();
         await refresh();
       } catch (e) {
         setError(formatAppError(e));
       }
     },
-    [closeNote, logAction, openRelPath, refresh],
+    [announceChange, logAction, refresh, withAutosaveHeld],
   );
 
   function folderNameFrom(prompt: string): string | null {
@@ -190,19 +242,30 @@ export function NotesListPanel() {
       const parent = folder.path.split("/").slice(0, -1).join("/");
       const target = `${parent}/${name}`;
       try {
-        await notesRenameDir(folder.path, target);
-        void logAction(
-          "notes_rename_dir",
-          `${folder.path} -> ${target}`,
-        ).catch(() => {});
-        // The open note's path may have moved with the folder.
-        if (openNoteInside(folder.path)) closeNote();
+        await withAutosaveHeld(async () => {
+          await notesRenameDir(folder.path, target);
+          // The open note may have moved with the folder: keep its
+          // in-memory content and follow it to the new path.
+          const open = useEditorStore.getState().open;
+          if (open !== null && noteInside(open.source, folder.path)) {
+            discardPendingSave(open.key);
+            const moved = `${target}${open.source.relPath.slice(folder.path.length)}`;
+            useEditorStore
+              .getState()
+              .retargetOpen(open.key, { kind: "note", relPath: moved });
+          }
+          void logAction(
+            "notes_rename_dir",
+            `${folder.path} -> ${target}`,
+          ).catch(() => {});
+        });
+        announceChange();
         await refresh();
       } catch (e) {
         setError(formatAppError(e));
       }
     },
-    [closeNote, logAction, openNoteInside, refresh],
+    [announceChange, logAction, refresh, withAutosaveHeld],
   );
 
   const handleDeleteFolder = useCallback(
@@ -212,15 +275,22 @@ export function NotesListPanel() {
       );
       if (!ok) return;
       try {
-        await notesDeleteDir(folder.path);
-        void logAction("notes_delete_dir", folder.path).catch(() => {});
-        if (openNoteInside(folder.path)) closeNote();
+        await withAutosaveHeld(async () => {
+          await notesDeleteDir(folder.path);
+          const open = useEditorStore.getState().open;
+          if (open !== null && noteInside(open.source, folder.path)) {
+            discardPendingSave(open.key);
+            useEditorStore.getState().closeNote();
+          }
+          void logAction("notes_delete_dir", folder.path).catch(() => {});
+        });
+        announceChange();
         await refresh();
       } catch (e) {
         setError(formatAppError(e));
       }
     },
-    [closeNote, logAction, openNoteInside, refresh],
+    [announceChange, logAction, refresh, withAutosaveHeld],
   );
 
   // The native File ▸ New Note / New Folder menu items route here.

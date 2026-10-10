@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::AppError;
 use crate::services::config;
+use crate::services::session::{require_session, ActiveSession};
 
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 const SYSTEM_PROMPT: &str = "\
@@ -58,7 +59,12 @@ fn with_optional_auth(
 }
 
 #[tauri::command]
-pub async fn ai_improve(text: String, instruction: String) -> Result<String, AppError> {
+pub async fn ai_improve(
+    active: tauri::State<'_, ActiveSession>,
+    text: String,
+    instruction: String,
+) -> Result<String, AppError> {
+    require_session(&active)?;
     let dir = config::default_app_config_dir()?;
     crate::services::fs::ensure_dir(&dir)?;
     let cfg = config::load(&dir)?;
@@ -78,6 +84,10 @@ async fn ai_improve_impl(
     if instruction.trim().is_empty() {
         return Err(AppError::Validation("instruction is required".into()));
     }
+
+    // Re-checked here (not only when saving settings) so a hand-edited
+    // or pre-validation config.json can't send the key over plain http.
+    config::validate_ai_base_url(&ai.base_url)?;
 
     let prompt = build_user_prompt(text, instruction);
     let body = ChatRequest {
@@ -143,7 +153,10 @@ struct ModelEntry {
 /// locally-pulled models) and OpenAI alike. Lets the Settings UI offer
 /// a picker instead of a free-text model field.
 #[tauri::command]
-pub async fn ai_list_models() -> Result<Vec<String>, AppError> {
+pub async fn ai_list_models(
+    active: tauri::State<'_, ActiveSession>,
+) -> Result<Vec<String>, AppError> {
+    require_session(&active)?;
     let dir = config::default_app_config_dir()?;
     crate::services::fs::ensure_dir(&dir)?;
     let cfg = config::load(&dir)?;
@@ -153,6 +166,7 @@ pub async fn ai_list_models() -> Result<Vec<String>, AppError> {
 async fn ai_list_models_impl(
     ai: &crate::services::config::AiConfig,
 ) -> Result<Vec<String>, AppError> {
+    config::validate_ai_base_url(&ai.base_url)?;
     let url = format!("{}/models", ai.base_url.trim_end_matches('/'));
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECS))
@@ -320,6 +334,21 @@ mod tests {
             ai_improve_impl(&cfg, "text", " ").await.unwrap_err(),
             AppError::Validation(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn insecure_base_url_is_refused_before_any_request() {
+        for bad in ["http://api.example.com/v1", "file:///etc/passwd"] {
+            let cfg = ai_config(bad, Some("sk-secret"));
+            assert!(matches!(
+                ai_improve_impl(&cfg, "text", "fix").await.unwrap_err(),
+                AppError::Validation(_)
+            ));
+            assert!(matches!(
+                ai_list_models_impl(&cfg).await.unwrap_err(),
+                AppError::Validation(_)
+            ));
+        }
     }
 
     #[tokio::test]

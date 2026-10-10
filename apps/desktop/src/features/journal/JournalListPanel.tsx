@@ -4,11 +4,13 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type KeyboardEvent,
   type PointerEvent,
 } from "react";
 
 import { activityRecent, quickCreate, quickList } from "../../lib/api/journal";
-import { openByRelPath } from "../../lib/openByRelPath";
+import { journalRelPathFor } from "../../lib/journalPath";
+import { openDocument, type OpenTarget } from "../../lib/openDocument";
 import { formatAppError } from "../../lib/types";
 import type { NoteMeta, TimelineItem } from "../../lib/types";
 import { useAuthStore } from "../../state/authStore";
@@ -18,6 +20,10 @@ import {
   JOURNAL_SPLIT_MIN,
   useUIStore,
 } from "../../state/uiStore";
+import {
+  notifyVaultContentChanged,
+  useVaultContentStore,
+} from "../../state/vaultContentStore";
 import { formatRelative } from "./formatRelative";
 import styles from "./JournalListPanel.module.css";
 
@@ -29,12 +35,22 @@ interface DragStart {
 
 const LIST_LIMIT = 50;
 
+/** Keyboard step for the split divider (fraction of the panel height). */
+const SPLIT_KEY_STEP = 0.05;
+const SPLIT_COARSE_MULTIPLIER = 4;
+
+// The item kind is known, so open it directly rather than round-tripping
+// a journal date through a path and back.
+function timelineItemTarget(item: TimelineItem): OpenTarget {
+  return item.kind === "JournalEntry"
+    ? { kind: "journal", date: item.date }
+    : { kind: "note", relPath: item.relPath };
+}
+
 function timelineItemRelPath(item: TimelineItem): string {
-  if (item.kind === "JournalEntry") {
-    const date = item.date;
-    return `journal/${date.slice(0, 4)}/${date.slice(5, 7)}/${date}.md`;
-  }
-  return item.relPath;
+  return item.kind === "JournalEntry"
+    ? journalRelPathFor(item.date)
+    : item.relPath;
 }
 
 export function JournalListPanel() {
@@ -65,13 +81,16 @@ export function JournalListPanel() {
     }
   }, []);
 
+  // Refetch on mount and whenever vault files change elsewhere (sync,
+  // note create/rename/delete).
+  const contentVersion = useVaultContentStore((s) => s.version);
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+  }, [refresh, contentVersion]);
 
-  const handleOpenRelPath = useCallback(async (relPath: string) => {
+  const handleOpen = useCallback(async (target: OpenTarget) => {
     try {
-      await openByRelPath(relPath);
+      await openDocument(target);
     } catch (e) {
       setError(formatAppError(e));
     }
@@ -82,8 +101,10 @@ export function JournalListPanel() {
     try {
       const meta = await quickCreate();
       void logAction("quick_note_create", meta.relPath).catch(() => {});
-      await refresh();
-      await handleOpenRelPath(meta.relPath);
+      // Bumping the content version refreshes this panel (effect above)
+      // and every other list showing notes.
+      notifyVaultContentChanged();
+      await handleOpen({ kind: "note", relPath: meta.relPath });
     } catch (e) {
       setError(formatAppError(e));
     } finally {
@@ -123,13 +144,44 @@ export function JournalListPanel() {
     document.body.style.userSelect = "";
   }
 
+  // WAI-ARIA window-splitter pattern for the horizontal divider:
+  // ArrowUp/ArrowDown move it, Home/End jump to the bounds. The store
+  // clamps to [JOURNAL_SPLIT_MIN, JOURNAL_SPLIT_MAX].
+  function onDividerKeyDown(e: KeyboardEvent<HTMLDivElement>) {
+    const step = SPLIT_KEY_STEP * (e.shiftKey ? SPLIT_COARSE_MULTIPLIER : 1);
+    let next: number;
+    switch (e.key) {
+      case "ArrowUp":
+        next = ratio - step;
+        break;
+      case "ArrowDown":
+        next = ratio + step;
+        break;
+      case "Home":
+        next = JOURNAL_SPLIT_MIN;
+        break;
+      case "End":
+        next = JOURNAL_SPLIT_MAX;
+        break;
+      default:
+        return;
+    }
+    e.preventDefault();
+    // Round to whole percent so repeated steps don't accumulate float noise.
+    setRatio(Math.round(next * 100) / 100);
+  }
+
   return (
     <div
       ref={containerRef}
       className={styles.panel}
       data-testid="list-panel-journal"
     >
-      <section className={styles.section} style={topStyle}>
+      <section
+        id="journal-quick-capture-section"
+        className={styles.section}
+        style={topStyle}
+      >
         <header className={styles.sectionHeader}>
           <h2 className={styles.sectionTitle}>Quick Capture</h2>
           <button
@@ -155,7 +207,9 @@ export function JournalListPanel() {
                     <button
                       type="button"
                       className={`${styles.item} ${isActive ? styles.itemActive : ""}`}
-                      onClick={() => void handleOpenRelPath(note.relPath)}
+                      onClick={() =>
+                        void handleOpen({ kind: "note", relPath: note.relPath })
+                      }
                       data-testid={`quick-note-${note.relPath}`}
                     >
                       <span className={styles.itemHeader}>
@@ -179,7 +233,10 @@ export function JournalListPanel() {
         aria-valuemin={JOURNAL_SPLIT_MIN * 100}
         aria-valuemax={JOURNAL_SPLIT_MAX * 100}
         aria-valuenow={Math.round(ratio * 100)}
+        aria-valuetext={`Quick Capture ${Math.round(ratio * 100)}%`}
+        aria-controls="journal-quick-capture-section journal-recent-activity-section"
         tabIndex={0}
+        onKeyDown={onDividerKeyDown}
         data-testid="journal-split-divider"
         className={`${styles.divider} ${dragging ? styles.dragging : ""}`}
         onPointerDown={onPointerDown}
@@ -187,7 +244,11 @@ export function JournalListPanel() {
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
       />
-      <section className={styles.section} style={bottomStyle}>
+      <section
+        id="journal-recent-activity-section"
+        className={styles.section}
+        style={bottomStyle}
+      >
         <header className={styles.sectionHeader}>
           <h2 className={styles.sectionTitle}>Recent Activity</h2>
         </header>
@@ -205,7 +266,7 @@ export function JournalListPanel() {
                     <button
                       type="button"
                       className={`${styles.item} ${isActive ? styles.itemActive : ""}`}
-                      onClick={() => void handleOpenRelPath(relPath)}
+                      onClick={() => void handleOpen(timelineItemTarget(item))}
                       data-testid={`activity-${timelineKey(item)}`}
                     >
                       <span className={styles.itemHeader}>

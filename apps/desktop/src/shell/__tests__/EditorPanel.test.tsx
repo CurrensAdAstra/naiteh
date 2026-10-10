@@ -2,6 +2,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import { act } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { resetAutosaveForTests } from "../../state/autosave";
 import { useEditorStore } from "../../state/editorStore";
 import { useUIStore } from "../../state/uiStore";
 import { EditorPanel } from "../EditorPanel";
@@ -78,6 +79,7 @@ function journalOpen(date: string, content: string, saved: string) {
 
 describe("EditorPanel", () => {
   beforeEach(() => {
+    resetAutosaveForTests();
     mockedWrite.mockClear();
     mockedJournalSave.mockClear();
     mockedAttachmentsImport.mockClear();

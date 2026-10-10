@@ -11,6 +11,28 @@ import {
 } from "../frontMatter";
 
 describe("frontMatter", () => {
+  describe("line endings", () => {
+    const crlf = "---\r\ntitle: x\r\ntags: [a]\r\npinned: true\r\n---\r\nbody\r\n";
+
+    it("reads CRLF front matter", () => {
+      expect(isPinnedInContent(crlf)).toBe(true);
+      expect(getTagsFromContent(crlf)).toEqual(["a"]);
+    });
+
+    it("keeps CRLF when rewriting", () => {
+      expect(setPinnedInContent(crlf, false)).toBe(
+        "---\r\ntitle: x\r\ntags: [a]\r\npinned: false\r\n---\r\nbody\r\n",
+      );
+      expect(addTagToContent(crlf, "b")).toBe(
+        "---\r\ntitle: x\r\ntags: [a, b]\r\npinned: true\r\n---\r\nbody\r\n",
+      );
+    });
+
+    it("accepts a closing fence at end of file", () => {
+      expect(isPinnedInContent("---\npinned: true\n---")).toBe(true);
+    });
+  });
+
   describe("isPinnedInContent", () => {
     it("returns false when no front matter", () => {
       expect(isPinnedInContent("body only")).toBe(false);

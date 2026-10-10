@@ -23,7 +23,10 @@ export default defineConfig(async () => ({
   },
   build: {
     // CodeMirror is the heaviest dep by far — keep it in its own chunk so
-    // the startup bundle (used before any editor mounts) stays lean.
+    // the startup bundle (used before any editor mounts) stays lean. The
+    // chunk is only reachable through the lazily-imported EditorPanel
+    // (see shell/AppShell.tsx); importing CodeMirror statically from the
+    // entry graph would make Vite modulepreload it in index.html again.
     rollupOptions: {
       output: {
         manualChunks: {

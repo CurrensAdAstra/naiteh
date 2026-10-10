@@ -1,4 +1,4 @@
-/* VS Code Light Modern theme tokens — see architecture.md §5.2 */
+/* VS Code Light Modern theme tokens — see architecture.md "Theme" (UI Architecture) */
 :root {
   /* Surfaces */
   --color-bg-app:           #ffffff;
@@ -31,6 +31,7 @@
   --color-hover:            #ededed;
   --color-active:           #e0e0e0;
   --color-danger:           #c72e0f;
+  --color-warning:          #b26a00;
   --color-success:          #1f883d;
 
   /* Typography */

@@ -64,6 +64,45 @@ describe("ListPanelResizer", () => {
     expect(useUIStore.getState().listPanelWidth).toBe(LIST_PANEL_DEFAULT + 40);
   });
 
+  it("is focusable and resizes with ArrowLeft / ArrowRight", () => {
+    render(<ListPanelResizer />);
+    const sep = screen.getByRole("separator");
+    expect(sep).toHaveAttribute("tabindex", "0");
+
+    fireEvent.keyDown(sep, { key: "ArrowRight" });
+    expect(useUIStore.getState().listPanelWidth).toBe(LIST_PANEL_DEFAULT + 10);
+    expect(sep).toHaveAttribute("aria-valuenow", String(LIST_PANEL_DEFAULT + 10));
+
+    fireEvent.keyDown(sep, { key: "ArrowLeft" });
+    fireEvent.keyDown(sep, { key: "ArrowLeft" });
+    expect(useUIStore.getState().listPanelWidth).toBe(LIST_PANEL_DEFAULT - 10);
+
+    fireEvent.keyDown(sep, { key: "ArrowRight", shiftKey: true });
+    expect(useUIStore.getState().listPanelWidth).toBe(LIST_PANEL_DEFAULT + 40);
+  });
+
+  it("Home / End jump to the min / max width", () => {
+    render(<ListPanelResizer />);
+    const sep = screen.getByRole("separator");
+    fireEvent.keyDown(sep, { key: "End" });
+    expect(useUIStore.getState().listPanelWidth).toBe(LIST_PANEL_MAX);
+    expect(sep).toHaveAttribute("aria-valuenow", String(LIST_PANEL_MAX));
+    // Arrows clamp at the bounds.
+    fireEvent.keyDown(sep, { key: "ArrowRight" });
+    expect(useUIStore.getState().listPanelWidth).toBe(LIST_PANEL_MAX);
+    fireEvent.keyDown(sep, { key: "Home" });
+    expect(useUIStore.getState().listPanelWidth).toBe(LIST_PANEL_MIN);
+  });
+
+  it("ignores unrelated keys and does not swallow them", () => {
+    render(<ListPanelResizer />);
+    const sep = screen.getByRole("separator");
+    const notPrevented = fireEvent.keyDown(sep, { key: "Tab" });
+    expect(notPrevented).toBe(true);
+    expect(useUIStore.getState().listPanelWidth).toBe(LIST_PANEL_DEFAULT);
+    expect(fireEvent.keyDown(sep, { key: "ArrowRight" })).toBe(false);
+  });
+
   it("clears document body user-select on pointer up", () => {
     render(<ListPanelResizer />);
     const sep = screen.getByRole("separator");

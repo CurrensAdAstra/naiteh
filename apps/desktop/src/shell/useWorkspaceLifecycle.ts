@@ -1,18 +1,22 @@
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect } from "react";
 
 import {
   workspaceGet,
   workspaceSetLastOpened,
 } from "../lib/api/workspace";
-import { openByRelPath } from "../lib/openByRelPath";
+import { openDocument, type OpenTarget } from "../lib/openDocument";
 import type { LastOpened } from "../lib/types";
+import { flushPendingSave } from "../state/autosave";
 import { useEditorStore } from "../state/editorStore";
 import { useSyncStore } from "../state/syncStore";
 
 const SYNC_STATUS_REFRESH_MS = 30_000;
 
-function journalRelPathFor(date: string): string {
-  return `journal/${date.slice(0, 4)}/${date.slice(5, 7)}/${date}.md`;
+function targetForLastOpened(last: LastOpened): OpenTarget {
+  return last.kind === "Note"
+    ? { kind: "note", relPath: last.relPath }
+    : { kind: "journal", date: last.date };
 }
 
 /**
@@ -28,6 +32,7 @@ function journalRelPathFor(date: string): string {
  * 2. Restore the last-opened file from `.naiteh/workspace.json`; clear
  *    a stale marker if that file no longer exists.
  * 3. Persist the last-opened file on every fresh open-transition.
+ * 4. Flush unsaved edits before the window closes.
  */
 export function useWorkspaceLifecycle(): void {
   // 1. Sync status refresh.
@@ -48,11 +53,11 @@ export function useWorkspaceLifecycle(): void {
         const last = state.lastOpened;
         if (last === null || cancelled) return;
         // Don't clobber a note the user already opened during startup.
+        // (A click that lands while this read is in flight also wins:
+        // openDocument only applies the newest request.)
         if (useEditorStore.getState().open !== null) return;
-        const relPath =
-          last.kind === "Note" ? last.relPath : journalRelPathFor(last.date);
         try {
-          await openByRelPath(relPath);
+          await openDocument(targetForLastOpened(last));
         } catch {
           // Stale entry — file probably deleted. Clear so it doesn't
           // resurface next session.
@@ -85,5 +90,41 @@ export function useWorkspaceLifecycle(): void {
       void workspaceSetLastOpened(payload).catch(() => {});
     });
     return () => unsubscribe();
+  }, []);
+
+  // 4. Flush pending autosaves before the window closes. With a JS
+  // close-requested listener registered, Tauri defers the close to us;
+  // `onCloseRequested` destroys the window once this handler resolves
+  // (requires the `core:window:allow-destroy` capability). If destroying
+  // fails, the listener is removed so the next close request goes
+  // through natively instead of trapping the user.
+  useEffect(() => {
+    let disposed = false;
+    let unlisten: (() => void) | null = null;
+    void (async () => {
+      try {
+        const win = getCurrentWindow();
+        const un = await win.onCloseRequested(async (event) => {
+          event.preventDefault();
+          await flushPendingSave();
+          try {
+            await win.destroy();
+          } catch (e) {
+            console.error("window destroy failed; close again to exit:", e);
+            unlisten?.();
+            unlisten = null;
+          }
+        });
+        if (disposed) un();
+        else unlisten = un;
+      } catch {
+        // Not running inside Tauri (tests, plain browser) — nothing to do.
+      }
+    })();
+    return () => {
+      disposed = true;
+      unlisten?.();
+      unlisten = null;
+    };
   }, []);
 }

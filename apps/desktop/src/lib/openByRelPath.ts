@@ -1,26 +1,15 @@
-import { journalOpen } from "./api/journal";
-import { notesRead } from "./api/notes";
-import { useAuthStore } from "../state/authStore";
-import { useEditorStore } from "../state/editorStore";
-
-const JOURNAL_PATTERN = /^journal\/\d{4}\/\d{2}\/(\d{4}-\d{2}-\d{2})\.md$/;
+import { openDocument, targetForRelPath } from "./openDocument";
 
 /**
  * Generic open: dispatches to `journal_open` for paths that match the
  * canonical `journal/YYYY/MM/YYYY-MM-DD.md` shape, otherwise falls through
  * to `notes_read`. Used where the source kind isn't known up front (e.g.
  * tag results, search hits).
+ *
+ * Thin wrapper over {@link openDocument}, so it shares its flush-first and
+ * latest-request-wins semantics. Resolves without opening anything when a
+ * newer open request superseded this one.
  */
 export async function openByRelPath(relPath: string): Promise<void> {
-  const journalMatch = JOURNAL_PATTERN.exec(relPath);
-  if (journalMatch !== null) {
-    const date = journalMatch[1]!;
-    const result = await journalOpen(date);
-    useEditorStore.getState().openJournal(date, relPath, result.content);
-    void useAuthStore.getState().logAction("journal_open", relPath).catch(() => {});
-    return;
-  }
-  const content = await notesRead(relPath);
-  useEditorStore.getState().openNote(relPath, content);
-  void useAuthStore.getState().logAction("note_open", relPath).catch(() => {});
+  await openDocument(targetForRelPath(relPath));
 }

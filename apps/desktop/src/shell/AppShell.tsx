@@ -1,16 +1,33 @@
-import { type CSSProperties } from "react";
+import { lazy, Suspense, type CSSProperties } from "react";
 
 import { AiPanel } from "../features/ai/AiPanel";
 import { SettingsModal } from "../features/settings/SettingsModal";
 import { useUIStore } from "../state/uiStore";
 import { ActivityBar } from "./ActivityBar";
 import { CommandPalette } from "./CommandPalette";
-import { EditorPanel } from "./EditorPanel";
 import { ListPanelResizer } from "./ListPanelResizer";
 import { PanelRouter } from "./PanelRouter";
 import { StatusBar } from "./StatusBar";
 import { useWorkspaceLifecycle } from "./useWorkspaceLifecycle";
 import styles from "./AppShell.module.css";
+
+// CodeMirror (and its language registry) is by far the heaviest dependency.
+// Loading the editor lazily keeps it out of the startup bundle, so the
+// login / first-run screens never download or preload it.
+const EditorPanel = lazy(() =>
+  import("./EditorPanel").then((m) => ({ default: m.EditorPanel })),
+);
+
+function EditorPanelFallback() {
+  return (
+    <div
+      className={styles.editorFallback}
+      role="status"
+      aria-label="Loading editor"
+      data-testid="editor-panel-loading"
+    />
+  );
+}
 
 const AI_PANEL_WIDTH_PX = 360;
 
@@ -54,7 +71,9 @@ export function AppShell() {
         {!isCalendar && <ListPanelResizer />}
       </div>
       <div className={styles.editor}>
-        <EditorPanel />
+        <Suspense fallback={<EditorPanelFallback />}>
+          <EditorPanel />
+        </Suspense>
       </div>
       {aiPanelOpen && (
         <div className={styles.ai}>

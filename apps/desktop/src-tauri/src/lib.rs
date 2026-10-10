@@ -13,7 +13,7 @@ const MENU_TOGGLE_AI: &str = "toggle_ai";
 const MENU_SETTINGS: &str = "settings";
 const VIEW_ID_PREFIX: &str = "view:";
 
-/// (id-suffix, label, accelerator) for the seven view-switch entries.
+/// (id-suffix, label, accelerator) for the six view-switch entries.
 /// Order + shortcuts match the Activity Bar.
 const VIEW_ITEMS: &[(&str, &str, &str)] = &[
     ("journal", "Journal", "CmdOrCtrl+1"),
@@ -93,7 +93,7 @@ fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         ],
     )?;
 
-    // View menu: the seven panels, then palette + AI toggle.
+    // View menu: the six panels, then palette + AI toggle.
     let view_items: Vec<MenuItem<R>> = VIEW_ITEMS
         .iter()
         .map(|(id, label, accel)| {
@@ -181,13 +181,23 @@ pub fn run() {
             emit_menu_event(app, event.id().as_ref());
         })
         // Per-vault mutex shared across all write + sync commands; see
-        // services::vault_lock and architecture.md §9.
+        // services::vault_lock and vault/wiki/concurrency-safety.md.
         .manage(services::vault_lock::VaultLocks::default())
         // In-memory tag index; rebuilt lazily, invalidated by writes.
-        // See services::index and architecture.md §4.3.
+        // See services::index and vault/wiki/concurrency-safety.md
+        // ("Tag index").
         .manage(services::index::TagIndex::default())
         // Opaque bearer-token session map. See services::auth.
         .manage(services::auth::SessionStore::default())
+        // Who is signed in to this instance — the session gate every
+        // non-auth command checks first. See services::session.
+        .manage(services::session::ActiveSession::default())
+        // Per-username failed-login lockout. See services::session.
+        .manage(services::session::LoginThrottle::default())
+        // Every command except auth_login / auth_resume / auth_logout is
+        // gated: the other auth_* commands resolve their bearer token,
+        // everything else calls `require_session` first (enforced by
+        // `tests::every_registered_command_is_gated`).
         .invoke_handler(tauri::generate_handler![
             commands::vault::vault_pick_folder,
             commands::vault::vault_init,
@@ -198,6 +208,8 @@ pub fn run() {
             commands::auth::auth_login,
             commands::auth::auth_resume,
             commands::auth::auth_logout,
+            commands::auth::auth_change_password,
+            commands::auth::auth_create_user,
             commands::auth::auth_list_users,
             commands::auth::auth_set_user_active,
             commands::auth::auth_list_audit_logs,
@@ -297,5 +309,109 @@ mod tests {
     #[test]
     fn unknown_id_is_ignored() {
         assert!(matches!(route_menu_id("bogus"), MenuRoute::None));
+    }
+
+    // ── session gate coverage ────────────────────────────────────────
+
+    /// Commands reachable before sign-in. They authenticate (or end) a
+    /// session themselves; nothing else may be listed here.
+    const UNGATED: &[&str] = &["auth_login", "auth_resume", "auth_logout"];
+
+    /// Auth commands gated by their bearer token instead of the active
+    /// session: their body must resolve the token first.
+    const TOKEN_GATED: &[&str] = &[
+        "auth_change_password",
+        "auth_create_user",
+        "auth_list_users",
+        "auth_set_user_active",
+        "auth_list_audit_logs",
+        "auth_log_action",
+    ];
+
+    fn command_source(module: &str) -> &'static str {
+        match module {
+            "ai" => include_str!("commands/ai.rs"),
+            "attachments" => include_str!("commands/attachments.rs"),
+            "auth" => include_str!("commands/auth.rs"),
+            "evernote" => include_str!("commands/evernote.rs"),
+            "journal" => include_str!("commands/journal.rs"),
+            "notes" => include_str!("commands/notes.rs"),
+            "search" => include_str!("commands/search.rs"),
+            "settings" => include_str!("commands/settings.rs"),
+            "sync" => include_str!("commands/sync.rs"),
+            "tags" => include_str!("commands/tags.rs"),
+            "vault" => include_str!("commands/vault.rs"),
+            "workspace" => include_str!("commands/workspace.rs"),
+            other => panic!("commands::{other} is not listed in command_source()"),
+        }
+    }
+
+    /// `(module, fn)` for every entry of the `generate_handler!` list.
+    fn registered_commands() -> Vec<(String, String)> {
+        let src = include_str!("lib.rs");
+        let start = src.find("generate_handler![").expect("handler list") + 18;
+        let end = start + src[start..].find(']').expect("end of handler list");
+        src[start..end]
+            .split(',')
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|entry| {
+                let parts: Vec<&str> = entry.split("::").collect();
+                assert_eq!(parts.len(), 3, "unexpected handler entry {entry}");
+                assert_eq!(parts[0], "commands");
+                (parts[1].to_string(), parts[2].to_string())
+            })
+            .collect()
+    }
+
+    /// The first statement of `fn name`'s body in `src`.
+    fn first_statement(src: &str, name: &str) -> String {
+        let decl = [format!("fn {name}("), format!("fn {name}<")]
+            .iter()
+            .find_map(|d| src.find(d.as_str()))
+            .unwrap_or_else(|| panic!("fn {name} not found"));
+        let body = decl + src[decl..].find('{').expect("fn body");
+        src[body + 1..]
+            .lines()
+            .map(str::trim)
+            .find(|l| !l.is_empty() && !l.starts_with("//"))
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    #[test]
+    fn every_registered_command_is_gated() {
+        let registered = registered_commands();
+        assert!(
+            registered.len() > 50,
+            "parsed {} commands",
+            registered.len()
+        );
+        for (module, name) in &registered {
+            if UNGATED.contains(&name.as_str()) {
+                continue;
+            }
+            let first = first_statement(command_source(module), name);
+            if TOKEN_GATED.contains(&name.as_str()) {
+                assert!(
+                    first.contains("sessions.resolve(&token)?;")
+                        || first.contains("sessions.require_admin(&token)?;"),
+                    "{module}::{name} must resolve its token first, starts with: {first}"
+                );
+            } else {
+                assert!(
+                    first == "require_session(&active)?;",
+                    "{module}::{name} must call require_session(&active)? first, \
+                     starts with: {first}"
+                );
+            }
+        }
+        // The exemption lists may only name real commands.
+        for name in UNGATED.iter().chain(TOKEN_GATED) {
+            assert!(
+                registered.iter().any(|(_, n)| n == name),
+                "{name} is exempt but not registered"
+            );
+        }
     }
 }

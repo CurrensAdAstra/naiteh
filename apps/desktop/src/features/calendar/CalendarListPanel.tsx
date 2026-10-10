@@ -1,22 +1,17 @@
 import { Star } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import {
-  journalOpen,
-  timelinePinned,
-  timelineRange,
-} from "../../lib/api/journal";
-import { notesRead } from "../../lib/api/notes";
+import { timelinePinned, timelineRange } from "../../lib/api/journal";
+import { openDocument, type OpenTarget } from "../../lib/openDocument";
 import { formatAppError } from "../../lib/types";
 import type { TimelineDay, TimelineItem } from "../../lib/types";
-import { useAuthStore } from "../../state/authStore";
 import { useEditorStore } from "../../state/editorStore";
+import { useVaultContentStore } from "../../state/vaultContentStore";
 import { CalendarGrid } from "./CalendarGrid";
 import {
   endOfMonth,
   formatDayHeader,
   formatLocalDate,
-  journalRelPathFor,
   startOfMonth,
   todayLocal,
 } from "./dateUtils";
@@ -31,9 +26,6 @@ export function CalendarListPanel() {
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const openKey = useEditorStore((s) => s.open?.key ?? null);
-  const openNoteAction = useEditorStore((s) => s.openNote);
-  const openJournalAction = useEditorStore((s) => s.openJournal);
-  const logAction = useAuthStore((s) => s.logAction);
 
   // Resolve the timeline range from the displayed grid month: always covers
   // the visible grid AND extends through today so the timeline below always
@@ -61,9 +53,12 @@ export function CalendarListPanel() {
     }
   }, [range.from, range.to]);
 
+  // Refetch on mount, month change, and whenever vault files change
+  // elsewhere (sync, note create/rename/delete).
+  const contentVersion = useVaultContentStore((s) => s.version);
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+  }, [refresh, contentVersion]);
 
   const datesWithContent = useMemo(() => {
     const set = new Set<string>();
@@ -73,40 +68,27 @@ export function CalendarListPanel() {
     return set;
   }, [days]);
 
+  const open = useCallback(async (target: OpenTarget) => {
+    try {
+      await openDocument(target);
+    } catch (e) {
+      setError(formatAppError(e));
+    }
+  }, []);
+
   const handleOpenItem = useCallback(
-    async (item: TimelineItem) => {
-      try {
-        if (item.kind === "JournalEntry") {
-          const result = await journalOpen(item.date);
-          openJournalAction(
-            item.date,
-            journalRelPathFor(item.date),
-            result.content,
-          );
-          void logAction("journal_open", item.date).catch(() => {});
-        } else {
-          const content = await notesRead(item.relPath);
-          openNoteAction(item.relPath, content);
-          void logAction("note_open", item.relPath).catch(() => {});
-        }
-      } catch (e) {
-        setError(formatAppError(e));
-      }
-    },
-    [logAction, openJournalAction, openNoteAction],
+    (item: TimelineItem) =>
+      open(
+        item.kind === "JournalEntry"
+          ? { kind: "journal", date: item.date }
+          : { kind: "note", relPath: item.relPath },
+      ),
+    [open],
   );
 
   const handleOpenEmptyDay = useCallback(
-    async (date: string) => {
-      try {
-        const result = await journalOpen(date);
-        openJournalAction(date, journalRelPathFor(date), result.content);
-        void logAction("journal_open", date).catch(() => {});
-      } catch (e) {
-        setError(formatAppError(e));
-      }
-    },
-    [logAction, openJournalAction],
+    (date: string) => open({ kind: "journal", date }),
+    [open],
   );
 
   const handleSelectDate = useCallback((date: string) => {
@@ -153,7 +135,7 @@ export function CalendarListPanel() {
                 <ItemRow
                   key={timelineItemKey(item)}
                   item={item}
-                  active={openKey === itemEditorKey(item)}
+                  active={openKey === timelineItemKey(item)}
                   onOpen={() => void handleOpenItem(item)}
                 />
               ))}
@@ -211,7 +193,7 @@ function DaySection({
           onClick={() => onOpenEmptyDay(day.date)}
           data-testid={`calendar-empty-${day.date}`}
         >
-          — start a journal entry
+          ??start a journal entry
         </button>
       ) : (
         <ul className={styles.dayItems}>
@@ -219,7 +201,7 @@ function DaySection({
             <ItemRow
               key={timelineItemKey(item)}
               item={item}
-              active={activeKey === itemEditorKey(item)}
+              active={activeKey === timelineItemKey(item)}
               onOpen={() => onOpenItem(item)}
             />
           ))}
@@ -255,7 +237,7 @@ function ItemRow({ item, active, onOpen }: ItemRowProps) {
           <span className={styles.itemTitle}>{item.title}</span>
           {item.kind === "Note" && item.pinned && (
             <span className={styles.pinned} aria-label="pinned" title="pinned">
-              ★
+              ??
             </span>
           )}
         </span>
@@ -267,13 +249,8 @@ function ItemRow({ item, active, onOpen }: ItemRowProps) {
   );
 }
 
+/** Doubles as the editorStore `open.key` of the item when it's open. */
 function timelineItemKey(item: TimelineItem): string {
-  return item.kind === "JournalEntry"
-    ? `journal:${item.date}`
-    : `note:${item.relPath}`;
-}
-
-function itemEditorKey(item: TimelineItem): string {
   return item.kind === "JournalEntry"
     ? `journal:${item.date}`
     : `note:${item.relPath}`;

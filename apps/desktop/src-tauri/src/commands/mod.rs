@@ -1,5 +1,4 @@
-// IPC command modules — see architecture.md §7.
-// Implementations land in subsequent tasks.
+// IPC command modules — see vault/wiki/ipc-api.md.
 
 pub mod ai;
 pub mod attachments;

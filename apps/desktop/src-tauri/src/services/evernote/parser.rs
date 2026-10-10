@@ -7,11 +7,15 @@
 //! hash that the body's `<en-media hash="...">` references. ENML →
 //! Markdown conversion lives in `enml`.
 //!
-//! The parser is event-driven (quick-xml SAX) rather than DOM: ENEX
-//! files routinely run into the hundreds of megabytes for users with
-//! image-heavy notebooks, and streaming keeps memory bounded to a
-//! single note + its resources at a time.
+//! The parser is event-driven (quick-xml SAX) over a `BufReader<File>`
+//! and yields notes **one at a time** through [`EnexReader`]: ENEX files
+//! routinely run into the hundreds of megabytes for users with
+//! image-heavy notebooks, so neither the file nor the full list of notes
+//! is ever held in memory — only the note currently being parsed (plus
+//! its decoded resources).
 
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 
 use base64::Engine as _;
@@ -21,6 +25,7 @@ use quick_xml::events::Event;
 use quick_xml::reader::Reader;
 
 use crate::domain::AppError;
+use crate::services::evernote::enml::decode_entities;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct EvernoteNote {
@@ -49,112 +54,203 @@ pub struct Resource {
     pub md5_hash_hex: String,
 }
 
-/// Reads + parses an .enex file. Returns one entry per `<note>` element.
-pub fn parse_enex(path: &Path) -> Result<Vec<EvernoteNote>, AppError> {
-    let bytes = std::fs::read(path).map_err(|e| match e.kind() {
+/// Streaming reader over an `.enex` document: [`EnexReader::next_note`]
+/// (or the `Iterator` impl) parses just far enough to return the next
+/// complete `<note>`, so callers can convert + write each note and drop
+/// it before the next one is read.
+pub struct EnexReader<R: BufRead> {
+    reader: Reader<R>,
+    buf: Vec<u8>,
+    /// Path of element local-names from the root. We use the tail to
+    /// decide where to direct text.
+    path: Vec<String>,
+    /// Text content accumulator for the *current leaf*. Cleared at the
+    /// start of every "interesting leaf" so that mid-element text (e.g.
+    /// whitespace between siblings) doesn't leak into the next field.
+    text_buf: String,
+    current: Option<EvernoteNote>,
+    current_resource: Option<ResourceBuilder>,
+    /// Set after EOF or an error; the iterator is then exhausted.
+    finished: bool,
+}
+
+/// Open `path` for streaming. Errors only if the file can't be opened.
+pub fn open_enex(path: &Path) -> Result<EnexReader<BufReader<File>>, AppError> {
+    let file = File::open(path).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => {
             AppError::NotFound(format!("ENEX file not found: {}", path.display()))
         }
         _ => AppError::Io(format!("reading {}: {e}", path.display())),
     })?;
-    parse_enex_bytes(&bytes)
+    Ok(EnexReader::new(BufReader::new(file)))
 }
 
-/// Same as `parse_enex` but takes the bytes directly. Useful for tests
-/// and (eventually) for streaming from a temp upload.
-pub fn parse_enex_bytes(bytes: &[u8]) -> Result<Vec<EvernoteNote>, AppError> {
-    let mut reader = Reader::from_reader(bytes);
-    let cfg = reader.config_mut();
-    cfg.trim_text(false); // CDATA whitespace matters for content
-    cfg.expand_empty_elements = true;
-
-    let mut notes: Vec<EvernoteNote> = Vec::new();
-    let mut current: Option<EvernoteNote> = None;
-    let mut current_resource: Option<ResourceBuilder> = None;
-
-    // Path of element local-names from the root. We use the tail to
-    // decide where to direct text.
-    let mut path: Vec<String> = Vec::new();
-    // Text content accumulator for the *current leaf*. We clear it at
-    // the start of every "interesting leaf" so that mid-element text
-    // (e.g. whitespace between siblings) doesn't leak into the next field.
-    let mut text_buf = String::new();
-    let mut buf = Vec::new();
-
+/// Count the `<note>` elements in `path` with a cheap streaming pass
+/// (no base64 decoding, nothing retained), so progress can report a
+/// total before the first note is written. Also validates that the
+/// document is well-formed enough to import: a structurally broken file
+/// fails here, before anything touches the vault.
+pub fn count_notes(path: &Path) -> Result<usize, AppError> {
+    let mut reader = open_enex(path)?;
+    let mut count = 0usize;
     loop {
-        match reader.read_event_into(&mut buf) {
+        match reader.reader.read_event_into(&mut reader.buf) {
             Ok(Event::Start(ref e)) => {
                 let name = local_name_string(e.local_name().as_ref())?;
-                if is_interesting_leaf(&name) {
-                    text_buf.clear();
+                if name == "note" {
+                    count += 1;
                 }
-                path.push(name.clone());
-                match name.as_str() {
-                    "note" => current = Some(EvernoteNote::default()),
-                    "resource" => current_resource = Some(ResourceBuilder::default()),
-                    _ => {}
-                }
+                reader.path.push(name);
             }
             Ok(Event::End(_)) => {
-                let name = path.pop().unwrap_or_default();
-                dispatch_text(
-                    &path,
-                    &name,
-                    std::mem::take(&mut text_buf),
-                    current.as_mut(),
-                    current_resource.as_mut(),
-                )?;
-                match name.as_str() {
-                    "note" => {
-                        if let Some(n) = current.take() {
-                            notes.push(n);
-                        }
-                    }
-                    "resource" => {
-                        if let (Some(rb), Some(n)) = (current_resource.take(), current.as_mut()) {
-                            if let Some(r) = rb.build()? {
-                                n.resources.push(r);
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            Ok(Event::Text(t)) => {
-                let s = t
-                    .unescape()
-                    .map_err(|e| AppError::ConfigCorrupt(format!("ENEX text unescape: {e}")))?;
-                text_buf.push_str(&s);
-            }
-            Ok(Event::CData(c)) => {
-                let s = std::str::from_utf8(c.as_ref())
-                    .map_err(|e| AppError::ConfigCorrupt(format!("ENEX CDATA utf-8: {e}")))?;
-                text_buf.push_str(s);
+                reader.path.pop();
             }
             Ok(Event::Eof) => {
-                // quick-xml is lenient about unterminated tags — it just
-                // stops emitting events. If we're still inside an
-                // element when the stream ends, the input was truncated.
-                if !path.is_empty() {
-                    return Err(AppError::ConfigCorrupt(format!(
-                        "ENEX truncated: unterminated <{}>",
-                        path.last().map(String::as_str).unwrap_or("?"),
-                    )));
-                }
-                break;
+                reader.check_complete()?;
+                return Ok(count);
             }
             Ok(_) => {}
-            Err(e) => {
-                return Err(AppError::ConfigCorrupt(format!(
-                    "ENEX parse error at byte {}: {e}",
-                    reader.buffer_position()
-                )));
-            }
+            Err(e) => return Err(reader.parse_error(e)),
         }
-        buf.clear();
+        reader.buf.clear();
+    }
+}
+
+impl<R: BufRead> EnexReader<R> {
+    pub fn new(inner: R) -> Self {
+        let mut reader = Reader::from_reader(inner);
+        let cfg = reader.config_mut();
+        cfg.trim_text(false); // CDATA whitespace matters for content
+        cfg.expand_empty_elements = true;
+        Self {
+            reader,
+            buf: Vec::new(),
+            path: Vec::new(),
+            text_buf: String::new(),
+            current: None,
+            current_resource: None,
+            finished: false,
+        }
     }
 
-    Ok(notes)
+    fn parse_error(&self, e: quick_xml::Error) -> AppError {
+        AppError::ConfigCorrupt(format!(
+            "ENEX parse error at byte {}: {e}",
+            self.reader.buffer_position()
+        ))
+    }
+
+    /// quick-xml is lenient about unterminated tags — it just stops
+    /// emitting events. If we're still inside an element when the
+    /// stream ends, the input was truncated.
+    fn check_complete(&self) -> Result<(), AppError> {
+        if self.path.is_empty() {
+            Ok(())
+        } else {
+            Err(AppError::ConfigCorrupt(format!(
+                "ENEX truncated: unterminated <{}>",
+                self.path.last().map(String::as_str).unwrap_or("?"),
+            )))
+        }
+    }
+
+    /// Parse up to and including the next `</note>`. `Ok(None)` at a
+    /// clean end of document.
+    pub fn next_note(&mut self) -> Result<Option<EvernoteNote>, AppError> {
+        if self.finished {
+            return Ok(None);
+        }
+        let result = self.advance();
+        if !matches!(result, Ok(Some(_))) {
+            self.finished = true;
+        }
+        result
+    }
+
+    fn advance(&mut self) -> Result<Option<EvernoteNote>, AppError> {
+        loop {
+            let event = self.reader.read_event_into(&mut self.buf);
+            let completed = match event {
+                Ok(Event::Start(ref e)) => {
+                    let name = local_name_string(e.local_name().as_ref())?;
+                    if is_interesting_leaf(&name) {
+                        self.text_buf.clear();
+                    }
+                    match name.as_str() {
+                        "note" => self.current = Some(EvernoteNote::default()),
+                        "resource" => self.current_resource = Some(ResourceBuilder::default()),
+                        _ => {}
+                    }
+                    self.path.push(name);
+                    None
+                }
+                Ok(Event::End(_)) => {
+                    let name = self.path.pop().unwrap_or_default();
+                    dispatch_text(
+                        &self.path,
+                        &name,
+                        std::mem::take(&mut self.text_buf),
+                        self.current.as_mut(),
+                        self.current_resource.as_mut(),
+                    )?;
+                    match name.as_str() {
+                        "note" => self.current.take(),
+                        "resource" => {
+                            if let (Some(rb), Some(n)) =
+                                (self.current_resource.take(), self.current.as_mut())
+                            {
+                                if let Some(r) = rb.build()? {
+                                    n.resources.push(r);
+                                }
+                            }
+                            None
+                        }
+                        _ => None,
+                    }
+                }
+                Ok(Event::Text(t)) => {
+                    // Lenient entity decoding (HTML named entities,
+                    // numeric refs; unknown ones kept literally) instead
+                    // of quick-xml's 5-entity `unescape`.
+                    let raw = std::str::from_utf8(t.as_ref())
+                        .map_err(|e| AppError::ConfigCorrupt(format!("ENEX text utf-8: {e}")))?;
+                    self.text_buf.push_str(&decode_entities(raw));
+                    None
+                }
+                Ok(Event::CData(c)) => {
+                    let s = std::str::from_utf8(c.as_ref())
+                        .map_err(|e| AppError::ConfigCorrupt(format!("ENEX CDATA utf-8: {e}")))?;
+                    self.text_buf.push_str(s);
+                    None
+                }
+                Ok(Event::Eof) => {
+                    self.check_complete()?;
+                    return Ok(None);
+                }
+                Ok(_) => None,
+                Err(e) => return Err(self.parse_error(e)),
+            };
+            self.buf.clear();
+            if let Some(note) = completed {
+                return Ok(Some(note));
+            }
+        }
+    }
+}
+
+impl<R: BufRead> Iterator for EnexReader<R> {
+    type Item = Result<EvernoteNote, AppError>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.next_note().transpose()
+    }
+}
+
+/// Parse an in-memory ENEX document into all of its notes. Test
+/// convenience only — production code streams via [`open_enex`].
+#[cfg(test)]
+pub fn parse_enex_bytes(bytes: &[u8]) -> Result<Vec<EvernoteNote>, AppError> {
+    EnexReader::new(bytes).collect()
 }
 
 #[derive(Default)]
@@ -414,6 +510,66 @@ mod tests {
             AppError::ConfigCorrupt(msg) => assert!(msg.contains("ENEX")),
             other => panic!("expected ConfigCorrupt, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn reader_streams_notes_one_at_a_time() {
+        // Second note is truncated: the first must still come out intact
+        // before the error surfaces — proof we don't parse the whole
+        // document up front.
+        let enex = r#"<?xml version="1.0"?>
+<en-export>
+  <note><title>First</title><content><![CDATA[<en-note>a</en-note>]]></content></note>
+  <note><title>Second"#;
+        let mut reader = EnexReader::new(enex.as_bytes());
+        let first = reader.next_note().unwrap().unwrap();
+        assert_eq!(first.title, "First");
+        assert!(reader.next_note().is_err());
+        // Exhausted after an error.
+        assert!(reader.next_note().unwrap().is_none());
+    }
+
+    #[test]
+    fn open_and_count_stream_from_disk() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("x.enex");
+        std::fs::write(
+            &p,
+            r#"<?xml version="1.0"?>
+<en-export>
+  <note><title>A</title><content><![CDATA[<en-note/>]]></content></note>
+  <note><title>B</title><content><![CDATA[<en-note/>]]></content></note>
+</en-export>"#,
+        )
+        .unwrap();
+        assert_eq!(count_notes(&p).unwrap(), 2);
+        let titles: Vec<String> = open_enex(&p).unwrap().map(|n| n.unwrap().title).collect();
+        assert_eq!(titles, vec!["A", "B"]);
+    }
+
+    #[test]
+    fn count_notes_rejects_truncated_file_and_missing_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("bad.enex");
+        std::fs::write(&p, "<en-export><note><title>x</title>").unwrap();
+        assert!(matches!(count_notes(&p), Err(AppError::ConfigCorrupt(_))));
+        assert!(matches!(
+            count_notes(&dir.path().join("missing.enex")),
+            Err(AppError::NotFound(_))
+        ));
+    }
+
+    #[test]
+    fn html_entities_in_outer_fields_do_not_fail_the_file() {
+        let enex = r#"<?xml version="1.0"?>
+<en-export>
+  <note>
+    <title>A&nbsp;B &mdash; C &unknown;</title>
+    <content><![CDATA[<en-note/>]]></content>
+  </note>
+</en-export>"#;
+        let n = &parse_enex_bytes(enex.as_bytes()).unwrap()[0];
+        assert_eq!(n.title, "A\u{a0}B — C &unknown;");
     }
 
     #[test]

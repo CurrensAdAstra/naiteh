@@ -17,8 +17,13 @@ vi.mock("../../../lib/api/notes", () => ({
   notesCreateDir: vi.fn(),
   notesDeleteDir: vi.fn(),
   notesRenameDir: vi.fn(),
+  notesWrite: vi.fn(),
 }));
 
+import {
+  resetAutosaveForTests,
+  scheduleSave,
+} from "../../../state/autosave";
 import {
   notesCreate,
   notesCreateDir,
@@ -29,8 +34,10 @@ import {
   notesRead,
   notesRename,
   notesRenameDir,
+  notesWrite,
 } from "../../../lib/api/notes";
 
+const mockedWrite = vi.mocked(notesWrite);
 const mockedList = vi.mocked(notesList);
 const mockedRead = vi.mocked(notesRead);
 const mockedCreate = vi.mocked(notesCreate);
@@ -53,8 +60,30 @@ function note(relPath: string, title: string): NoteMeta {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+}
+
+function openNoteState(relPath: string, content: string, saved: string) {
+  useEditorStore.setState({
+    open: {
+      source: { kind: "note", relPath },
+      key: `note:${relPath}`,
+      content,
+      savedContent: saved,
+    },
+  });
+}
+
 describe("NotesListPanel", () => {
   beforeEach(() => {
+    resetAutosaveForTests();
+    mockedWrite.mockReset();
+    mockedWrite.mockImplementation(async (relPath) => note(relPath, "x"));
     mockedList.mockReset();
     mockedRead.mockReset();
     mockedCreate.mockReset();
@@ -253,6 +282,100 @@ describe("NotesListPanel", () => {
     );
     expect(mockedDelete).not.toHaveBeenCalled();
     confirmSpy.mockRestore();
+  });
+
+  // ── autosave races ───────────────────────────────────────────────────
+
+  it("delete flushes pending edits first and a late autosave can't resurrect the file", async () => {
+    mockedList.mockResolvedValue([note("notes/loose.md", "Loose")]);
+    const del = deferred<void>();
+    mockedDelete.mockReturnValue(del.promise);
+    openNoteState("notes/loose.md", "edited", "x");
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    const user = userEvent.setup();
+    render(<NotesListPanel />);
+    await user.click(
+      await screen.findByTestId("notes-delete-notes/loose.md"),
+    );
+    await waitFor(() =>
+      expect(mockedDelete).toHaveBeenCalledWith("notes/loose.md"),
+    );
+    // Pending edits were written to the file before it was deleted.
+    expect(mockedWrite).toHaveBeenCalledTimes(1);
+    expect(mockedWrite).toHaveBeenCalledWith("notes/loose.md", "edited");
+
+    // While the delete is in flight the user types and the debounce fires.
+    useEditorStore.getState().setContent("edited more");
+    scheduleSave({ kind: "note", relPath: "notes/loose.md" }, "edited more", 0);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(mockedWrite).toHaveBeenCalledTimes(1);
+
+    del.resolve();
+    await waitFor(() => expect(useEditorStore.getState().open).toBeNull());
+    await new Promise((r) => setTimeout(r, 900));
+    expect(mockedWrite).toHaveBeenCalledTimes(1);
+    confirmSpy.mockRestore();
+  });
+
+  it("rename keeps unsaved in-memory edits and never writes to the old path afterwards", async () => {
+    mockedList.mockResolvedValue([note("notes/loose.md", "Loose")]);
+    const ren = deferred<NoteMeta>();
+    mockedRename.mockReturnValue(ren.promise);
+    openNoteState("notes/loose.md", "v1", "v0");
+    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("renamed");
+    const user = userEvent.setup();
+    render(<NotesListPanel />);
+    await user.click(
+      await screen.findByTestId("notes-rename-notes/loose.md"),
+    );
+    await waitFor(() => expect(mockedRename).toHaveBeenCalled());
+    expect(mockedWrite).toHaveBeenCalledWith("notes/loose.md", "v1");
+
+    // Typing during the rename; its debounce fires mid-rename.
+    useEditorStore.getState().setContent("v2");
+    scheduleSave({ kind: "note", relPath: "notes/loose.md" }, "v2", 0);
+    await new Promise((r) => setTimeout(r, 20));
+
+    ren.resolve(note("notes/renamed.md", "Renamed"));
+    await waitFor(() =>
+      expect(useEditorStore.getState().open?.key).toBe("note:notes/renamed.md"),
+    );
+    // In-memory content survives; nothing re-read from disk.
+    expect(useEditorStore.getState().open?.content).toBe("v2");
+    expect(mockedRead).not.toHaveBeenCalled();
+
+    await new Promise((r) => setTimeout(r, 900));
+    const oldPathWrites = mockedWrite.mock.calls.filter(
+      ([p]) => p === "notes/loose.md",
+    );
+    expect(oldPathWrites).toEqual([["notes/loose.md", "v1"]]);
+    promptSpy.mockRestore();
+  });
+
+  it("out-of-order opens: the last click wins even if the first read resolves last", async () => {
+    mockedList.mockResolvedValue([
+      note("notes/a.md", "A"),
+      note("notes/b.md", "B"),
+    ]);
+    const a = deferred<string>();
+    const b = deferred<string>();
+    mockedRead.mockImplementation((p) =>
+      p === "notes/a.md" ? a.promise : b.promise,
+    );
+    const user = userEvent.setup();
+    render(<NotesListPanel />);
+    await user.click(await screen.findByTestId("notes-file-notes/a.md"));
+    await waitFor(() => expect(mockedRead).toHaveBeenCalledWith("notes/a.md"));
+    await user.click(screen.getByTestId("notes-file-notes/b.md"));
+    await waitFor(() => expect(mockedRead).toHaveBeenCalledWith("notes/b.md"));
+    b.resolve("B body");
+    await waitFor(() =>
+      expect(useEditorStore.getState().open?.key).toBe("note:notes/b.md"),
+    );
+    a.resolve("A body");
+    await new Promise((r) => setTimeout(r, 20));
+    expect(useEditorStore.getState().open?.key).toBe("note:notes/b.md");
+    expect(useEditorStore.getState().open?.content).toBe("B body");
   });
 
   // ── folders ──────────────────────────────────────────────────────────

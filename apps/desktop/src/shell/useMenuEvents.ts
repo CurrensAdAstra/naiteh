@@ -4,17 +4,22 @@ import { listen } from "@tauri-apps/api/event";
 
 import { useUIStore, type ViewMode } from "../state/uiStore";
 
-const VIEW_MODES: readonly ViewMode[] = [
-  "journal",
-  "notes",
-  "calendar",
-  "search",
-  "tags",
-  "sync",
-];
+// A Record keyed by ViewMode (rather than an array) makes the compiler
+// flag this table whenever a view mode is added or removed.
+const VIEW_MODES: Readonly<Record<ViewMode, true>> = {
+  journal: true,
+  notes: true,
+  calendar: true,
+  search: true,
+  tags: true,
+  sync: true,
+};
 
-function isViewMode(value: string): value is ViewMode {
-  return (VIEW_MODES as readonly string[]).includes(value);
+function isViewMode(value: unknown): value is ViewMode {
+  return (
+    typeof value === "string" &&
+    Object.prototype.hasOwnProperty.call(VIEW_MODES, value)
+  );
 }
 
 /**
@@ -22,7 +27,8 @@ function isViewMode(value: string): value is ViewMode {
  * once at the app root. The menu owns the global keyboard shortcuts
  * (accelerators), so each click/shortcut arrives here as a `menu:*`
  * event:
- *   - `menu:view` (payload = mode) → switch panel (Cmd+1..7)
+ *   - `menu:view` (payload = mode) → switch panel (Cmd+1..6, one
+ *     per view mode: journal, notes, calendar, search, tags, sync)
  *   - `menu:command-palette` → open the palette (Cmd+P)
  *   - `menu:toggle-ai` → toggle the AI panel (Cmd+E)
  *   - `menu:settings` → open the settings modal (Cmd+,)
@@ -34,7 +40,7 @@ export function useMenuEvents(): void {
   useEffect(() => {
     const ui = () => useUIStore.getState();
     const subscriptions = [
-      listen<string>("menu:view", (e) => {
+      listen<unknown>("menu:view", (e) => {
         if (isViewMode(e.payload)) ui().setViewMode(e.payload);
       }),
       listen("menu:command-palette", () => ui().setCommandPaletteOpen(true)),

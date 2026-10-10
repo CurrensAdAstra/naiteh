@@ -10,6 +10,7 @@ import {
 } from "../../state/uiStore";
 import { useVaultStore } from "../../state/vaultStore";
 import { AppShell } from "../AppShell";
+import appShellSource from "../AppShell.tsx?raw";
 
 // Stub the PanelRouter so list panels with their own data fetching don't
 // pollute this test. The contract we care about is "the right testid is
@@ -72,14 +73,14 @@ describe("AppShell", () => {
 
     expect(screen.getByRole("navigation", { name: /activity bar/i })).toBeInTheDocument();
     expect(screen.getByTestId("list-panel")).toBeInTheDocument();
-    expect(screen.getByTestId("editor-panel")).toBeInTheDocument();
+    expect(await screen.findByTestId("editor-panel")).toBeInTheDocument();
     expect(screen.getByTestId("status-bar")).toBeInTheDocument();
   });
 
   it("preserves the Editor Panel DOM node across ViewMode changes", async () => {
     render(<AppShell />);
     await waitForShellRefresh();
-    const editorBefore = screen.getByTestId("editor-panel");
+    const editorBefore = await screen.findByTestId("editor-panel");
 
     const sequence: ViewMode[] = ["notes", "calendar", "tags", "sync"];
     for (const mode of sequence) {
@@ -91,6 +92,15 @@ describe("AppShell", () => {
 
     const editorAfter = screen.getByTestId("editor-panel");
     expect(editorAfter).toBe(editorBefore);
+  });
+
+  it("does not import EditorPanel (and so CodeMirror) statically", () => {
+    // A static import would put the codemirror chunk in index.html's
+    // modulepreload list, i.e. download it on the login screen.
+    expect(appShellSource).not.toMatch(
+      /^import[^;]*from\s+["']\.\/EditorPanel["']/m,
+    );
+    expect(appShellSource).toMatch(/import\(\s*["']\.\/EditorPanel["']\s*\)/);
   });
 
   it("status bar shows the active vault name", async () => {

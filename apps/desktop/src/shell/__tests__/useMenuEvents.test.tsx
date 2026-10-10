@@ -12,7 +12,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 import { listen } from "@tauri-apps/api/event";
-import { useUIStore } from "../../state/uiStore";
+import { useUIStore, type ViewMode } from "../../state/uiStore";
 import { useMenuEvents } from "../useMenuEvents";
 
 function Harness() {
@@ -60,6 +60,31 @@ describe("useMenuEvents", () => {
     render(<Harness />);
     fire("menu:view", "bogus");
     expect(useUIStore.getState().viewMode).toBe("journal");
+  });
+
+  it("menu:view accepts exactly the six view modes (Cmd+1..6)", () => {
+    render(<Harness />);
+    const modes: ViewMode[] = [
+      "journal",
+      "notes",
+      "calendar",
+      "search",
+      "tags",
+      "sync",
+    ];
+    for (const mode of [...modes].reverse()) {
+      fire("menu:view", mode);
+      expect(useUIStore.getState().viewMode).toBe(mode);
+    }
+  });
+
+  it("menu:view ignores non-string and prototype-key payloads", () => {
+    render(<Harness />);
+    useUIStore.setState({ viewMode: "notes" });
+    for (const payload of [7, null, undefined, "toString", "__proto__"]) {
+      fire("menu:view", payload);
+      expect(useUIStore.getState().viewMode).toBe("notes");
+    }
   });
 
   it("menu:command-palette opens the palette", () => {

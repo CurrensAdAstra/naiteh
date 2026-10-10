@@ -12,6 +12,7 @@ import styles from "./StatusBar.module.css";
 export function StatusBar() {
   const active = useVaultStore((s) => s.active);
   const openContent = useEditorStore((s) => s.open?.content ?? null);
+  const saveError = useEditorStore((s) => s.saveError);
   const syncStatus = useSyncStore((s) => s.status);
   const syncNotInitialized = useSyncStore((s) => s.notInitialized);
   const setViewMode = useUIStore((s) => s.setViewMode);
@@ -24,13 +25,19 @@ export function StatusBar() {
     () => (openContent === null ? null : countWords(openContent)),
     [openContent],
   );
+  const mergePending = syncStatus?.mergePending === true;
   const syncLabel = useMemo(
-    () => describeSyncStatus(syncStatus, syncNotInitialized),
-    [syncStatus, syncNotInitialized],
+    () =>
+      mergePending
+        ? "Sync: resolve conflicts"
+        : describeSyncStatus(syncStatus, syncNotInitialized),
+    [mergePending, syncStatus, syncNotInitialized],
   );
 
   async function handleLogout() {
     await logAction("logout").catch(() => {});
+    // clearSession flushes unsaved edits and closes the open note before
+    // forgetting the session.
     await clearSession();
   }
 
@@ -50,12 +57,26 @@ export function StatusBar() {
         </button>
       )}
       <span className={styles.spacer} />
+      {saveError !== null && (
+        <span
+          className={styles.placeholder}
+          role="status"
+          title={saveError.message}
+          data-testid="status-save-error"
+        >
+          Save failed — retrying
+        </span>
+      )}
       <button
         type="button"
         className={styles.linkLike}
         onClick={() => setViewMode("sync")}
-        aria-label="Open Sync panel"
-        title="Open Sync"
+        aria-label={
+          mergePending
+            ? "Resolve conflicts to finish sync — open Sync panel"
+            : "Open Sync panel"
+        }
+        title={mergePending ? "Resolve conflicts to finish sync" : "Open Sync"}
         data-testid="status-sync"
       >
         {syncLabel}

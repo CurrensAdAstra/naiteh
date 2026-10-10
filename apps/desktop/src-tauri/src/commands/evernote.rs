@@ -1,13 +1,16 @@
 //! Evernote import IPC.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Runtime};
 use tauri_plugin_dialog::DialogExt;
+use tokio::sync::Mutex as AsyncMutex;
 
 use crate::domain::{AppError, EvernoteImportReport};
+use crate::services::fs as fsx;
 use crate::services::index::TagIndex;
+use crate::services::session::{require_session, ActiveSession};
 use crate::services::vault_lock::VaultLocks;
 use crate::services::{config, evernote};
 
@@ -34,10 +37,12 @@ const PROGRESS_EVENT: &str = "evernote-import-progress";
 /// tell the difference from an actual failure.
 #[tauri::command]
 pub async fn evernote_import<R: Runtime>(
+    active: tauri::State<'_, ActiveSession>,
     app: AppHandle<R>,
     locks: tauri::State<'_, VaultLocks>,
     index: tauri::State<'_, TagIndex>,
 ) -> Result<EvernoteImportReport, AppError> {
+    require_session(&active)?;
     let (tx, rx) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
@@ -55,15 +60,36 @@ pub async fn evernote_import<R: Runtime>(
         return Err(AppError::Cancelled);
     }
 
+    let paths: Vec<PathBuf> = paths
+        .into_iter()
+        .map(|fp| {
+            fp.into_path()
+                .map_err(|e| AppError::InvalidPath(e.to_string()))
+        })
+        .collect::<Result<_, _>>()?;
+
     let vault_root = config::current_vault_root()?;
+    // The vault lock is taken **per note** inside the import (via
+    // `blocking_lock` on the blocking thread), not for the whole run, so
+    // autosave and other writes interleave instead of stalling for the
+    // length of a multi-thousand-note import.
     let lock = locks.for_vault(&vault_root);
-    let _guard = lock.lock().await;
+    let index = index.inner().clone();
+    fsx::run_blocking(move || Ok(import_files(&app, &vault_root, &lock, &index, paths))).await
+}
+
+/// Blocking body of `evernote_import`: imports each file in turn,
+/// emitting throttled progress and taking the vault lock per note.
+fn import_files<R: Runtime>(
+    app: &AppHandle<R>,
+    vault_root: &Path,
+    lock: &AsyncMutex<()>,
+    index: &TagIndex,
+    paths: Vec<PathBuf>,
+) -> EvernoteImportReport {
     let total_files = paths.len();
     let mut merged = EvernoteImportReport::default();
-    for (file_index, fp) in paths.into_iter().enumerate() {
-        let p: PathBuf = fp
-            .into_path()
-            .map_err(|e| AppError::InvalidPath(e.to_string()))?;
+    for (file_index, p) in paths.into_iter().enumerate() {
         let file_name = p
             .file_name()
             .and_then(|n| n.to_str())
@@ -72,7 +98,6 @@ pub async fn evernote_import<R: Runtime>(
 
         // Emit a note-level progress event, throttled to ~100 updates
         // per file so a 10k-note import doesn't flood the IPC channel.
-        let app = app.clone();
         let mut last_emitted = usize::MAX;
         let on_progress = |done: usize, total: usize| {
             let step = (total / 100).max(1);
@@ -91,19 +116,22 @@ pub async fn evernote_import<R: Runtime>(
             }
         };
 
-        match evernote::import_enex_with_progress(&vault_root, &p, on_progress) {
+        // We're on a blocking-pool thread, so `blocking_lock` is safe.
+        let acquire = move || lock.blocking_lock();
+        match evernote::import_enex_with_progress(vault_root, &p, acquire, on_progress) {
             Ok(r) => merge_report(&mut merged, r),
             Err(e) => {
                 merged.failed_count += 1;
                 merged.errors.push(format!("{}: {e}", p.display()));
             }
         }
+        // Notes from this file are on disk; make tags/search/timeline
+        // see them now rather than only after the last file.
+        if merged.imported_count > 0 {
+            index.invalidate(vault_root);
+        }
     }
-    // Import may partially succeed; invalidate if any note landed on disk.
-    if merged.imported_count > 0 {
-        index.invalidate(&vault_root);
-    }
-    Ok(merged)
+    merged
 }
 
 fn merge_report(into: &mut EvernoteImportReport, from: EvernoteImportReport) {

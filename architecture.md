@@ -39,16 +39,21 @@ the code.
    local-first everywhere else — AI Assist is the one feature that
    knowingly leaves the local trust boundary.
 7. **Local user access control** — the app opens on a login screen before
-   any vault content is shown. A single `admin` account is seeded on first
-   run (password equals the username; change it from Settings). The admin
-   creates further accounts in the UI. Login mints an opaque session
-   token; the frontend passes that token, never a plain username, to
-   every IPC that needs to know who is asking. Login offers an opt-in
-   "keep me signed in on this device" (default on): the token is persisted
-   to the app-config dir with a 30-day expiry and restored on the next
-   launch via `auth_resume`, so single-user machines aren't re-prompted
-   every start. Sign-out and unchecking the box both drop it; a
-   deactivated account can't ride a stale token back in.
+   any vault content is shown, and the backend enforces it with a session
+   gate on every non-auth command. A single `admin` account is seeded only
+   on the very first run (password equals the username) and must change
+   its password right after that first login. Any user can change their
+   own password; an admin creates further accounts and enables / disables
+   them in the UI. Login mints an opaque session token; the frontend passes
+   that token, never a plain username, to the auth IPCs that need to know
+   who is asking. The login screen has a "keep me signed in on this device"
+   checkbox, checked by default: the token is persisted to the app-config
+   dir with a 30-day expiry and restored on the next launch via
+   `auth_resume`, so single-user machines aren't re-prompted every start.
+   Unchecking it means a restart (which empties the in-memory session
+   store) returns to the login screen. Sign-out, signing in with the box
+   unchecked, a password change and disabling the account all drop the
+   saved token, so a deactivated account can't ride a stale token back in.
 
 The canonical feature list and non-goals are mirrored in the wiki's
 [product-overview.md](vault/wiki/product-overview.md).
@@ -78,8 +83,9 @@ The canonical feature list and non-goals are mirrored in the wiki's
 | Styling           | **CSS Modules**                                           |
 | Editor            | **CodeMirror 6** (added in a later task)                  |
 | Git integration   | **`git2` crate** (libgit2 bindings)                       |
-| AI HTTP client    | **`reqwest` (rustls-tls)** — used only by AI Assist       |
-| Package manager   | **pnpm**                                                  |
+| AI HTTP client    | **`reqwest` 0.13 (rustls: aws-lc-rs + OS cert store)** — used only by AI Assist |
+| Package manager   | **pnpm** 10 (pinned via `packageManager`, Corepack)       |
+| Rust toolchain    | `rust-version = "1.90"`; CI pins 1.90.0                   |
 | Target OS (v1)    | Windows, macOS, Linux                                     |
 
 ### Why these choices
@@ -98,92 +104,122 @@ The canonical feature list and non-goals are mirrored in the wiki's
 ```
 naiteh/
 ├── CLAUDE.md                  ← agent entry point (points to the LLM wiki)
+├── AGENTS.md                  ← pointer to CLAUDE.md for other agents
+├── README.md                  ← prerequisites (incl. Windows), setup, checks, installers
 ├── architecture.md            ← this file — implementation reference
+├── Makefile                   ← portable targets; each has a root `pnpm` script twin
+├── package.json               ← pnpm workspace root + root scripts (dev, check, test:rust, …)
+├── pnpm-workspace.yaml        ← workspace + onlyBuiltDependencies allowlist
+├── .github/
+│   └── workflows/ci.yml       ← guards, frontend, Rust ×3 OS, debug bundle ×3 OS
+├── scripts/
+│   ├── dev.ps1                ← Windows: refresh PATH, start `tauri dev`
+│   └── ensure-dist.mjs        ← stub apps/desktop/dist for cargo clippy/test
 ├── vault/                     ← documentation vault (a naiteh-shaped store)
 │   ├── journal/
 │   ├── note/
 │   └── wiki/                  ← LLM wiki: canonical data/facts (see §6)
 ├── docs/
+│   ├── design/                ← design proposals (not implemented)
 │   └── sessions/              ← dated work-session summaries
-├── package.json               ← pnpm workspace root
-├── pnpm-workspace.yaml
-├── apps/
-│   └── desktop/
-│       ├── package.json
-│       ├── vite.config.ts
-│       ├── tsconfig.json
-│       ├── index.html
-│       ├── src/                       ← React frontend
-│       │   ├── main.tsx
-│       │   ├── App.tsx
-│       │   ├── shell/                 ← AppShell, ActivityBar, panels
-│       │   ├── features/
-│       │   │   ├── ai/                 ← AI Assist side panel
-│       │   │   ├── auth/               ← login screen, admin dashboard
-│       │   │   ├── journal/
-│       │   │   ├── notes/
-│       │   │   ├── calendar/
-│       │   │   ├── search/
-│       │   │   ├── tags/
-│       │   │   ├── sync/
-│       │   │   └── settings/
-│       │   ├── lib/                   ← API wrappers around Tauri commands
-│       │   ├── state/                 ← global state (Zustand)
-│       │   └── styles/
-│       │       ├── tokens.css         ← VS Code Light Modern tokens
-│       │       └── reset.css
-│       └── src-tauri/                 ← Rust backend
-│           ├── Cargo.toml
-│           ├── tauri.conf.json
-│           └── src/
-│               ├── main.rs
-│               ├── lib.rs              ← Tauri builder, managed state, IPC registry
-│               ├── commands/           ← thin IPC wrappers, one module per area
-│               │   ├── mod.rs
-│               │   ├── ai.rs
-│               │   ├── attachments.rs
-│               │   ├── auth.rs
-│               │   ├── evernote.rs
-│               │   ├── journal.rs
-│               │   ├── notes.rs
-│               │   ├── search.rs
-│               │   ├── settings.rs
-│               │   ├── sync.rs
-│               │   ├── tags.rs
-│               │   ├── vault.rs
-│               │   └── workspace.rs
-│               ├── domain/             ← pure domain types + AppError,
-│               │   │                      grouped by area, re-exported flat
-│               │   │                      as crate::domain::Foo (mod.rs)
-│               │   ├── mod.rs
-│               │   ├── error.rs         ← AppError
-│               │   ├── attachment.rs    ← AttachmentImport
-│               │   ├── auth.rs          ← UserRole, AuthUser, AuthSession,
-│               │   │                      LoginResult, AuditLogEntry
-│               │   ├── evernote.rs      ← EvernoteImportReport, …Note
-│               │   ├── journal.rs       ← DayMeta, Journal*Result,
-│               │   │                      TimelineItem, TimelineDay
-│               │   ├── note.rs          ← NoteMeta
-│               │   ├── search.rs        ← SearchHit, TagCount
-│               │   ├── sync.rs          ← SyncStatus
-│               │   └── vault.rs         ← VaultInfo
-│               └── services/           ← side-effectful logic
-│                   ├── mod.rs
-│                   ├── attachments.rs
-│                   ├── auth.rs         ← Argon2 accounts + SessionStore + audit log
-│                   ├── config.rs
-│                   ├── conflicts.rs    ← sync-conflict discovery + resolution
-│                   ├── evernote/       ← .enex parser, ENML→MD, importer
-│                   ├── fs.rs           ← atomic writes
-│                   ├── fs_naming.rs    ← shared sanitize/MIME/label helpers
-│                   ├── git.rs
-│                   ├── index.rs        ← in-memory tag index (invalidated by writes)
-│                   ├── notes.rs        ← front matter, slugify, resolve_in_vault
-│                   ├── sync_state.rs
-│                   ├── timeline.rs     ← activity/timeline items from the index
-│                   ├── vault_lock.rs   ← per-vault write/sync mutex
-│                   └── workspace.rs    ← per-vault last-opened state
-└── README.md
+└── apps/
+    └── desktop/
+        ├── package.json
+        ├── vite.config.ts
+        ├── vitest.config.ts
+        ├── eslint.config.js
+        ├── tsconfig.json
+        ├── index.html
+        ├── src/                       ← React frontend
+        │   ├── main.tsx
+        │   ├── App.tsx                ← resume / login / admin / first-run / shell
+        │   ├── shell/                 ← AppShell (lazy-loads EditorPanel),
+        │   │                             ActivityBar, StatusBar, CommandPalette,
+        │   │                             useMenuEvents, useWorkspaceLifecycle
+        │   ├── features/
+        │   │   ├── ai/                 ← AI Assist side panel
+        │   │   ├── auth/               ← LoginScreen (incl. forced password
+        │   │   │                          change), AdminDashboard, shared
+        │   │   │                          AccountList / AuditLogList /
+        │   │   │                          ChangePasswordForm / CreateUserForm
+        │   │   ├── journal/
+        │   │   ├── notes/
+        │   │   ├── calendar/
+        │   │   ├── search/
+        │   │   ├── tags/
+        │   │   ├── sync/
+        │   │   └── settings/           ← SettingsModal + sections/ (one file
+        │   │                              per nav section), FirstRunSetup
+        │   ├── lib/
+        │   │   ├── api/                ← one wrapper module per IPC area, all via
+        │   │   │                          invoke.ts (central error handling)
+        │   │   ├── openDocument.ts     ← the one way to open / close / reload
+        │   │   ├── journalPath.ts      ← canonical journal rel-path helpers
+        │   │   └── types.ts            ← TS mirror of the IPC types
+        │   ├── state/                 ← global state (Zustand)
+        │   │   ├── editorStore.ts      ← open doc, revision, saveError
+        │   │   ├── autosave.ts         ← debounced, serialized per-note saves
+        │   │   ├── vaultContentStore.ts← "vault files changed" counter
+        │   │   └── …                   ← auth, settings, sync, ui, vault stores
+        │   └── styles/
+        │       ├── tokens.css         ← VS Code Light Modern tokens
+        │       └── reset.css
+        └── src-tauri/                 ← Rust backend
+            ├── Cargo.toml             ← rust-version 1.90
+            ├── tauri.conf.json        ← window, CSP, bundle metadata
+            ├── capabilities/          ← Tauri permissions (incl. window destroy)
+            └── src/
+                ├── main.rs
+                ├── lib.rs              ← Tauri builder, managed state, IPC registry
+                ├── commands/           ← thin IPC wrappers, one module per area
+                │   ├── mod.rs
+                │   ├── ai.rs
+                │   ├── attachments.rs
+                │   ├── auth.rs
+                │   ├── evernote.rs
+                │   ├── journal.rs
+                │   ├── notes.rs
+                │   ├── search.rs
+                │   ├── settings.rs
+                │   ├── sync.rs
+                │   ├── tags.rs
+                │   ├── vault.rs
+                │   └── workspace.rs
+                ├── domain/             ← pure domain types + AppError,
+                │   │                      grouped by area, re-exported flat
+                │   │                      as crate::domain::Foo (mod.rs)
+                │   ├── mod.rs
+                │   ├── error.rs         ← AppError
+                │   ├── attachment.rs    ← AttachmentImport
+                │   ├── auth.rs          ← UserRole, AuthUser, AuthSession,
+                │   │                      LoginResult, AuditLogEntry
+                │   ├── evernote.rs      ← EvernoteImportReport, …Note
+                │   ├── journal.rs       ← DayMeta, Journal*Result,
+                │   │                      TimelineItem, TimelineDay
+                │   ├── note.rs          ← NoteMeta
+                │   ├── search.rs        ← SearchHit, TagCount
+                │   ├── sync.rs          ← SyncStatus
+                │   └── vault.rs         ← VaultInfo
+                └── services/           ← side-effectful logic
+                    ├── mod.rs
+                    ├── attachments.rs
+                    ├── auth.rs         ← Argon2 accounts + SessionStore + audit log
+                    ├── config.rs       ← AppConfig on disk, AppConfigView over IPC
+                    ├── conflicts.rs    ← sync-conflict discovery + resolution
+                    ├── evernote/       ← streaming .enex reader, ENML→MD, importer
+                    ├── fs.rs           ← atomic writes, run_blocking
+                    ├── fs_naming.rs    ← shared sanitize/MIME/label helpers
+                    ├── git.rs          ← phased sync: prepare / fetch / integrate / push
+                    ├── hooks.rs        ← CLI hooks (on-note-save / on-journal-save / on-sync)
+                    ├── index.rs        ← in-memory tag index (generation-checked)
+                    ├── notes.rs        ← front matter, slugify, normalize_rel_path,
+                    │                     resolve_in_vault
+                    ├── session.rs      ← ActiveSession gate, login throttle, expiry
+                    ├── sync_state.rs   ← .naiteh/sync-state.json (last sync, pending merge)
+                    ├── timeline.rs     ← activity/timeline items from the index
+                    ├── vault_lock.rs   ← per-vault write/sync mutex
+                    ├── vault_path.rs   ← vault-root validation (no home / system dirs)
+                    └── workspace.rs    ← per-vault last-opened state
 ```
 
 The `apps/` prefix is used so we can later add `apps/mobile/` without
@@ -204,17 +240,56 @@ The first screen at the dev URL root (`/`) and admin URL (`/admin`) is the
 same local login screen. No vault, journal, note, sync, or settings content
 is rendered before a successful login.
 
-- `admin` is the only seeded account on first run; the admin creates
-  further accounts in the Settings panel.
+- `admin`/`admin` is seeded only when `auth.json` does not exist (first
+  run), flagged `mustChangePassword`; `LoginResult.mustChangePassword`
+  makes the UI demand a new password before anything else. Removing
+  `admin` from an existing file never resurrects it; a file with no active
+  admin makes login fail with a clear `ConfigCorrupt` error instead. The
+  admin creates further accounts (`auth_create_user`) and enables /
+  disables them (`auth_set_user_active`; the last active admin and the
+  admin's own account can't be disabled); every user can change their own
+  password (`auth_change_password`, Settings → Account). The forced
+  first-login change happens inside `LoginScreen`: the token is held as a
+  *pending* password change and the shell isn't shown until it succeeds.
 - Passwords are hashed with Argon2id (per-user salt embedded in the PHC
   string). Pre-token installs that still hold SHA-256 hashes are
-  upgraded transparently on the next successful login.
-- Successful login mints a 256-bit hex bearer token kept only in the
-  Tauri process memory; restart logs everyone out. Every admin IPC
-  takes that token and resolves it via the in-process session store.
-- `/admin` does not bypass authentication; after a successful admin login it
-  opens the Settings panel with the account-management section visible.
+  upgraded transparently on the next successful login. Argon2 runs on the
+  blocking pool (`auth_login` etc. are async) so the UI never stalls.
+- Successful login mints a 256-bit hex bearer token held in the Tauri
+  process memory (12 h idle / 7-day absolute expiry); with "keep me
+  signed in" it is also persisted for `auth_resume` (30-day TTL). Every
+  auth IPC that needs an identity takes that token and resolves it via
+  the in-process session store.
+- **Session gate.** Login also sets the instance's `ActiveSession`
+  (`services/session.rs`); every non-auth command calls
+  `require_session(&active)?` as its first statement and returns
+  `Unauthorized` while nobody is signed in — hiding the UI is no longer
+  the only barrier. Only `auth_login`, `auth_resume` and `auth_logout`
+  run before sign-in. A unit test in `lib.rs` parses the
+  `generate_handler!` list and fails if any command skips the gate. On
+  the frontend, every IPC goes through `lib/api/invoke.ts`; an
+  `Unauthorized` from a non-`auth_*` command (e.g. after a restart without
+  a remembered session) flushes pending saves and signs the user out with
+  a "session ended" notice instead of leaving a broken shell.
+- Login hardening: unknown usernames still pay one Argon2 verification
+  (dummy hash) so timing doesn't reveal which accounts exist; the password
+  is checked before the "disabled" flag; 5 failures lock a username for
+  5 minutes (in memory). Unknown user and wrong password share one
+  message; only the correct password reveals "account is disabled".
+- `auth_log_action` accepts only an allowlist of renderer work events, so
+  the renderer can't forge `login_success` & co. in the audit log.
+- `/admin` does not bypass authentication; after an admin signs in there it
+  renders the standalone `AdminDashboard` (accounts, create user, own
+  password, audit log) instead of the vault shell. A non-admin at `/admin`
+  gets the normal app. The same account / audit components back the
+  Settings modal's Accounts and Audit Log sections.
 - Failed and successful login attempts are written to the audit log.
+
+Related hardening outside auth (facts in the wiki): the AI API key never
+crosses IPC (`AppConfigView.ai.hasApiKey` instead; base URL must be
+https or loopback http), and vault roots are validated so path
+containment can't be defeated by choosing `~` or `C:\` as the vault
+(`services/vault_path.rs`; `.git` paths are refused too).
 
 VS Code-like 3-column shell:
 
@@ -233,9 +308,21 @@ VS Code-like 3-column shell:
 
 - **Activity Bar**: fixed width 48px. One icon per `ViewMode`.
 - **List Panel**: resizable width (default 280px, min 200px, max 480px).
-- **Editor Panel**: fills remaining space.
+- **Editor Panel**: fills remaining space. Lazy-loaded (`React.lazy`) so
+  CodeMirror and its language data stay out of the startup bundle.
 - **Status Bar**: optional, 22px tall. Shows vault name, sync status,
-  word count.
+  word count, and a save-error indicator when autosave is failing.
+
+#### Editor persistence
+
+Opening, closing and reloading documents all go through
+`lib/openDocument.ts`, which flushes pending saves first and applies only
+the latest open request. Saves go through `state/autosave.ts`: debounced
+(800 ms), keyed per document, serialized, retried with backoff, and flushed
+before anything moves the editor off a document — including window close,
+which is why the default capability grants `core:window:allow-destroy`.
+The precise ordering guarantees are facts and live in the wiki
+([concurrency-safety.md](vault/wiki/concurrency-safety.md)).
 
 ### 4.2 Theme
 
@@ -278,6 +365,7 @@ properties:
   --color-hover:            #ededed;
   --color-active:           #e0e0e0;
   --color-danger:           #c72e0f;
+  --color-warning:          #b26a00;
   --color-success:          #1f883d;
 
   /* Typography */
@@ -352,10 +440,12 @@ Settings is **not** a `ViewMode`; it is a full-screen modal
 (`features/settings/SettingsModal`) overlaying the shell, opened from
 the app menu (Cmd/Ctrl+,), the Activity Bar gear, the status-bar user
 name, or the palette. It mirrors the Obsidian settings layout: a
-left section nav (Vault, Editor, AI Assist, Import, plus Accounts /
-Audit Log for admins) beside a scrolling column of "name + description →
-control" rows. This replaced the cramped list-panel settings that shared
-the 280 px sidebar.
+left section nav (Vault, Editor, AI Assist, Import from Evernote,
+Account, plus an Administration group — Accounts / Audit Log — for
+admins) beside a scrolling column of "name + description → control" rows.
+Each section is its own component under `features/settings/sections/`;
+the modal handles focus trapping / restore (`useDialogFocus`). This
+replaced the cramped list-panel settings that shared the 280 px sidebar.
 
 The Edit menu uses the standard predefined items (undo/redo/cut/copy/
 paste/select-all) with their usual shortcuts. The editor keeps its own
@@ -466,8 +556,9 @@ explicitly assign notes to past or future dates (true Agenda-style
 
 - Vault picker + first-run setup
 - Local login screen with a single seeded `admin` account
-- Admin-only account management and audit-log review
-- 3-column shell with all seven ViewModes
+- Admin-only account management (create, enable / disable) and audit-log
+  review; self-service password change for every user
+- 3-column shell with all six ViewModes (+ the Settings modal)
 - Journal: quick capture + recent activity
 - Calendar: Agenda-style timeline (mtime-based) + month grid sub-view
 - Notes: list + read + write + create (folders = projects)
@@ -488,15 +579,31 @@ explicitly assign notes to past or future dates (true Agenda-style
   per-note progress events, reachable from File ▸ Import
 - Notes folder management (create / rename / delete, empty dirs shown)
 - Sync conflict-resolution UI (keep mine / keep theirs)
-- Auth hardening: Argon2id passwords + in-memory session tokens, with an
-  opt-in persisted "keep me signed in" token (30-day TTL, `auth_resume`)
-- In-memory tag index serving tags **and** timeline/activity;
-  per-vault write/sync mutex; CSP
+- Auth hardening: Argon2id passwords + in-memory session tokens, with a
+  persisted "keep me signed in" token (checkbox, on by default; 30-day TTL,
+  `auth_resume`)
+- Backend session gate on every non-auth IPC; forced first-login password
+  change, self-service password change, admin user creation; login
+  lockout + timing equalization; token expiry (12 h idle / 7 days);
+  allowlisted client audit actions; key-less AI config view + base-URL
+  rules; vault-root validation; `.git` paths refused
+- In-memory tag index serving tags, search's file list **and**
+  timeline/activity; per-vault write/sync mutex; CSP; all read commands off
+  the UI thread
+- Sync rework: phased sync (network without the vault lock, timeouts,
+  bounded credential attempts), persisted pending merge so conflicts
+  converge, joining an existing remote from a fresh vault
+- Editor: per-document serialized autosave with retry and flush-before-
+  switch / close; latest-request-wins document opening; lazy-loaded editor
 - Local AI providers (Ollama) — key-free, on-device AI Assist
 - Native application menu with global shortcuts (§4.3)
-- CLI hooks (`<app-config-dir>/hooks/on-note-save|on-journal-save|on-sync`)
-  — the first slice of the v2 "plugin system" candidate, git-hooks model
+- CLI hooks (`<app-config-dir>/hooks/on-note-save|on-journal-save|on-sync`;
+  `.exe` / `.cmd` / `.bat` / `.ps1` on Windows) — the first slice of the v2
+  "plugin system" candidate, git-hooks model
 - One-click default vault: first run offers `~/Documents/duramen`
+- Build / CI: portable Makefile mirrored by root `pnpm` scripts, Windows
+  dev script, CI on Linux / macOS / Windows with SHA-pinned actions and a
+  pinned Rust 1.90.0
 
 ### v1.5
 
@@ -515,6 +622,15 @@ explicitly assign notes to past or future dates (true Agenda-style
   and/or MCP server exposure of the vault)
 - Mobile app (if v1.5 study is positive)
 - System Calendar / Reminders integration
+- Headless engine daemon + pluggable sync backends (folder watching, web
+  clipping, Git / E2EE server sync behind one switch) — **proposal, not
+  implemented**: [docs/design/engine-daemon.md](docs/design/engine-daemon.md)
+
+### Release follow-ups (open)
+
+Not yet decided / built: license choice, a real version number (still
+`0.0.0`), installer code signing, an auto-updater, and a release workflow
+(CI builds debug bundles only).
 
 ---
 

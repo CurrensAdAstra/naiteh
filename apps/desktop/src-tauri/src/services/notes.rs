@@ -1,5 +1,7 @@
 //! Note metadata helpers — front matter parsing, snippet generation,
-//! recursive `.md` discovery. See architecture.md §4.4 / §6.2.
+//! recursive `.md` discovery, vault-relative path normalization and
+//! containment, slugs. See vault/wiki/vault-and-data.md and
+//! vault/wiki/domain-model.md ("Notes").
 
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
@@ -16,19 +18,51 @@ pub struct FrontMatter {
     pub pinned: bool,
 }
 
-/// Parse a `---\n…\n---\n` block at the start of `content`. Returns the
-/// extracted fields and the body that follows. Falls back to the entire
-/// content as body when no front matter is present (or it is malformed).
+/// A front-matter block split out of a document.
+struct FrontMatterParts<'a> {
+    /// Lines between the fences, without the fences or the newline that
+    /// precedes the closing fence (may be empty).
+    header: &'a str,
+    /// Everything after the closing fence's line terminator.
+    body: &'a str,
+    /// The opening fence's line ending, reused when rewriting the block
+    /// so a CRLF file stays CRLF.
+    eol: &'static str,
+}
+
+/// Find a `---` block at the very start of `content`. Accepts LF and
+/// CRLF line endings (files edited on Windows) and a closing fence at
+/// end of file with no trailing newline. `None` when there is no block
+/// or it is never closed.
+fn split_front_matter(content: &str) -> Option<FrontMatterParts<'_>> {
+    let (eol, rest) = match content.strip_prefix("---\r\n") {
+        Some(r) => ("\r\n", r),
+        None => ("\n", content.strip_prefix("---\n")?),
+    };
+    let mut pos = 0;
+    loop {
+        let line_end = rest[pos..].find('\n').map(|i| pos + i);
+        let line = &rest[pos..line_end.unwrap_or(rest.len())];
+        if line.trim_end_matches('\r') == "---" {
+            let before = &rest[..pos];
+            let before = before.strip_suffix('\n').unwrap_or(before);
+            let header = before.strip_suffix('\r').unwrap_or(before);
+            let body = line_end.map_or("", |e| &rest[e + 1..]);
+            return Some(FrontMatterParts { header, body, eol });
+        }
+        pos = line_end? + 1;
+    }
+}
+
+/// Parse a `---` … `---` block at the start of `content` (LF or CRLF).
+/// Returns the extracted fields and the body that follows. Falls back to
+/// the entire content as body when no front matter is present (or it is
+/// malformed).
 pub fn parse_front_matter(content: &str) -> (FrontMatter, &str) {
-    let Some(rest) = content.strip_prefix("---\n") else {
-        return (FrontMatter::default(), content);
-    };
-    let Some(end) = rest.find("\n---\n") else {
-        return (FrontMatter::default(), content);
-    };
-    let header = &rest[..end];
-    let body = &rest[end + "\n---\n".len()..];
-    (parse_header(header), body)
+    match split_front_matter(content) {
+        Some(parts) => (parse_header(parts.header), parts.body),
+        None => (FrontMatter::default(), content),
+    }
 }
 
 fn parse_header(header: &str) -> FrontMatter {
@@ -40,7 +74,7 @@ fn parse_header(header: &str) -> FrontMatter {
         let key = key.trim();
         let value = value.trim();
         match key {
-            "title" => out.title = Some(strip_quotes(value).to_string()),
+            "title" => out.title = Some(parse_scalar(value)),
             "tags" => out.tags = parse_array(value),
             "pinned" => out.pinned = value.eq_ignore_ascii_case("true"),
             _ => {}
@@ -49,25 +83,156 @@ fn parse_header(header: &str) -> FrontMatter {
     out
 }
 
-fn strip_quotes(s: &str) -> &str {
-    let trimmed = s.trim();
-    if (trimmed.starts_with('"') && trimmed.ends_with('"') && trimmed.len() >= 2)
-        || (trimmed.starts_with('\'') && trimmed.ends_with('\'') && trimmed.len() >= 2)
-    {
-        &trimmed[1..trimmed.len() - 1]
-    } else {
-        trimmed
+/// Quote a YAML scalar as a double-quoted string. Escapes `\`, `"`,
+/// newlines, tabs and every other control character so a value can
+/// never break out of its line (e.g. a title injecting extra front
+/// matter keys or a closing `---`). [`parse_scalar`] is the exact
+/// inverse, so values round-trip.
+pub fn yaml_quote(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() || c == '\u{2028}' || c == '\u{2029}' => {
+                let code = c as u32;
+                if code <= 0xFF {
+                    out.push_str(&format!("\\x{code:02x}"));
+                } else {
+                    out.push_str(&format!("\\u{code:04x}"));
+                }
+            }
+            c => out.push(c),
+        }
     }
+    out.push('"');
+    out
 }
 
+/// Parse one YAML scalar value as written by [`yaml_quote`] (or by a
+/// human): double-quoted strings are un-escaped, single-quoted strings
+/// have `''` collapsed to `'`, anything else is taken verbatim (trimmed).
+pub fn parse_scalar(s: &str) -> String {
+    let t = s.trim();
+    if t.len() >= 2 && t.starts_with('"') && t.ends_with('"') {
+        return unescape_double_quoted(&t[1..t.len() - 1]);
+    }
+    if t.len() >= 2 && t.starts_with('\'') && t.ends_with('\'') {
+        return t[1..t.len() - 1].replace("''", "'");
+    }
+    t.to_string()
+}
+
+/// Inverse of the escaping in [`yaml_quote`]. Unknown escapes are kept
+/// literally (backslash included) rather than dropped.
+fn unescape_double_quoted(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        let Some(esc) = chars.next() else {
+            out.push('\\');
+            break;
+        };
+        let hex_len = match esc {
+            'x' => 2,
+            'u' => 4,
+            'U' => 8,
+            _ => 0,
+        };
+        if hex_len > 0 {
+            let digits: String = chars.clone().take(hex_len).collect();
+            let decoded = (digits.len() == hex_len)
+                .then(|| u32::from_str_radix(&digits, 16).ok())
+                .flatten()
+                .and_then(char::from_u32);
+            match decoded {
+                Some(ch) => {
+                    out.push(ch);
+                    for _ in 0..hex_len {
+                        chars.next();
+                    }
+                }
+                None => {
+                    out.push('\\');
+                    out.push(esc);
+                }
+            }
+            continue;
+        }
+        match esc {
+            'n' => out.push('\n'),
+            'r' => out.push('\r'),
+            't' => out.push('\t'),
+            '0' => out.push('\0'),
+            '"' => out.push('"'),
+            '\\' => out.push('\\'),
+            '/' => out.push('/'),
+            ' ' => out.push(' '),
+            other => {
+                out.push('\\');
+                out.push(other);
+            }
+        }
+    }
+    out
+}
+
+/// Parse a flow sequence (`[a, "b, c", 'd']`), honouring quotes so a
+/// comma inside a quoted item doesn't split it.
 fn parse_array(s: &str) -> Vec<String> {
     let s = s.trim();
     let Some(inner) = s.strip_prefix('[').and_then(|s| s.strip_suffix(']')) else {
         return Vec::new();
     };
-    inner
-        .split(',')
-        .map(|t| strip_quotes(t).to_string())
+    let mut items: Vec<String> = Vec::new();
+    let mut current = String::new();
+    let mut in_double = false;
+    let mut in_single = false;
+    let mut escaped = false;
+    for c in inner.chars() {
+        if in_double {
+            current.push(c);
+            if escaped {
+                escaped = false;
+            } else if c == '\\' {
+                escaped = true;
+            } else if c == '"' {
+                in_double = false;
+            }
+            continue;
+        }
+        if in_single {
+            current.push(c);
+            if c == '\'' {
+                in_single = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => {
+                in_double = true;
+                current.push(c);
+            }
+            '\'' => {
+                in_single = true;
+                current.push(c);
+            }
+            ',' => items.push(std::mem::take(&mut current)),
+            _ => current.push(c),
+        }
+    }
+    items.push(current);
+    items
+        .iter()
+        .map(|t| parse_scalar(t))
         .filter(|t| !t.is_empty())
         .collect()
 }
@@ -149,28 +314,126 @@ pub fn note_meta_from_content(
     })
 }
 
-/// Reject vault-relative paths that escape the vault (`..`) or are absolute.
-pub fn check_rel_path(rel_path: &str) -> Result<(), AppError> {
+/// Lexically normalize a vault-relative path, component by component.
+///
+/// The wire format is `/`-separated. Rejected outright (never "fixed
+/// up", so a caller can't smuggle a different target past a string
+/// comparison):
+///   - empty input, empty components (`a//b`), `.` and `..` components
+///   - backslashes (an alternate separator on Windows)
+///   - absolute paths (`/x`) and drive / UNC prefixes (`C:`, `C:\`)
+///   - NUL bytes; on Windows also `:` (alternate data streams) and
+///     components with trailing dots/spaces, which Win32 silently strips
+///     (`notes/_inbox.` would otherwise *be* `notes/_inbox`)
+///
+/// Trailing `/` separators are tolerated and dropped. Returns the
+/// canonical `/`-joined spelling.
+pub fn normalize_rel_path(rel_path: &str) -> Result<String, AppError> {
+    let invalid = |why: &str| AppError::InvalidPath(format!("{why}: {rel_path}"));
     if rel_path.is_empty() {
         return Err(AppError::InvalidPath("empty path".into()));
     }
-    let p = Path::new(rel_path);
-    for c in p.components() {
-        match c {
-            std::path::Component::ParentDir => {
-                return Err(AppError::InvalidPath(format!(
-                    "'..' segment not allowed: {rel_path}"
-                )));
-            }
-            std::path::Component::Prefix(_) | std::path::Component::RootDir => {
-                return Err(AppError::InvalidPath(format!(
-                    "absolute path not allowed: {rel_path}"
-                )));
-            }
+    if rel_path.contains('\\') {
+        return Err(invalid("backslash not allowed in path"));
+    }
+    if rel_path.contains('\0') {
+        return Err(invalid("NUL not allowed in path"));
+    }
+    if rel_path.starts_with('/') {
+        return Err(invalid("absolute path not allowed"));
+    }
+    let trimmed = rel_path.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return Err(invalid("empty path"));
+    }
+    let mut parts: Vec<&str> = Vec::new();
+    for (i, comp) in trimmed.split('/').enumerate() {
+        match comp {
+            "" => return Err(invalid("empty path segment not allowed")),
+            "." => return Err(invalid("'.' segment not allowed")),
+            ".." => return Err(invalid("'..' segment not allowed")),
             _ => {}
         }
+        if i == 0 && comp.contains(':') {
+            return Err(invalid("absolute path not allowed"));
+        }
+        // The repository internals (hooks, config) are never note
+        // content: writing there could plant a git hook or rewrite the
+        // remote. Case-insensitive because Windows / macOS file systems
+        // are; on Windows also the 8.3 alias (`GIT~1`).
+        if comp.eq_ignore_ascii_case(".git") || (cfg!(windows) && is_git_short_name(comp)) {
+            return Err(invalid("path inside .git not allowed"));
+        }
+        if cfg!(windows) {
+            if comp.contains(':') {
+                return Err(invalid("':' not allowed in path"));
+            }
+            if comp.ends_with('.') || comp.ends_with(' ') {
+                return Err(invalid("path segment may not end with '.' or ' '"));
+            }
+        }
+        parts.push(comp);
     }
-    Ok(())
+    // Belt and braces: let the platform parser confirm there's no
+    // prefix / root / parent component we failed to spot lexically.
+    for c in Path::new(trimmed).components() {
+        match c {
+            std::path::Component::Normal(_) => {}
+            std::path::Component::ParentDir => {
+                return Err(invalid("'..' segment not allowed"));
+            }
+            _ => return Err(invalid("absolute path not allowed")),
+        }
+    }
+    Ok(parts.join("/"))
+}
+
+/// `GIT~1`, `git~2`, … — the Windows 8.3 short-name alias `.git` gets.
+fn is_git_short_name(comp: &str) -> bool {
+    let lower = comp.to_ascii_lowercase();
+    lower
+        .strip_prefix("git~")
+        .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// Reject vault-relative paths that escape the vault (`..`), are
+/// absolute, or are otherwise not in normal form. See
+/// [`normalize_rel_path`].
+pub fn check_rel_path(rel_path: &str) -> Result<(), AppError> {
+    normalize_rel_path(rel_path).map(|_| ())
+}
+
+/// Join a normalized `/`-separated rel path onto `root` using native
+/// separators.
+fn join_rel(root: &Path, normalized: &str) -> PathBuf {
+    let mut out = root.to_path_buf();
+    for part in normalized.split('/') {
+        out.push(part);
+    }
+    out
+}
+
+/// Canonicalize `path` even if its tail doesn't exist yet: the deepest
+/// existing ancestor is canonicalized (resolving symlinks / case /
+/// 8.3 short names) and the non-existent remainder is appended as-is.
+/// Returns `None` if no ancestor can be canonicalized.
+pub fn canonicalize_lenient(path: &Path) -> Option<PathBuf> {
+    let mut existing = path;
+    let mut tail: Vec<&std::ffi::OsStr> = Vec::new();
+    loop {
+        match existing.canonicalize() {
+            Ok(mut c) => {
+                for part in tail.iter().rev() {
+                    c.push(part);
+                }
+                return Some(c);
+            }
+            Err(_) => {
+                tail.push(existing.file_name()?);
+                existing = existing.parent()?;
+            }
+        }
+    }
 }
 
 /// Resolve a vault-relative path to an absolute path, refusing anything
@@ -188,28 +451,19 @@ pub fn check_rel_path(rel_path: &str) -> Result<(), AppError> {
 /// Returns the (lexically-joined, non-canonical) target path so atomic
 /// writes still land at the intended name rather than a resolved one.
 pub fn resolve_in_vault(vault_root: &Path, rel_path: &str) -> Result<PathBuf, AppError> {
-    check_rel_path(rel_path)?;
+    let normalized = normalize_rel_path(rel_path)?;
     let canon_root = vault_root
         .canonicalize()
         .map_err(|e| AppError::Io(format!("vault root unavailable: {e}")))?;
     // Build the target on the *original* root so the returned path keeps
     // the spelling callers expect (read_note_meta strips `vault_root`).
     // The containment check below uses the canonical form.
-    let target = vault_root.join(rel_path);
+    let target = join_rel(vault_root, &normalized);
 
-    let mut existing = target.as_path();
-    let canon_existing = loop {
-        match existing.canonicalize() {
-            Ok(c) => break c,
-            Err(_) => match existing.parent() {
-                Some(parent) => existing = parent,
-                None => {
-                    return Err(AppError::InvalidPath(format!(
-                        "cannot resolve path: {rel_path}"
-                    )))
-                }
-            },
-        }
+    let Some(canon_existing) = canonicalize_lenient(&target) else {
+        return Err(AppError::InvalidPath(format!(
+            "cannot resolve path: {rel_path}"
+        )));
     };
 
     if !canon_existing.starts_with(&canon_root) {
@@ -220,8 +474,16 @@ pub fn resolve_in_vault(vault_root: &Path, rel_path: &str) -> Result<PathBuf, Ap
     Ok(target)
 }
 
+/// Maximum slug length in characters (not bytes). 80 chars of even
+/// 4-byte UTF-8 stays well under the common 255-byte name limit once a
+/// `-N` disambiguator and `.md` are appended.
+pub const MAX_SLUG_CHARS: usize = 80;
+
 /// Convert a free-form title into a filesystem-safe slug. Returns
-/// `"untitled"` when the title contains no alphanumerics.
+/// `"untitled"` when the title contains no alphanumerics. The result is
+/// capped at [`MAX_SLUG_CHARS`] (on a char boundary), never ends in
+/// `-`, `.` or a space, and never collides with a Windows reserved
+/// device name (`con` → `con-note`).
 pub fn slugify(title: &str) -> String {
     let mut out = String::new();
     let mut prev_dash = false;
@@ -236,11 +498,49 @@ pub fn slugify(title: &str) -> String {
             prev_dash = true;
         }
     }
-    let trimmed = out.trim_matches('-').to_string();
-    if trimmed.is_empty() {
-        "untitled".to_string()
+    let mut slug: String = out
+        .trim_start_matches('-')
+        .chars()
+        .take(MAX_SLUG_CHARS)
+        .collect();
+    while slug.ends_with(['-', '.', ' ']) {
+        slug.pop();
+    }
+    if slug.is_empty() {
+        return "untitled".to_string();
+    }
+    avoid_windows_reserved(slug)
+}
+
+/// True when `name` (or its part before the first `.`) is a Windows
+/// reserved device name — `CON`, `PRN`, `AUX`, `NUL`, `COM0`–`COM9`,
+/// `LPT0`–`LPT9` — compared case-insensitively. `con.md` and `nul.txt`
+/// are just as unusable as `con` on Windows.
+pub fn is_windows_reserved_name(name: &str) -> bool {
+    let base = name
+        .split('.')
+        .next()
+        .unwrap_or("")
+        .trim_end_matches([' ', '.'])
+        .to_ascii_uppercase();
+    match base.as_str() {
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$" => true,
+        _ => {
+            let b = base.as_bytes();
+            b.len() == 4
+                && (base.starts_with("COM") || base.starts_with("LPT"))
+                && b[3].is_ascii_digit()
+        }
+    }
+}
+
+/// Suffix a reserved stem so it becomes an ordinary name
+/// (`con` → `con-note`). Non-reserved input is returned unchanged.
+pub fn avoid_windows_reserved(stem: String) -> String {
+    if is_windows_reserved_name(&stem) {
+        format!("{stem}-note")
     } else {
-        trimmed
+        stem
     }
 }
 
@@ -249,14 +549,9 @@ pub fn slugify(title: &str) -> String {
 /// fresh block; if it is false, leave the content unchanged.
 pub fn set_pinned_in_content(content: &str, pinned: bool) -> String {
     let value = if pinned { "true" } else { "false" };
-    if let Some(rest) = content.strip_prefix("---\n") {
-        if let Some(end) = rest.find("\n---\n") {
-            let header = &rest[..end];
-            let body_start = "---\n".len() + end + "\n---\n".len();
-            let body = &content[body_start..];
-            let new_header = upsert_pinned_line(header, value);
-            return format!("---\n{new_header}\n---\n{body}");
-        }
+    if let Some(FrontMatterParts { header, body, eol }) = split_front_matter(content) {
+        let new_header = upsert_pinned_line(header, value).join(eol);
+        return format!("---{eol}{new_header}{eol}---{eol}{body}");
     }
     if pinned {
         format!("---\npinned: true\n---\n{content}")
@@ -265,7 +560,7 @@ pub fn set_pinned_in_content(content: &str, pinned: bool) -> String {
     }
 }
 
-fn upsert_pinned_line(header: &str, value: &str) -> String {
+fn upsert_pinned_line(header: &str, value: &str) -> Vec<String> {
     let mut found = false;
     let mut lines: Vec<String> = header
         .lines()
@@ -282,7 +577,7 @@ fn upsert_pinned_line(header: &str, value: &str) -> String {
     if !found {
         lines.push(format!("pinned: {value}"));
     }
-    lines.join("\n")
+    lines
 }
 
 /// Recursively collect every `*.md` path under `dir`. Missing directories
@@ -351,6 +646,31 @@ mod tests {
         let (fm, body) = parse_front_matter(input);
         assert_eq!(fm, FrontMatter::default());
         assert_eq!(body, input);
+    }
+
+    #[test]
+    fn parse_front_matter_accepts_crlf_line_endings() {
+        let input = "---\r\ntitle: \"Win\"\r\ntags: [a, b]\r\npinned: true\r\n---\r\nbody\r\n";
+        let (fm, body) = parse_front_matter(input);
+        assert_eq!(fm.title.as_deref(), Some("Win"));
+        assert_eq!(fm.tags, vec!["a".to_string(), "b".to_string()]);
+        assert!(fm.pinned);
+        assert_eq!(body, "body\r\n");
+    }
+
+    #[test]
+    fn parse_front_matter_accepts_closing_fence_at_eof() {
+        let (fm, body) = parse_front_matter("---\ntitle: T\n---");
+        assert_eq!(fm.title.as_deref(), Some("T"));
+        assert_eq!(body, "");
+    }
+
+    #[test]
+    fn set_pinned_keeps_crlf_line_endings() {
+        let input = "---\r\ntitle: T\r\n---\r\nbody\r\n";
+        let out = set_pinned_in_content(input, true);
+        assert_eq!(out, "---\r\ntitle: T\r\npinned: true\r\n---\r\nbody\r\n");
+        assert!(parse_front_matter(&out).0.pinned);
     }
 
     #[test]
@@ -537,6 +857,188 @@ mod tests {
         assert_eq!(slugify(""), "untitled");
         assert_eq!(slugify("---"), "untitled");
         assert_eq!(slugify("@@@"), "untitled");
+    }
+
+    #[test]
+    fn slugify_caps_length_on_a_char_boundary() {
+        let long = "가".repeat(200);
+        let slug = slugify(&long);
+        assert_eq!(slug.chars().count(), MAX_SLUG_CHARS);
+        // Truncation landing right after a separator must not leave a
+        // trailing dash.
+        let tricky = format!("{} tail", "a".repeat(MAX_SLUG_CHARS - 1));
+        let slug = slugify(&tricky);
+        assert!(!slug.ends_with('-'), "got {slug}");
+        assert!(slug.chars().count() <= MAX_SLUG_CHARS);
+    }
+
+    #[test]
+    fn slugify_avoids_windows_reserved_names() {
+        assert_eq!(slugify("CON"), "con-note");
+        assert_eq!(slugify("nul"), "nul-note");
+        assert_eq!(slugify("Com1"), "com1-note");
+        assert_eq!(slugify("LPT9"), "lpt9-note");
+        // Not reserved: longer names / no digit.
+        assert_eq!(slugify("console"), "console");
+        assert_eq!(slugify("com"), "com");
+        assert_eq!(slugify("com10"), "com10");
+    }
+
+    #[test]
+    fn reserved_name_detection_covers_extensions_and_case() {
+        assert!(is_windows_reserved_name("con.md"));
+        assert!(is_windows_reserved_name("Aux.tar.gz"));
+        assert!(is_windows_reserved_name("PRN"));
+        assert!(!is_windows_reserved_name("icon.md"));
+        assert!(!is_windows_reserved_name("con-note.md"));
+    }
+
+    #[test]
+    fn yaml_quote_escapes_control_chars_and_round_trips() {
+        let samples = [
+            "plain",
+            "with \"quotes\"",
+            "back\\slash\\",
+            "multi\nline\r\nvalue",
+            "tab\there",
+            "bell\u{7}and\u{1b}esc",
+            "line\u{2028}sep",
+            "한글 제목",
+            "",
+        ];
+        for s in samples {
+            let quoted = yaml_quote(s);
+            assert!(!quoted.contains('\n') && !quoted.contains('\r'), "{quoted}");
+            assert_eq!(parse_scalar(&quoted), s, "round trip of {s:?} via {quoted}");
+        }
+    }
+
+    #[test]
+    fn title_with_newline_cannot_inject_front_matter() {
+        let evil = "x\npinned: true\ntags: [pwned]\n---\nbody";
+        let doc = format!("---\ntitle: {}\n---\n\nreal body", yaml_quote(evil));
+        let (fm, body) = parse_front_matter(&doc);
+        assert_eq!(fm.title.as_deref(), Some(evil));
+        assert!(!fm.pinned);
+        assert!(fm.tags.is_empty());
+        assert_eq!(body, "\nreal body");
+    }
+
+    #[test]
+    fn parse_front_matter_unescapes_quoted_title() {
+        let input = "---\ntitle: \"Say \\\"hi\\\" \\\\ bye\"\n---\nbody";
+        let (fm, _) = parse_front_matter(input);
+        assert_eq!(fm.title.as_deref(), Some("Say \"hi\" \\ bye"));
+    }
+
+    #[test]
+    fn parse_front_matter_handles_single_quoted_title() {
+        let (fm, _) = parse_front_matter("---\ntitle: 'It''s'\n---\n");
+        assert_eq!(fm.title.as_deref(), Some("It's"));
+    }
+
+    #[test]
+    fn parse_array_keeps_commas_inside_quotes_and_unescapes() {
+        let input = "---\ntags: [\"a, b\", 'c', d, \"q\\\"x\"]\n---\n";
+        let (fm, _) = parse_front_matter(input);
+        assert_eq!(fm.tags, vec!["a, b", "c", "d", "q\"x"]);
+    }
+
+    #[test]
+    fn normalize_rel_path_accepts_clean_paths_and_trailing_slash() {
+        assert_eq!(normalize_rel_path("notes/work").unwrap(), "notes/work");
+        assert_eq!(normalize_rel_path("notes/work/").unwrap(), "notes/work");
+        assert_eq!(
+            normalize_rel_path("notes/a b/c.md").unwrap(),
+            "notes/a b/c.md"
+        );
+    }
+
+    #[test]
+    fn normalize_rel_path_rejects_dot_empty_backslash_and_prefixes() {
+        for bad in [
+            "notes/.",
+            "notes/./x",
+            ".",
+            "notes//_inbox",
+            "notes/_inbox/.",
+            "notes/../x",
+            "..",
+            "notes\\_inbox",
+            "/notes",
+            "C:/notes",
+            "C:notes",
+            "//server/share",
+            "/",
+            "",
+        ] {
+            assert!(
+                matches!(normalize_rel_path(bad), Err(AppError::InvalidPath(_))),
+                "expected rejection of {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn normalize_rel_path_rejects_git_components() {
+        for bad in [
+            ".git",
+            ".git/hooks/pre-commit",
+            "notes/.git/config",
+            ".GIT/config",
+            "notes/.Git",
+        ] {
+            assert!(
+                matches!(normalize_rel_path(bad), Err(AppError::InvalidPath(_))),
+                "expected rejection of {bad:?}"
+            );
+        }
+        // Lookalikes are ordinary names.
+        for ok in [".github/x.md", "notes/.gitignore-notes.md", "notes/git.md"] {
+            assert!(normalize_rel_path(ok).is_ok(), "{ok:?} should be allowed");
+        }
+        let v = tempfile::tempdir().unwrap();
+        assert!(resolve_in_vault(v.path(), ".git/hooks/pre-commit").is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn normalize_rel_path_rejects_git_short_name_alias() {
+        assert!(normalize_rel_path("GIT~1/hooks/pre-commit").is_err());
+        assert!(normalize_rel_path("git~12/config").is_err());
+        assert!(normalize_rel_path("git~x/config").is_ok());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn normalize_rel_path_rejects_win32_stripped_suffixes_and_streams() {
+        for bad in ["notes/_inbox.", "notes/_inbox ", "notes/a.md:stream"] {
+            assert!(
+                matches!(normalize_rel_path(bad), Err(AppError::InvalidPath(_))),
+                "expected rejection of {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_in_vault_returns_native_separators() {
+        let v = tempfile::tempdir().unwrap();
+        let resolved = resolve_in_vault(v.path(), "notes/sub/a.md").unwrap();
+        assert_eq!(resolved, v.path().join("notes").join("sub").join("a.md"));
+    }
+
+    #[test]
+    fn canonicalize_lenient_appends_missing_tail() {
+        let v = tempfile::tempdir().unwrap();
+        let c = canonicalize_lenient(&v.path().join("missing/deeper")).unwrap();
+        assert_eq!(
+            c,
+            v.path()
+                .canonicalize()
+                .unwrap()
+                .join("missing")
+                .join("deeper")
+        );
     }
 
     #[test]

@@ -23,7 +23,7 @@ describe("uiStore", () => {
     });
   });
 
-  it("ViewMode union exposes the seven documented modes", () => {
+  it("ViewMode union exposes the six documented modes", () => {
     const modes: ViewMode[] = [
       "journal",
       "notes",

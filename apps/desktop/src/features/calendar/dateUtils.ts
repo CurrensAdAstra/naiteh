@@ -22,10 +22,11 @@ export function formatDayHeader(date: string, today: string): string {
   return `${weekdayShort(d)} ${monthShort(d)} ${d.getDate()}`;
 }
 
-/** Build the `journal/YYYY/MM/YYYY-MM-DD.md` path for a date. */
-export function journalRelPathFor(date: string): string {
-  return `journal/${date.slice(0, 4)}/${date.slice(5, 7)}/${date}.md`;
-}
+/**
+ * Build the `journal/YYYY/MM/YYYY-MM-DD.md` path for a date. Re-exported
+ * from the canonical helper so the shape lives in exactly one place.
+ */
+export { journalRelPathFor } from "../../lib/journalPath";
 
 /** Compute the inclusive [from, to] range for a window centered on today. */
 export function rangeAround(

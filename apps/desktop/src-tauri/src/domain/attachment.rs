@@ -1,4 +1,4 @@
-//! Attachment import result — see architecture.md §6.9.
+//! Attachment import result — see vault/wiki/domain-model.md ("Attachments, Workspace, Evernote import").
 
 use serde::{Deserialize, Serialize};
 

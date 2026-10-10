@@ -1,11 +1,25 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../api/notes", () => ({
+  notesWrite: vi.fn(),
+}));
 
 import { activateVault } from "../activateVault";
-import { useEditorStore } from "../../state/editorStore";
+import { notesWrite } from "../api/notes";
+import { resetAutosaveForTests, scheduleSave } from "../../state/autosave";
+import {
+  beginOpen,
+  isLatestOpen,
+  useEditorStore,
+} from "../../state/editorStore";
 import { useVaultStore } from "../../state/vaultStore";
+
+const mockedWrite = vi.mocked(notesWrite);
 
 describe("activateVault", () => {
   beforeEach(() => {
+    resetAutosaveForTests();
+    mockedWrite.mockReset();
     useEditorStore.setState({ open: null });
     useVaultStore.setState({ active: null });
   });
@@ -25,5 +39,22 @@ describe("activateVault", () => {
 
     expect(useEditorStore.getState().open).toBeNull();
     expect(useVaultStore.getState().active).toEqual(next);
+  });
+
+  it("drops pending autosaves (they belong to the previous vault) and cancels in-flight opens", async () => {
+    vi.useFakeTimers();
+    try {
+      useVaultStore.setState({
+        active: { root: "/v", name: "v", initialized: true },
+      });
+      scheduleSave({ kind: "note", relPath: "notes/x.md" }, "edit");
+      const ticket = beginOpen();
+      activateVault({ root: "/w", name: "w", initialized: true });
+      expect(isLatestOpen(ticket)).toBe(false);
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(mockedWrite).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

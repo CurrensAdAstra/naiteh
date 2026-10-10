@@ -1,4 +1,5 @@
-// Pure domain types & errors — see architecture.md §6 / §7.
+// Pure domain types & errors — see vault/wiki/domain-model.md (types) and
+// vault/wiki/ipc-api.md (`AppError`).
 //
 // Types are grouped by area into one module each; everything is
 // re-exported flat as `crate::domain::Foo` so call sites don't care

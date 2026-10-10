@@ -39,6 +39,14 @@
   min-width: 0;
 }
 
+/* Placeholder while the lazily-loaded editor chunk arrives; mirrors the
+   editor panel's background + border so the swap doesn't flash. */
+.editorFallback {
+  height: 100%;
+  background: var(--color-bg-editor);
+  border-left: 1px solid var(--color-border);
+}
+
 .ai {
   grid-area: ai;
   min-width: 0;

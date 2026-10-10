@@ -5,39 +5,56 @@
  * backend (autosave persists the change).
  */
 
-const FENCE = "---\n";
-
 interface FrontMatterSplit {
   /** Front-matter body excluding the fences (may be empty). */
   header: string;
   /** Document body after the closing fence. */
   body: string;
   hasBlock: boolean;
+  /** The opening fence's line ending; rewrites reuse it so CRLF stays CRLF. */
+  eol: "\n" | "\r\n";
 }
 
+/**
+ * Split a leading `---` block (LF or CRLF line endings; the closing fence
+ * may be the last line with no trailing newline). Mirrors
+ * `split_front_matter` in services/notes.rs.
+ */
 function split(content: string): FrontMatterSplit {
-  if (!content.startsWith(FENCE)) {
-    return { header: "", body: content, hasBlock: false };
+  let eol: "\n" | "\r\n";
+  if (content.startsWith("---\r\n")) eol = "\r\n";
+  else if (content.startsWith("---\n")) eol = "\n";
+  else return { header: "", body: content, hasBlock: false, eol: "\n" };
+
+  const rest = content.slice(3 + eol.length);
+  let pos = 0;
+  for (;;) {
+    const nl = rest.indexOf("\n", pos);
+    const lineEnd = nl === -1 ? rest.length : nl;
+    if (rest.slice(pos, lineEnd).replace(/\r$/, "") === "---") {
+      const header = rest.slice(0, pos).replace(/\r?\n$/, "");
+      const body = nl === -1 ? "" : rest.slice(nl + 1);
+      return { header, body, hasBlock: true, eol };
+    }
+    if (nl === -1) return { header: "", body: content, hasBlock: false, eol: "\n" };
+    pos = nl + 1;
   }
-  const end = content.indexOf("\n" + FENCE.trimEnd() + "\n", FENCE.length);
-  // Equivalent to looking for '\n---\n'; trimEnd is just to keep the
-  // intent of "the closing fence on its own line" explicit.
-  const closingIdx = content.indexOf("\n---\n", FENCE.length);
-  if (closingIdx === -1) {
-    return { header: "", body: content, hasBlock: false };
-  }
-  // Suppress unused-var warning while keeping the intent comment above.
-  void end;
-  const header = content.slice(FENCE.length, closingIdx);
-  const body = content.slice(closingIdx + "\n---\n".length);
-  return { header, body, hasBlock: true };
+}
+
+function headerLines(header: string): string[] {
+  return header === "" ? [] : header.split(/\r?\n/);
+}
+
+function joinBlock(lines: readonly string[], body: string, eol: string): string {
+  const inner = lines.length === 0 ? "" : `${lines.join(eol)}${eol}`;
+  return `---${eol}${inner}---${eol}${body}`;
 }
 
 /** Whether the content's front matter has `pinned: true`. */
 export function isPinnedInContent(content: string): boolean {
   const { header, hasBlock } = split(content);
   if (!hasBlock) return false;
-  for (const line of header.split("\n")) {
+  for (const line of headerLines(header)) {
     const idx = line.indexOf(":");
     if (idx < 0) continue;
     const key = line.slice(0, idx).trim();
@@ -53,13 +70,13 @@ export function isPinnedInContent(content: string): boolean {
  * the content unchanged. Mirrors `set_pinned_in_content` in Rust.
  */
 export function setPinnedInContent(content: string, pinned: boolean): string {
-  const { header, body, hasBlock } = split(content);
+  const { header, body, hasBlock, eol } = split(content);
   const value = pinned ? "true" : "false";
   if (!hasBlock) {
     if (!pinned) return content;
     return `---\npinned: ${value}\n---\n${content}`;
   }
-  const lines = header.split("\n");
+  const lines = headerLines(header);
   let found = false;
   const next = lines.map((line) => {
     const idx = line.indexOf(":");
@@ -70,7 +87,7 @@ export function setPinnedInContent(content: string, pinned: boolean): string {
     return `pinned: ${value}`;
   });
   if (!found) next.push(`pinned: ${value}`);
-  return `---\n${next.join("\n")}\n---\n${body}`;
+  return joinBlock(next, body, eol);
 }
 
 export function togglePinnedInContent(content: string): string {
@@ -111,7 +128,7 @@ function serializeTag(tag: string): string {
 export function getTagsFromContent(content: string): string[] {
   const { header, hasBlock } = split(content);
   if (!hasBlock) return [];
-  for (const line of header.split("\n")) {
+  for (const line of headerLines(header)) {
     const idx = line.indexOf(":");
     if (idx < 0) continue;
     const key = line.slice(0, idx).trim();
@@ -127,7 +144,7 @@ export function getTagsFromContent(content: string): string[] {
  */
 export function setTagsInContent(content: string, tags: readonly string[]): string {
   const unique = dedupe(tags);
-  const { header, body, hasBlock } = split(content);
+  const { header, body, hasBlock, eol } = split(content);
   const serialized =
     unique.length === 0 ? null : `tags: [${unique.map(serializeTag).join(", ")}]`;
 
@@ -136,7 +153,7 @@ export function setTagsInContent(content: string, tags: readonly string[]): stri
     return `---\n${serialized}\n---\n${content}`;
   }
 
-  const lines = header.split("\n");
+  const lines = headerLines(header);
   let found = false;
   const rewritten: string[] = [];
   for (const line of lines) {
@@ -151,7 +168,7 @@ export function setTagsInContent(content: string, tags: readonly string[]): stri
   }
   if (!found && serialized !== null) rewritten.push(serialized);
 
-  return `---\n${rewritten.join("\n")}\n---\n${body}`;
+  return joinBlock(rewritten, body, eol);
 }
 
 export function addTagToContent(content: string, tag: string): string {

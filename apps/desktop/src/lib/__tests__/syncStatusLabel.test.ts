@@ -14,6 +14,7 @@ function status(overrides: Partial<SyncStatus> = {}): SyncStatus {
     behind: 0,
     dirty: false,
     lastSync: null,
+    mergePending: false,
     ...overrides,
   };
 }
