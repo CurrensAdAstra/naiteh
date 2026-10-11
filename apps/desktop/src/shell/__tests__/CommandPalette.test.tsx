@@ -8,7 +8,7 @@ describe("CommandPalette", () => {
   beforeEach(() => {
     useUIStore.setState({
       viewMode: "journal",
-      aiPanelOpen: false,
+      modelPickerOpen: false,
       commandPaletteOpen: true,
       editorMode: "edit",
       settingsOpen: false,
@@ -36,12 +36,20 @@ describe("CommandPalette", () => {
     expect(useUIStore.getState().viewMode).toBe("notes");
   });
 
-  it("can toggle AI Assist from a command", () => {
+  it("offers the chat commands; Select model opens the picker", () => {
     render(<CommandPalette />);
-
-    fireEvent.click(screen.getByTestId("command-toggle-ai"));
-
-    expect(useUIStore.getState().aiPanelOpen).toBe(true);
+    for (const id of [
+      "chat-send",
+      "chat-new",
+      "chat-select-model",
+      "chat-infer-title",
+      "chat-clear",
+      "chat-stop",
+    ]) {
+      expect(screen.getByTestId(`command-${id}`)).toBeInTheDocument();
+    }
+    fireEvent.click(screen.getByTestId("command-chat-select-model"));
+    expect(useUIStore.getState().modelPickerOpen).toBe(true);
     expect(useUIStore.getState().commandPaletteOpen).toBe(false);
   });
 

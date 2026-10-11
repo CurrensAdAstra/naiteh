@@ -6,8 +6,13 @@ import {
   Pencil,
   RefreshCw,
   Search,
+  Eraser,
+  Heading,
+  MessageSquare,
+  MessageSquarePlus,
   Settings,
   Sparkles,
+  Square,
   Tag,
   type LucideIcon,
 } from "lucide-react";
@@ -20,6 +25,13 @@ import {
   type KeyboardEvent,
 } from "react";
 
+import {
+  clearChat,
+  inferTitle,
+  newChat,
+  sendChat,
+  stopChat,
+} from "../lib/chatMd/chatFlow";
 import { useUIStore, type ViewMode } from "../state/uiStore";
 import styles from "./CommandPalette.module.css";
 
@@ -60,7 +72,7 @@ export function CommandPalette() {
   const setOpen = useUIStore((s) => s.setCommandPaletteOpen);
   const setViewMode = useUIStore((s) => s.setViewMode);
   const setSettingsOpen = useUIStore((s) => s.setSettingsOpen);
-  const toggleAiPanel = useUIStore((s) => s.toggleAiPanel);
+  const setModelPickerOpen = useUIStore((s) => s.setModelPickerOpen);
   const editorMode = useUIStore((s) => s.editorMode);
   const toggleEditorMode = useUIStore((s) => s.toggleEditorMode);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -87,11 +99,46 @@ export function CommandPalette() {
         run: () => setSettingsOpen(true),
       },
       {
-        id: "toggle-ai",
-        label: "Toggle AI Assist",
-        detail: "Open or close assistant panel",
+        id: "chat-send",
+        label: "Chat: Send",
+        detail: "Send this note to the model and append the reply (Ctrl+J)",
+        Icon: MessageSquare,
+        run: () => void sendChat(),
+      },
+      {
+        id: "chat-new",
+        label: "Chat: New chat",
+        detail: "Create a chat note in the chats folder (Ctrl+Shift+J)",
+        Icon: MessageSquarePlus,
+        run: () => void newChat(),
+      },
+      {
+        id: "chat-select-model",
+        label: "Chat: Select model",
+        detail: "Set the model in this note's front matter",
         Icon: Sparkles,
-        run: toggleAiPanel,
+        run: () => setModelPickerOpen(true),
+      },
+      {
+        id: "chat-infer-title",
+        label: "Chat: Infer title",
+        detail: "Ask the model for a title (front matter)",
+        Icon: Heading,
+        run: () => void inferTitle(),
+      },
+      {
+        id: "chat-clear",
+        label: "Chat: Clear chat",
+        detail: "Remove all messages, keep the front matter",
+        Icon: Eraser,
+        run: clearChat,
+      },
+      {
+        id: "chat-stop",
+        label: "Chat: Stop",
+        detail: "Stop the streaming reply",
+        Icon: Square,
+        run: stopChat,
       },
       {
         id: "toggle-edit-mode",
@@ -107,8 +154,8 @@ export function CommandPalette() {
     [
       editorMode,
       setSettingsOpen,
+      setModelPickerOpen,
       setViewMode,
-      toggleAiPanel,
       toggleEditorMode,
     ],
   );

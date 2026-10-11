@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { defaultAiConfig } from "../../lib/types";
+
 vi.mock("../../lib/api/settings", () => ({
   appConfigGet: vi.fn(),
 }));
@@ -21,11 +23,7 @@ function config(): AppConfig {
     editor: { fontSize: 18, lineWrapping: false },
     calendar: { subView: "timeline" },
     journal: { splitRatio: 0.5 },
-    ai: {
-      hasApiKey: false,
-      model: "gpt-4o-mini",
-      baseUrl: "https://api.openai.com/v1",
-    },
+    ai: defaultAiConfig(),
     appearance: { palette: "default", uiFont: "", editorFont: "" },
     clipping: {
       htmlPaste: "markdown",

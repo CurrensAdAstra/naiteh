@@ -7,6 +7,7 @@
 //! Per-vault config (`<vault>/.naiteh/config.json`) is a separate concern and
 //! is created with a minimal stub by `vault_init`.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -127,12 +128,181 @@ pub fn validate_font_family(raw: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+/// Provider ids with their default base URLs (wiki app-config.md, "AI").
+/// The order is the order the Settings UI lists them in.
+pub const AI_PROVIDERS: &[(&str, &str)] = &[
+    ("openai", "https://api.openai.com/v1"),
+    ("anthropic", "https://api.anthropic.com"),
+    ("gemini", "https://generativelanguage.googleapis.com"),
+    ("openrouter", "https://openrouter.ai/api/v1"),
+    ("zai", "https://api.z.ai/api/paas/v4"),
+    ("ollama", "http://localhost:11434"),
+    ("lmstudio", "http://localhost:1234/v1"),
+];
+
+/// Default base URL of a known provider id.
+pub fn default_provider_base_url(id: &str) -> Option<&'static str> {
+    AI_PROVIDERS
+        .iter()
+        .find(|(p, _)| *p == id)
+        .map(|(_, url)| *url)
+}
+
+/// Chat-in-note AI settings (a port of the chatgpt-md Obsidian plugin;
+/// wiki app-config.md, "AI"). Deserialized through [`AiConfigOnDisk`] so
+/// pre-chat `config.json` files (`apiKey` / `model` / `baseUrl`, plus the
+/// removed `chat` section) still load and are migrated.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default, rename_all = "camelCase")]
+#[serde(from = "AiConfigOnDisk", rename_all = "camelCase")]
 pub struct AiConfig {
+    /// `provider@model`.
+    pub default_model: String,
+    pub temperature: f64,
+    pub max_tokens: u32,
+    pub stream: bool,
+    /// Markdown heading level (1–6) of the `role::` headers the renderer writes.
+    pub heading_level: u8,
+    pub infer_title_language: String,
+    /// Vault-relative folder new chat notes are created in.
+    pub chats_folder: String,
+    /// Vault-relative folder `agent: <name>` resolves against.
+    pub agents_folder: String,
+    /// Keyed by provider id; always holds every id in [`AI_PROVIDERS`].
+    pub providers: BTreeMap<String, ProviderConfig>,
+}
+
+/// One provider's endpoint + key. The key never leaves the backend.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ProviderConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
-    pub model: String,
     pub base_url: String,
+}
+
+impl ProviderConfig {
+    /// The key, when one is set and non-blank.
+    pub fn key(&self) -> Option<&str> {
+        self.api_key
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+    }
+}
+
+pub const AI_TEMPERATURE_MAX: f64 = 2.0;
+pub const AI_MAX_TOKENS_MAX: u32 = 1_000_000;
+pub const AI_LANGUAGE_MAX_LEN: usize = 50;
+
+/// Raw on-disk shape: every field optional plus the legacy (pre-chat)
+/// fields. Unknown fields (e.g. the removed `chat`) are ignored.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+struct AiConfigOnDisk {
+    default_model: Option<String>,
+    temperature: Option<f64>,
+    max_tokens: Option<u32>,
+    stream: Option<bool>,
+    heading_level: Option<u8>,
+    infer_title_language: Option<String>,
+    chats_folder: Option<String>,
+    agents_folder: Option<String>,
+    providers: BTreeMap<String, ProviderConfig>,
+    // Legacy single-endpoint settings (AI Assist era).
+    api_key: Option<String>,
+    model: Option<String>,
+    base_url: Option<String>,
+}
+
+/// `http://localhost:11434…` (or `127.0.0.1` / `[::1]`) — the legacy
+/// OpenAI-compatible Ollama endpoint. Returns the origin to use as the
+/// native Ollama base URL.
+fn legacy_ollama_origin(raw: &str) -> Option<String> {
+    let url = reqwest::Url::parse(raw.trim()).ok()?;
+    let host = url.host_str()?.to_ascii_lowercase();
+    let loopback = matches!(host.as_str(), "localhost" | "127.0.0.1" | "[::1]");
+    (loopback && url.port_or_known_default() == Some(11434))
+        .then(|| format!("{}://{}:11434", url.scheme(), host))
+}
+
+impl From<AiConfigOnDisk> for AiConfig {
+    fn from(raw: AiConfigOnDisk) -> Self {
+        let d = AiConfig::default();
+        let mut providers = d.providers.clone();
+        for (id, p) in raw.providers {
+            if let Some(slot) = providers.get_mut(&id) {
+                if !p.base_url.trim().is_empty() {
+                    slot.base_url = p.base_url.trim().to_string();
+                }
+                slot.api_key = p.api_key.filter(|k| !k.trim().is_empty());
+            }
+        }
+        let mut default_model = raw.default_model.filter(|m| !m.trim().is_empty());
+        let has_legacy = raw.api_key.is_some() || raw.model.is_some() || raw.base_url.is_some();
+        if default_model.is_none() && has_legacy {
+            let legacy_model = raw
+                .model
+                .map(|m| m.trim().to_string())
+                .filter(|m| !m.is_empty());
+            let legacy_url = raw.base_url.unwrap_or_default();
+            if let Some(origin) = legacy_ollama_origin(&legacy_url) {
+                if let Some(p) = providers.get_mut("ollama") {
+                    p.base_url = origin;
+                }
+                default_model = legacy_model.map(|m| format!("ollama@{m}"));
+            } else {
+                if let Some(p) = providers.get_mut("openai") {
+                    if !legacy_url.trim().is_empty() {
+                        p.base_url = legacy_url.trim().to_string();
+                    }
+                    if let Some(k) = raw.api_key.filter(|k| !k.trim().is_empty()) {
+                        p.api_key = Some(k.trim().to_string());
+                    }
+                }
+                default_model = legacy_model.map(|m| format!("openai@{m}"));
+            }
+        }
+        AiConfig {
+            default_model: default_model.unwrap_or(d.default_model),
+            temperature: raw
+                .temperature
+                .filter(|t| t.is_finite() && (0.0..=AI_TEMPERATURE_MAX).contains(t))
+                .unwrap_or(d.temperature),
+            max_tokens: raw
+                .max_tokens
+                .filter(|t| (1..=AI_MAX_TOKENS_MAX).contains(t))
+                .unwrap_or(d.max_tokens),
+            stream: raw.stream.unwrap_or(d.stream),
+            heading_level: raw
+                .heading_level
+                .filter(|h| (1..=6).contains(h))
+                .unwrap_or(d.heading_level),
+            infer_title_language: raw
+                .infer_title_language
+                .filter(|l| !l.trim().is_empty())
+                .unwrap_or(d.infer_title_language),
+            chats_folder: raw
+                .chats_folder
+                .filter(|f| !f.trim().is_empty())
+                .unwrap_or(d.chats_folder),
+            agents_folder: raw
+                .agents_folder
+                .filter(|f| !f.trim().is_empty())
+                .unwrap_or(d.agents_folder),
+            providers,
+        }
+    }
+}
+
+impl AiConfig {
+    /// A known provider's settings; `None` for an unknown id.
+    pub fn provider(&self, id: &str) -> Option<ProviderConfig> {
+        let default = default_provider_base_url(id)?;
+        Some(self.providers.get(id).cloned().unwrap_or(ProviderConfig {
+            api_key: None,
+            base_url: default.to_string(),
+        }))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -172,21 +342,53 @@ pub struct AppConfigView {
     pub clipping: ClippingConfig,
 }
 
-/// Wire shape of the AI settings: `{ hasApiKey, model, baseUrl }`.
+/// Wire shape of the AI settings (wiki app-config.md, "AI"): the
+/// [`AiConfig`] scalars plus `providers: { <id>: { hasApiKey, baseUrl } }`.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiConfigView {
+    pub default_model: String,
+    pub temperature: f64,
+    pub max_tokens: u32,
+    pub stream: bool,
+    pub heading_level: u8,
+    pub infer_title_language: String,
+    pub chats_folder: String,
+    pub agents_folder: String,
+    pub providers: BTreeMap<String, ProviderView>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderView {
     pub has_api_key: bool,
-    pub model: String,
     pub base_url: String,
 }
 
 impl From<&AiConfig> for AiConfigView {
     fn from(ai: &AiConfig) -> Self {
         Self {
-            has_api_key: ai.api_key.as_deref().is_some_and(|k| !k.trim().is_empty()),
-            model: ai.model.clone(),
-            base_url: ai.base_url.clone(),
+            default_model: ai.default_model.clone(),
+            temperature: ai.temperature,
+            max_tokens: ai.max_tokens,
+            stream: ai.stream,
+            heading_level: ai.heading_level,
+            infer_title_language: ai.infer_title_language.clone(),
+            chats_folder: ai.chats_folder.clone(),
+            agents_folder: ai.agents_folder.clone(),
+            providers: ai
+                .providers
+                .iter()
+                .map(|(id, p)| {
+                    (
+                        id.clone(),
+                        ProviderView {
+                            has_api_key: p.key().is_some(),
+                            base_url: p.base_url.clone(),
+                        },
+                    )
+                })
+                .collect(),
         }
     }
 }
@@ -291,9 +493,26 @@ impl Default for ClippingConfig {
 impl Default for AiConfig {
     fn default() -> Self {
         Self {
-            api_key: None,
-            model: "gpt-4o-mini".to_string(),
-            base_url: "https://api.openai.com/v1".to_string(),
+            default_model: "openai@gpt-4.1-mini".to_string(),
+            temperature: 0.7,
+            max_tokens: 4096,
+            stream: true,
+            heading_level: 3,
+            infer_title_language: "English".to_string(),
+            chats_folder: "notes/chats".to_string(),
+            agents_folder: "notes/agents".to_string(),
+            providers: AI_PROVIDERS
+                .iter()
+                .map(|(id, url)| {
+                    (
+                        id.to_string(),
+                        ProviderConfig {
+                            api_key: None,
+                            base_url: url.to_string(),
+                        },
+                    )
+                })
+                .collect(),
         }
     }
 }
@@ -418,9 +637,9 @@ mod tests {
             },
             journal: JournalConfig { split_ratio: 0.3 },
             ai: AiConfig {
-                api_key: Some("sk-test".into()),
-                model: "gpt-4o-mini".into(),
-                base_url: "https://api.openai.com/v1".into(),
+                temperature: 0.2,
+                default_model: "anthropic@claude-x".into(),
+                ..AiConfig::default()
             },
             appearance: AppearanceConfig {
                 palette: "ocean".into(),
@@ -454,27 +673,91 @@ mod tests {
 
     #[test]
     fn view_hides_the_api_key() {
-        let cfg = AppConfig {
-            ai: AiConfig {
-                api_key: Some("sk-secret".into()),
-                ..AiConfig::default()
-            },
-            ..AppConfig::default()
-        };
+        let mut cfg = AppConfig::default();
+        cfg.ai.providers.get_mut("anthropic").unwrap().api_key = Some("sk-secret".into());
         let view = AppConfigView::from(&cfg);
-        assert!(view.ai.has_api_key);
+        assert!(view.ai.providers["anthropic"].has_api_key);
+        assert!(!view.ai.providers["openai"].has_api_key);
         let json = serde_json::to_value(&view).unwrap();
         assert!(!json.to_string().contains("sk-secret"));
+        assert_eq!(json["ai"]["defaultModel"], "openai@gpt-4.1-mini");
+        assert_eq!(json["ai"]["temperature"], 0.7);
+        assert_eq!(json["ai"]["maxTokens"], 4096);
+        assert_eq!(json["ai"]["stream"], true);
+        assert_eq!(json["ai"]["headingLevel"], 3);
+        assert_eq!(json["ai"]["inferTitleLanguage"], "English");
+        assert_eq!(json["ai"]["chatsFolder"], "notes/chats");
+        assert_eq!(json["ai"]["agentsFolder"], "notes/agents");
         assert_eq!(
-            json["ai"],
-            serde_json::json!({
-                "hasApiKey": true,
-                "model": "gpt-4o-mini",
-                "baseUrl": "https://api.openai.com/v1"
-            })
+            json["ai"]["providers"]["anthropic"],
+            serde_json::json!({ "hasApiKey": true, "baseUrl": "https://api.anthropic.com" })
         );
+        assert_eq!(json["ai"]["providers"].as_object().unwrap().len(), 7);
         assert!(json.get("activeVault").is_some());
-        assert!(!AppConfigView::from(&AppConfig::default()).ai.has_api_key);
+    }
+
+    #[test]
+    fn ai_config_round_trips_with_keys_on_disk() {
+        let dir = tempdir().unwrap();
+        let mut cfg = AppConfig::default();
+        cfg.ai.providers.get_mut("openai").unwrap().api_key = Some("sk-1".into());
+        cfg.ai.heading_level = 2;
+        save(dir.path(), &cfg).unwrap();
+        let back = load(dir.path()).unwrap();
+        assert_eq!(back, cfg);
+        let raw = std::fs::read_to_string(config_path(dir.path())).unwrap();
+        assert!(raw.contains("\"apiKey\": \"sk-1\"") || raw.contains("\"apiKey\":\"sk-1\""));
+    }
+
+    fn load_ai(json: &str) -> AiConfig {
+        let dir = tempdir().unwrap();
+        std::fs::write(config_path(dir.path()), json).unwrap();
+        load(dir.path()).unwrap().ai
+    }
+
+    #[test]
+    fn legacy_openai_settings_migrate_to_the_provider_table() {
+        let ai = load_ai(
+            r#"{"ai":{"apiKey":"sk-old","model":"gpt-4o","baseUrl":"https://proxy.example.com/v1",
+                "chat":{"provider":"claude","customUrl":null}}}"#,
+        );
+        assert_eq!(ai.default_model, "openai@gpt-4o");
+        let openai = ai.provider("openai").unwrap();
+        assert_eq!(openai.api_key.as_deref(), Some("sk-old"));
+        assert_eq!(openai.base_url, "https://proxy.example.com/v1");
+        assert_eq!(ai.providers.len(), 7);
+        assert_eq!(ai.temperature, 0.7);
+    }
+
+    #[test]
+    fn legacy_ollama_settings_migrate_to_ollama() {
+        for url in ["http://localhost:11434/v1", "http://127.0.0.1:11434/v1/"] {
+            let ai = load_ai(&format!(
+                r#"{{"ai":{{"model":"llama3.2","baseUrl":"{url}"}}}}"#
+            ));
+            assert_eq!(ai.default_model, "ollama@llama3.2");
+            let ollama = ai.provider("ollama").unwrap();
+            assert!(ollama.base_url.ends_with(":11434"), "{}", ollama.base_url);
+            assert!(!ollama.base_url.contains("/v1"));
+            assert_eq!(ai.provider("openai").unwrap().api_key, None);
+        }
+    }
+
+    #[test]
+    fn new_format_wins_over_legacy_and_bad_values_fall_back() {
+        let ai = load_ai(
+            r#"{"ai":{"defaultModel":"gemini@g","model":"old","headingLevel":9,"temperature":5,
+                "maxTokens":0,"providers":{"zai":{"apiKey":"k","baseUrl":""},"bogus":{"baseUrl":"x"}}}}"#,
+        );
+        assert_eq!(ai.default_model, "gemini@g");
+        assert_eq!(ai.heading_level, 3);
+        assert_eq!(ai.temperature, 0.7);
+        assert_eq!(ai.max_tokens, 4096);
+        let zai = ai.provider("zai").unwrap();
+        assert_eq!(zai.key(), Some("k"));
+        assert_eq!(zai.base_url, "https://api.z.ai/api/paas/v4");
+        assert!(!ai.providers.contains_key("bogus"));
+        assert!(ai.provider("bogus").is_none());
     }
 
     #[test]

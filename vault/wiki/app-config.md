@@ -2,7 +2,7 @@
 title: "App Config"
 tags: [naiteh-wiki, config, settings]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-10-10T20:00:00+09:00
+updated: 2026-10-11T18:00:00+09:00
 pinned: false
 ---
 
@@ -37,9 +37,23 @@ App-level config (not per-vault) lives in the OS app-config directory:
     "splitRatio": 0.5
   },
   "ai": {
-    "apiKey": null,
-    "model": "gpt-4o-mini",
-    "baseUrl": "https://api.openai.com/v1"
+    "defaultModel": "openai@gpt-4.1-mini",
+    "temperature": 0.7,
+    "maxTokens": 4096,
+    "stream": true,
+    "headingLevel": 3,
+    "inferTitleLanguage": "English",
+    "chatsFolder": "notes/chats",
+    "agentsFolder": "notes/agents",
+    "providers": {
+      "anthropic":  { "baseUrl": "https://api.anthropic.com" },
+      "gemini":     { "baseUrl": "https://generativelanguage.googleapis.com" },
+      "lmstudio":   { "baseUrl": "http://localhost:1234/v1" },
+      "ollama":     { "baseUrl": "http://localhost:11434" },
+      "openai":     { "apiKey": "sk-…", "baseUrl": "https://api.openai.com/v1" },
+      "openrouter": { "baseUrl": "https://openrouter.ai/api/v1" },
+      "zai":        { "baseUrl": "https://api.z.ai/api/paas/v4" }
+    }
   },
   "appearance": {
     "palette": "default",
@@ -62,7 +76,7 @@ App-level config (not per-vault) lives in the OS app-config directory:
 
 Every section is `serde(default)`: a `config.json` written before a section
 existed (e.g. without `appearance` / `clipping`) loads with that section's
-defaults.
+defaults. Unknown keys are ignored (e.g. the removed `ai.chat`).
 
 Per-vault settings live separately in `<vault>/.naiteh/config.json`.
 
@@ -105,30 +119,74 @@ through attachments; pasting inside a fenced code block inserts plain text;
 `html` mode still strips scripts, event-handler attributes and `javascript:`
 URLs.
 
+### AI
+
+Chat-in-note settings (a port of chatgpt-md; see
+[IPC API → AI chat](ipc-api.md#ai-chat)). Set with `app_config_set_ai`
+(scalars) and `app_config_set_ai_provider` (one provider's URL / key).
+
+| Key | Meaning | Default |
+|-----|---------|---------|
+| `ai.defaultModel` | `provider@model`, used when a note has no `model:` | `openai@gpt-4.1-mini` |
+| `ai.temperature` | 0–2 | `0.7` |
+| `ai.maxTokens` | 1–1 000 000 | `4096` |
+| `ai.stream` | stream replies (`ai:chat-chunk`) | `true` |
+| `ai.headingLevel` | 1–6, `#` count of the `role::` headers the editor writes | `3` |
+| `ai.inferTitleLanguage` | language `ai_infer_title` writes in (1–50 chars) | `English` |
+| `ai.chatsFolder` | vault-relative folder for New Chat | `notes/chats` |
+| `ai.agentsFolder` | vault-relative folder `agent: <name>` resolves in | `notes/agents` |
+| `ai.providers.<id>.baseUrl` | per provider, base-URL rule below | see the provider table in the IPC page |
+| `ai.providers.<id>.apiKey` | omitted when unset; disk only | — |
+
+Provider ids: `openai`, `anthropic`, `gemini`, `openrouter`, `zai`,
+`ollama`, `lmstudio`. Loading always yields all seven (missing ones get
+defaults, unknown ids are dropped, a blank `baseUrl` falls back to the
+default). Out-of-range scalars on disk fall back to their defaults.
+
+**Migration** from the pre-chat format (`ai.apiKey` / `ai.model` /
+`ai.baseUrl`, no `defaultModel`): if `baseUrl` is a loopback host
+(`localhost` / `127.0.0.1` / `[::1]`) on port 11434, its origin becomes
+`providers.ollama.baseUrl` and `defaultModel` = `ollama@<model>` (the key
+is dropped); otherwise `apiKey` and `baseUrl` go to `providers.openai`
+and `defaultModel` = `openai@<model>`. Legacy keys are never written
+back; the migrated shape is saved on the next settings write. When
+`defaultModel` is present, legacy keys are ignored.
+
 ## IPC view vs disk
 
-The schema above is the **on-disk** format (`AppConfig`, unchanged — `ai.apiKey`
-is stored in `config.json` as before). It never crosses the IPC boundary as-is:
-`app_config_get`, `app_config_set_editor`, `app_config_set_ai`,
+The schema above is the **on-disk** format (`AppConfig`, API keys
+included). It never crosses the IPC boundary as-is: `app_config_get`,
+`app_config_set_editor`, `app_config_set_ai`, `app_config_set_ai_provider`,
 `app_config_set_appearance` and `app_config_set_clipping` return an
 **`AppConfigView`** — the same fields (`appearance` and `clipping` as-is),
-except `ai` is replaced by a key-less view:
+except each provider's `apiKey` is replaced by `hasApiKey`:
 
 ```json
 "ai": {
-  "hasApiKey": true,
-  "model": "gpt-4o-mini",
-  "baseUrl": "https://api.openai.com/v1"
+  "defaultModel": "openai@gpt-4.1-mini",
+  "temperature": 0.7,
+  "maxTokens": 4096,
+  "stream": true,
+  "headingLevel": 3,
+  "inferTitleLanguage": "English",
+  "chatsFolder": "notes/chats",
+  "agentsFolder": "notes/agents",
+  "providers": {
+    "anthropic": { "hasApiKey": false, "baseUrl": "https://api.anthropic.com" },
+    "openai": { "hasApiKey": true, "baseUrl": "https://api.openai.com/v1" }
+  }
 }
 ```
 
-`hasApiKey` is true when a non-blank key is stored. The renderer can set,
-keep, or clear the key through `app_config_set_ai` (`apiKey` / `clearApiKey`,
-see [IPC API](ipc-api.md#ai-assist)) but can never read it back.
+(`providers` always lists all seven ids, alphabetically.) `hasApiKey` is
+true when a non-blank key is stored. The renderer can set, keep, or clear a
+key through `app_config_set_ai_provider` (`apiKey` / `clearApiKey`, see
+[IPC API](ipc-api.md#app-config-commands)) but can never read it back.
 
-`ai.baseUrl` must be `https://…`, or `http://` only for `localhost`,
-`127.0.0.1` or `[::1]` (local providers such as Ollama). The rule is enforced
-when saving and again before every AI request, so a hand-edited `config.json`
+Every provider `baseUrl` (and a chat note's `url:` override) must be
+`https://…`, or `http://` only for `localhost`, `127.0.0.1` or `[::1]`
+(local providers such as Ollama / LM Studio). The rule is enforced when
+saving and again before every AI request, so a hand-edited `config.json`
 with a plain-http remote URL is refused rather than used.
 
 ## Other app-config files

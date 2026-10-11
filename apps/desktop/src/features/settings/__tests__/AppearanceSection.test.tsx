@@ -2,6 +2,8 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { defaultAiConfig } from "../../../lib/types";
+
 import {
   DEFAULT_APPEARANCE,
   DEFAULT_CLIPPING,
@@ -30,7 +32,7 @@ function makeConfig(appearance: AppearanceConfig = DEFAULT_APPEARANCE): AppConfi
     editor: { fontSize: 14, lineWrapping: true },
     calendar: { subView: "timeline" },
     journal: { splitRatio: 0.5 },
-    ai: { hasApiKey: false, model: "gpt-4o-mini", baseUrl: "https://api.openai.com/v1" },
+    ai: defaultAiConfig(),
     appearance: { ...appearance },
     clipping: { ...DEFAULT_CLIPPING },
   } as AppConfig;

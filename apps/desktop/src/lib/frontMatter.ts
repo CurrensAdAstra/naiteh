@@ -211,3 +211,70 @@ function dedupe(tags: readonly string[]): string[] {
   }
   return out;
 }
+
+// ── Generic scalar fields (chat notes: model, title, …) ─────────────────
+
+/** Raw scalar value of `key` in the front matter (quotes stripped), or null. */
+export function getFrontMatterField(content: string, key: string): string | null {
+  const { header, hasBlock } = split(content);
+  if (!hasBlock) return null;
+  for (const line of headerLines(header)) {
+    const idx = line.indexOf(":");
+    if (idx < 0) continue;
+    if (line.slice(0, idx).trim() === key) {
+      const value = stripQuotes(line.slice(idx + 1));
+      return value === "" ? null : value;
+    }
+  }
+  return null;
+}
+
+function yamlScalar(value: string): string {
+  const needsQuotes =
+    value === "" ||
+    /^[\s\-?:,[\]{}#&*!|>'"%@`]/.test(value) ||
+    /:\s|\s#|:$/.test(value) ||
+    /\s$/.test(value) ||
+    /^(true|false|null|yes|no|~)$/i.test(value);
+  return needsQuotes ? JSON.stringify(value) : value;
+}
+
+/**
+ * Upsert `key: value` (scalar, quoted only when YAML needs it) in the
+ * front matter; `null` removes the line. `raw` writes the value verbatim
+ * (numbers, booleans). Keeps the block's line endings; adds a fresh block
+ * when there is none.
+ */
+export function setFrontMatterField(
+  content: string,
+  key: string,
+  value: string | null,
+  raw = false,
+): string {
+  const { header, body, hasBlock, eol } = split(content);
+  const serialized =
+    value === null ? null : `${key}: ${raw ? value : yamlScalar(value)}`;
+  if (!hasBlock) {
+    if (serialized === null) return content;
+    return `---\n${serialized}\n---\n${content}`;
+  }
+  let found = false;
+  const rewritten: string[] = [];
+  for (const line of headerLines(header)) {
+    const idx = line.indexOf(":");
+    if (idx >= 0 && line.slice(0, idx).trim() === key) {
+      found = true;
+      if (serialized !== null) rewritten.push(serialized);
+      continue;
+    }
+    rewritten.push(line);
+  }
+  if (!found && serialized !== null) rewritten.push(serialized);
+  return joinBlock(rewritten, body, eol);
+}
+
+/** Replace the body after the front matter, keeping the block verbatim. */
+export function replaceBody(content: string, body: string): string {
+  const { offset } = splitFrontMatterBody(content);
+  return content.slice(0, offset) + body;
+}

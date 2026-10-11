@@ -51,6 +51,29 @@ describe("MarkdownViewer", () => {
     mockedOpenDocument.mockReset();
   });
 
+  it("renders chatgpt-md role headings as badges and keeps the separator", () => {
+    const { container } = show(
+      [
+        "hello",
+        '<hr class="__chatgpt_plugin">',
+        '### role::assistant<span style="font-size: small;"> (openai@gpt-4.1-mini)</span>',
+        "Hi!",
+        '<hr class="__chatgpt_plugin">',
+        "### role::user",
+        "",
+      ].join("\n\n"),
+    );
+    const roles = screen.getAllByTestId("chat-role-heading");
+    expect(roles).toHaveLength(2);
+    expect(roles[0]).toHaveAttribute("data-role", "assistant");
+    expect(roles[0]).toHaveTextContent("Assistant");
+    expect(roles[0]).toHaveTextContent("openai@gpt-4.1-mini");
+    expect(roles[0]).not.toHaveTextContent("role::");
+    expect(roles[1]).toHaveTextContent("You");
+    expect(container.querySelectorAll("hr")).toHaveLength(2);
+    expect(screen.getByText("Hi!")).toBeInTheDocument();
+  });
+
   it("renders GFM and hides the front matter", () => {
     show(
       "---\ntitle: Secret title\ntags: [x]\n---\n# Hello\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n~~old~~ **bold**\n",

@@ -1,151 +1,109 @@
 import { useEffect, useState } from "react";
 
 import {
-  aiBaseIsLocal,
-  OLLAMA_BASE_URL,
-  OPENAI_BASE_URL,
-  validateAiBaseUrl,
-} from "../../../lib/aiProvider";
-import { aiListModels } from "../../../lib/api/ai";
-import {
   appConfigSetAi,
-  type AiSettingsUpdate,
+  appConfigSetAiProvider,
+  type AiProviderUpdate,
 } from "../../../lib/api/settings";
-import { formatAppError } from "../../../lib/types";
+import {
+  AI_PROVIDERS,
+  DEFAULT_AI_SETTINGS,
+  formatAppError,
+  type AiProviderConfig,
+  type AiProviderId,
+  type AiSettings,
+} from "../../../lib/types";
 import { useSettingsStore } from "../../../state/settingsStore";
+import { ModelPicker } from "../../chat/ModelPicker";
+import { isModelId } from "../../../lib/chatMd/models";
 import { SettingItem } from "../SettingItem";
 import styles from "../SettingsModal.module.css";
 
-const KEY_ID = "settings-ai-key";
-const MODEL_ID = "settings-ai-model";
-const BASE_URL_ID = "settings-ai-base-url";
+const PROVIDER_NAMES: Record<AiProviderId, string> = {
+  openai: "OpenAI",
+  anthropic: "Anthropic",
+  gemini: "Google Gemini",
+  openrouter: "OpenRouter",
+  zai: "Z.ai",
+  ollama: "Ollama (local)",
+  lmstudio: "LM Studio (local)",
+};
+
+const LOCAL: readonly AiProviderId[] = ["ollama", "lmstudio"];
+
+function settingsOf(ai: AiSettings | undefined): AiSettings {
+  if (ai === undefined) return DEFAULT_AI_SETTINGS;
+  return {
+    defaultModel: ai.defaultModel,
+    temperature: ai.temperature,
+    maxTokens: ai.maxTokens,
+    stream: ai.stream,
+    headingLevel: ai.headingLevel,
+    inferTitleLanguage: ai.inferTitleLanguage,
+    chatsFolder: ai.chatsFolder,
+    agentsFolder: ai.agentsFolder,
+  };
+}
 
 /**
- * AI Assist provider settings. The API key is write-only: the backend
- * only reports `hasApiKey`, and the key typed here is dropped from state
- * as soon as it has been sent — it never sits in React state or the
- * settings store after a save.
+ * Settings → AI: chat in a note (a port of chatgpt-md). Providers keep a
+ * base URL and a write-only API key (only `hasApiKey` crosses IPC; a
+ * typed key is dropped from state as soon as it has been sent).
  */
 export function AiSection() {
-  const config = useSettingsStore((s) => s.config);
-  const setSettings = useSettingsStore((s) => s.setConfig);
-
-  const hasApiKey = config?.ai.hasApiKey ?? false;
-  const storedModel = config?.ai.model ?? null;
-  const storedBaseUrl = config?.ai.baseUrl ?? null;
-  const baseUrl = storedBaseUrl ?? OPENAI_BASE_URL;
-  const usingLocal = aiBaseIsLocal(baseUrl);
-
-  const [keyDraft, setKeyDraft] = useState("");
-  const [replacingKey, setReplacingKey] = useState(false);
-  const [modelDraft, setModelDraft] = useState(storedModel ?? "");
-  const [baseUrlDraft, setBaseUrlDraft] = useState(baseUrl);
-  const [modelOptions, setModelOptions] = useState<string[]>([]);
-  const [loadingModels, setLoadingModels] = useState(false);
+  const ai = useSettingsStore((s) => s.config?.ai);
+  const setConfig = useSettingsStore((s) => s.setConfig);
+  const [draft, setDraft] = useState<AiSettings>(() => settingsOf(ai));
+  const [picking, setPicking] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
-    if (storedModel !== null) setModelDraft(storedModel);
-  }, [storedModel]);
-  useEffect(() => {
-    if (storedBaseUrl !== null) setBaseUrlDraft(storedBaseUrl);
-  }, [storedBaseUrl]);
+    setDraft(settingsOf(ai));
+  }, [ai]);
 
-  const showKeyInput = !hasApiKey || replacingKey;
+  function patch<K extends keyof AiSettings>(key: K, value: AiSettings[K]) {
+    setDraft((d) => ({ ...d, [key]: value }));
+  }
 
-  async function send(update: AiSettingsUpdate, done: string): Promise<boolean> {
+  async function handleSave() {
+    if (!isModelId(draft.defaultModel)) {
+      setError("Default model must look like provider@model.");
+      return;
+    }
     setBusy(true);
     setError(null);
     setNotice(null);
     try {
-      setSettings(await appConfigSetAi(update));
-      setNotice(done);
-      return true;
+      setConfig(
+        await appConfigSetAi({
+          ...draft,
+          defaultModel: draft.defaultModel.trim(),
+          chatsFolder: draft.chatsFolder.trim(),
+          agentsFolder: draft.agentsFolder.trim(),
+        }),
+      );
+      setNotice("Chat settings saved.");
     } catch (e) {
       setError(formatAppError(e));
-      return false;
     } finally {
-      // Whatever happened, the key is gone from memory once sent.
-      setKeyDraft("");
       setBusy(false);
-    }
-  }
-
-  function typedKey(): string | null {
-    const key = keyDraft.trim();
-    return key === "" ? null : key;
-  }
-
-  async function handleSave() {
-    const nextBaseUrl = baseUrlDraft.trim();
-    const urlProblem = validateAiBaseUrl(nextBaseUrl);
-    if (urlProblem !== null) {
-      setError(urlProblem);
-      return;
-    }
-    const model = modelDraft.trim();
-    if (model === "") {
-      setError("Choose a model.");
-      return;
-    }
-    const apiKey = typedKey();
-    const ok = await send(
-      { apiKey, clearApiKey: false, model, baseUrl: nextBaseUrl },
-      apiKey !== null ? "AI settings saved. Key saved." : "AI settings saved.",
-    );
-    if (ok) setReplacingKey(false);
-  }
-
-  async function handleRemoveKey() {
-    const ok = await send(
-      {
-        apiKey: null,
-        clearApiKey: true,
-        model: storedModel ?? modelDraft.trim(),
-        baseUrl: null,
-      },
-      "API key removed.",
-    );
-    if (ok) setReplacingKey(false);
-  }
-
-  async function handleUseProvider(providerUrl: string, fallbackModel: string) {
-    const model = modelDraft.trim() === "" ? fallbackModel : modelDraft.trim();
-    const ok = await send(
-      { apiKey: typedKey(), clearApiKey: false, model, baseUrl: providerUrl },
-      "Provider updated.",
-    );
-    if (ok) {
-      setModelDraft(model);
-      setModelOptions([]);
-    }
-  }
-
-  async function handleLoadModels() {
-    setLoadingModels(true);
-    setError(null);
-    try {
-      setModelOptions(await aiListModels());
-    } catch (e) {
-      setError(formatAppError(e));
-    } finally {
-      setLoadingModels(false);
     }
   }
 
   return (
     <div data-testid="settings-ai">
-      <h2 className={styles.sectionHeading}>AI Assist</h2>
+      <h2 className={styles.sectionHeading}>AI</h2>
       <p className={styles.sectionIntro}>
-        AI Assist is the one feature that sends note text out of the app —
-        only when you trigger it. Use a hosted API (OpenAI) with a key, or
-        run a model locally with{" "}
-        <a href="https://ollama.com" target="_blank" rel="noreferrer">
-          Ollama
-        </a>{" "}
-        for fully local, key-free, no-network AI.
+        Chat inside any note. <strong>Chat</strong> (Ctrl/Cmd+J) sends the
+        note to the model and appends the reply under a{" "}
+        <code>role::assistant</code> heading, separated by{" "}
+        <code>&lt;hr class=&quot;__chatgpt_plugin&quot;&gt;</code>; then
+        type your next message under <code>role::user</code>. Front matter
+        (<code>model: openai@gpt-4.1-mini</code>, <code>temperature</code>,{" "}
+        <code>max_tokens</code>, <code>system_commands</code>, …) overrides
+        the defaults per note. Based on chatgpt-md (MIT).
       </p>
       {error !== null && (
         <p className={styles.error} role="alert" data-testid="ai-settings-error">
@@ -157,177 +115,314 @@ export function AiSection() {
           {notice}
         </p>
       )}
+
+      <h3 className={styles.groupHeading}>Providers</h3>
+      {AI_PROVIDERS.map((id) => (
+        <ProviderRow
+          key={id}
+          id={id}
+          provider={ai?.providers[id]}
+          onSaved={(message) => {
+            setError(null);
+            setNotice(message);
+          }}
+          onError={(message) => {
+            setNotice(null);
+            setError(message);
+          }}
+        />
+      ))}
+
+      <h3 className={styles.groupHeading}>Chat defaults</h3>
       <SettingItem
-        name="Provider"
-        description={
-          <>
-            Endpoint: <code>{baseUrl}</code>
-            {usingLocal &&
-              " — make sure Ollama is running (ollama serve) and you've pulled a model."}
-          </>
-        }
-        testId="ai-endpoint"
-      >
-        <button
-          type="button"
-          className={`${styles.button} ${usingLocal ? styles.buttonPrimary : ""}`}
-          onClick={() => void handleUseProvider(OLLAMA_BASE_URL, "llama3.2")}
-          disabled={busy}
-          aria-pressed={usingLocal}
-          data-testid="ai-use-ollama"
-        >
-          {usingLocal ? "✓ Local Ollama" : "Use local Ollama"}
-        </button>
-        <button
-          type="button"
-          className={`${styles.button} ${!usingLocal ? styles.buttonPrimary : ""}`}
-          onClick={() => void handleUseProvider(OPENAI_BASE_URL, "gpt-4o-mini")}
-          disabled={busy}
-          aria-pressed={!usingLocal}
-          data-testid="ai-use-openai"
-        >
-          {!usingLocal ? "✓ OpenAI" : "Use OpenAI"}
-        </button>
-      </SettingItem>
-      <SettingItem
-        name="Endpoint URL"
-        description="Any OpenAI-compatible API. Must use https://, except on this machine (localhost, 127.0.0.1, [::1])."
-        controlId={BASE_URL_ID}
+        name="Default model"
+        description="provider@model — used when a note has no model: in its front matter."
+        controlId="settings-ai-default-model"
       >
         <input
-          id={BASE_URL_ID}
-          type="url"
+          id="settings-ai-default-model"
+          type="text"
           className={styles.textInput}
-          value={baseUrlDraft}
-          onChange={(e) => setBaseUrlDraft(e.target.value)}
-          disabled={busy}
+          value={draft.defaultModel}
+          onChange={(e) => patch("defaultModel", e.target.value)}
           spellCheck={false}
-          autoComplete="off"
-          aria-describedby={`${BASE_URL_ID}-description`}
-          data-testid="ai-base-url-input"
+          data-testid="ai-default-model-input"
+        />
+        <button
+          type="button"
+          className={styles.button}
+          onClick={() => setPicking(true)}
+          data-testid="ai-choose-model"
+        >
+          Choose…
+        </button>
+      </SettingItem>
+      <SettingItem name="Temperature" controlId="settings-ai-temperature">
+        <input
+          id="settings-ai-temperature"
+          type="number"
+          min={0}
+          max={2}
+          step={0.1}
+          className={styles.numberInput}
+          value={draft.temperature}
+          onChange={(e) => patch("temperature", Number(e.target.value))}
+          data-testid="ai-temperature-input"
         />
       </SettingItem>
-      {showKeyInput ? (
-        <SettingItem
-          name="API key"
-          description={
-            usingLocal
-              ? "Not needed for a local endpoint."
-              : hasApiKey
-                ? "Enter the new key, then save. The old key stays until you do."
-                : "Stored in your app config and never shown again; used only for AI Assist calls."
-          }
-          controlId={KEY_ID}
+      <SettingItem name="Max tokens" controlId="settings-ai-max-tokens">
+        <input
+          id="settings-ai-max-tokens"
+          type="number"
+          min={1}
+          step={1}
+          className={styles.numberInput}
+          value={draft.maxTokens}
+          onChange={(e) => patch("maxTokens", Number(e.target.value))}
+          data-testid="ai-max-tokens-input"
+        />
+      </SettingItem>
+      <SettingItem
+        name="Stream replies"
+        description="Write the reply into the note as it arrives."
+      >
+        <button
+          type="button"
+          role="switch"
+          aria-checked={draft.stream}
+          aria-label="Stream replies"
+          className={`${styles.toggle} ${draft.stream ? styles.toggleOn : ""}`}
+          onClick={() => patch("stream", !draft.stream)}
+          data-testid="ai-stream-toggle"
+        />
+      </SettingItem>
+      <SettingItem
+        name="Heading level"
+        description="Level (1–6) of the role:: headings written into chats."
+        controlId="settings-ai-heading-level"
+      >
+        <select
+          id="settings-ai-heading-level"
+          className={styles.textInput}
+          value={draft.headingLevel}
+          onChange={(e) => patch("headingLevel", Number(e.target.value))}
+          data-testid="ai-heading-level-input"
         >
-          <input
-            id={KEY_ID}
-            type="password"
-            className={styles.textInput}
-            placeholder={usingLocal ? "—" : "sk-…"}
-            value={keyDraft}
-            onChange={(e) => setKeyDraft(e.target.value)}
-            disabled={busy}
-            autoComplete="off"
-            aria-describedby={`${KEY_ID}-description`}
-            data-testid="ai-key-input"
-          />
-          {hasApiKey && (
-            <button
-              type="button"
-              className={styles.button}
-              onClick={() => {
-                setKeyDraft("");
-                setReplacingKey(false);
-              }}
-              disabled={busy}
-              data-testid="ai-cancel-replace-key"
-            >
-              Cancel
-            </button>
-          )}
-        </SettingItem>
-      ) : (
-        <SettingItem
-          name="API key"
-          description="A key is stored for this endpoint. It is never displayed."
+          {[1, 2, 3, 4, 5, 6].map((n) => (
+            <option key={n} value={n}>
+              {"#".repeat(n)}
+            </option>
+          ))}
+        </select>
+      </SettingItem>
+      <SettingItem
+        name="Infer title language"
+        description="Language of titles from “Chat: Infer title”."
+        controlId="settings-ai-title-language"
+      >
+        <input
+          id="settings-ai-title-language"
+          type="text"
+          className={styles.textInput}
+          value={draft.inferTitleLanguage}
+          onChange={(e) => patch("inferTitleLanguage", e.target.value)}
+          data-testid="ai-title-language-input"
+        />
+      </SettingItem>
+      <SettingItem
+        name="Chats folder"
+        description="Where “Chat: New chat” creates notes."
+        controlId="settings-ai-chats-folder"
+      >
+        <input
+          id="settings-ai-chats-folder"
+          type="text"
+          className={styles.textInput}
+          value={draft.chatsFolder}
+          onChange={(e) => patch("chatsFolder", e.target.value)}
+          spellCheck={false}
+          data-testid="ai-chats-folder-input"
+        />
+      </SettingItem>
+      <SettingItem
+        name="Agents folder"
+        description="Notes whose body is a system prompt; reference one with agent: in front matter."
+        controlId="settings-ai-agents-folder"
+      >
+        <input
+          id="settings-ai-agents-folder"
+          type="text"
+          className={styles.textInput}
+          value={draft.agentsFolder}
+          onChange={(e) => patch("agentsFolder", e.target.value)}
+          spellCheck={false}
+          data-testid="ai-agents-folder-input"
+        />
+      </SettingItem>
+      <SettingItem name="Save">
+        <button
+          type="button"
+          className={`${styles.button} ${styles.buttonPrimary}`}
+          onClick={() => void handleSave()}
+          disabled={busy}
+          data-testid="ai-save"
         >
-          <span className={styles.keyStatus} data-testid="ai-key-status">
+          {busy ? "Saving…" : "Save chat settings"}
+        </button>
+      </SettingItem>
+      {picking && (
+        <ModelPicker
+          title="Default chat model"
+          initial={draft.defaultModel}
+          onPick={(model) => patch("defaultModel", model)}
+          onClose={() => setPicking(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+interface ProviderRowProps {
+  id: AiProviderId;
+  provider: AiProviderConfig | undefined;
+  onSaved: (message: string) => void;
+  onError: (message: string) => void;
+}
+
+function ProviderRow({ id, provider, onSaved, onError }: ProviderRowProps) {
+  const setConfig = useSettingsStore((s) => s.setConfig);
+  const hasApiKey = provider?.hasApiKey ?? false;
+  const storedUrl = provider?.baseUrl ?? "";
+  const local = LOCAL.includes(id);
+  const [urlDraft, setUrlDraft] = useState(storedUrl);
+  const [keyDraft, setKeyDraft] = useState("");
+  const [replacing, setReplacing] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => setUrlDraft(storedUrl), [storedUrl]);
+
+  const showKeyInput = !local && (!hasApiKey || replacing);
+  const name = PROVIDER_NAMES[id];
+
+  async function send(update: AiProviderUpdate, done: string) {
+    setBusy(true);
+    try {
+      setConfig(await appConfigSetAiProvider(update));
+      setReplacing(false);
+      onSaved(done);
+    } catch (e) {
+      onError(formatAppError(e));
+    } finally {
+      // Whatever happened, the key is gone from memory once sent.
+      setKeyDraft("");
+      setBusy(false);
+    }
+  }
+
+  function handleSave() {
+    const key = keyDraft.trim();
+    const url = urlDraft.trim();
+    void send(
+      {
+        provider: id,
+        baseUrl: url === "" || url === storedUrl ? null : url,
+        apiKey: key === "" ? null : key,
+        clearApiKey: false,
+      },
+      key === "" ? `${name} saved.` : `${name}: key saved.`,
+    );
+  }
+
+  return (
+    <SettingItem
+      name={name}
+      description={
+        local
+          ? "Runs on this machine; no API key needed."
+          : hasApiKey
+            ? "Key saved (never displayed)."
+            : "No API key yet."
+      }
+      stacked
+      testId={`ai-provider-${id}`}
+    >
+      <input
+        type="url"
+        className={styles.textInput}
+        value={urlDraft}
+        onChange={(e) => setUrlDraft(e.target.value)}
+        disabled={busy}
+        spellCheck={false}
+        autoComplete="off"
+        aria-label={`${name} base URL`}
+        data-testid={`ai-base-url-${id}`}
+      />
+      {showKeyInput && (
+        <input
+          type="password"
+          className={styles.textInput}
+          placeholder="API key"
+          value={keyDraft}
+          onChange={(e) => setKeyDraft(e.target.value)}
+          disabled={busy}
+          autoComplete="off"
+          aria-label={`${name} API key`}
+          data-testid={`ai-key-input-${id}`}
+        />
+      )}
+      {!local && hasApiKey && !replacing && (
+        <>
+          <span className={styles.keyStatus} data-testid={`ai-key-status-${id}`}>
             Key saved
           </span>
           <button
             type="button"
             className={styles.button}
-            onClick={() => {
-              setNotice(null);
-              setReplacingKey(true);
-            }}
+            onClick={() => setReplacing(true)}
             disabled={busy}
-            data-testid="ai-replace-key"
+            data-testid={`ai-replace-key-${id}`}
           >
-            Replace key
+            Replace
           </button>
           <button
             type="button"
             className={styles.button}
-            onClick={() => void handleRemoveKey()}
+            onClick={() =>
+              void send(
+                { provider: id, baseUrl: null, apiKey: null, clearApiKey: true },
+                `${name}: key removed.`,
+              )
+            }
             disabled={busy}
-            data-testid="ai-remove-key"
+            data-testid={`ai-remove-key-${id}`}
           >
-            Remove key
+            Remove
           </button>
-        </SettingItem>
+        </>
       )}
-      <SettingItem
-        name="Model"
-        description="Load the list from the endpoint, then pick one."
-        controlId={MODEL_ID}
-      >
-        <input
-          id={MODEL_ID}
-          type="text"
-          list="ai-model-options"
-          className={styles.textInput}
-          value={modelDraft}
-          onChange={(e) => setModelDraft(e.target.value)}
-          disabled={busy}
-          aria-describedby={`${MODEL_ID}-description`}
-          data-testid="ai-model-input"
-        />
-        <datalist id="ai-model-options">
-          {modelOptions.map((m) => (
-            <option key={m} value={m} />
-          ))}
-        </datalist>
-      </SettingItem>
-      <SettingItem
-        name="Save"
-        description={
-          modelOptions.length > 0
-            ? `${modelOptions.length} model${
-                modelOptions.length === 1 ? "" : "s"
-              } available.`
-            : undefined
-        }
-      >
-        <button
-          type="button"
-          className={`${styles.button} ${styles.buttonPrimary}`}
-          onClick={() => void handleSave()}
-          disabled={busy || modelDraft.trim() === ""}
-          data-testid="ai-save"
-        >
-          {busy ? "Saving…" : "Save AI settings"}
-        </button>
+      {!local && hasApiKey && replacing && (
         <button
           type="button"
           className={styles.button}
-          onClick={() => void handleLoadModels()}
-          disabled={loadingModels || busy}
-          data-testid="ai-load-models"
+          onClick={() => {
+            setKeyDraft("");
+            setReplacing(false);
+          }}
+          disabled={busy}
+          data-testid={`ai-cancel-replace-key-${id}`}
         >
-          {loadingModels ? "Loading…" : "Load models"}
+          Cancel
         </button>
-      </SettingItem>
-    </div>
+      )}
+      <button
+        type="button"
+        className={`${styles.button} ${styles.buttonPrimary}`}
+        onClick={handleSave}
+        disabled={busy || (keyDraft.trim() === "" && urlDraft.trim() === storedUrl)}
+        data-testid={`ai-provider-save-${id}`}
+      >
+        Save
+      </button>
+    </SettingItem>
   );
 }

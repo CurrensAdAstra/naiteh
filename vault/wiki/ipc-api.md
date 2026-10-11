@@ -2,7 +2,7 @@
 title: "IPC API (Tauri Commands)"
 tags: [naiteh-wiki, ipc, api, commands]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-10-11T12:00:00+09:00
+updated: 2026-10-11T18:00:00+09:00
 pinned: false
 ---
 
@@ -224,7 +224,9 @@ its filesystem work on the blocking pool (`services::fs::run_blocking`), as do
 the vault-mutating notes / journal / attachment / Evernote commands and the
 Argon2-running auth commands. A synchronous Tauri command would run on the
 main (UI) thread, so a vault walk there would freeze the window. Sync commands
-use `spawn_blocking` likewise (see below).
+use `spawn_blocking` likewise (see below). The AI chat commands are `async`:
+config / note / agent / linked-note reads run on the blocking pool, the HTTP
+request (and stream) on the async runtime; none holds the vault lock.
 
 ## Sync (Git-backed, exposed as Sync/Backup)
 
@@ -295,31 +297,101 @@ The UI never exposes "git", "commit", "rebase", or "remote URL" to casual users
 — it shows "Sync now", "Backup destination", etc. Power users see Git terms in
 advanced settings.
 
-## AI Assist
+## AI chat
+
+Chat-in-note, a port of the [chatgpt-md](https://github.com/bramses/chatgpt-md)
+Obsidian plugin (MIT). A **chat note** is an ordinary Markdown note; the
+document format is in [Domain Model](domain-model.md#chat-note). All four
+commands are `async` and session-gated; file reads run on the blocking pool
+without the vault lock, and network calls never run on the UI thread.
 
 ```rust
-ai_improve(text: String, instruction: String) -> Result<String, AppError>
-ai_list_models() -> Result<Vec<String>, AppError>
+ai_chat_send(request_id: String, doc_rel_path: String, content: String)
+    -> Result<ChatSendResult, AppError>
+ai_chat_stop(request_id: String) -> Result<(), AppError>
+ai_infer_title(content: String) -> Result<String, AppError>
+ai_list_models(provider: String) -> Result<Vec<String>, AppError>
 ```
 
-`ai_improve` reads `AiConfig`, calls the configured Chat Completions endpoint,
-returns the revised text. API key attached only when configured (local providers
-send none). Errors when `text`/`instruction` is empty, upstream returns non-2xx,
-or the request times out (60 s). `ai_list_models` queries `GET {base_url}/models`.
-Both re-validate the stored base URL (rule below) **before** sending anything and
-fail with `Validation` if it doesn't pass.
+Wire arguments: `{ requestId, docRelPath, content }`, `{ requestId }`,
+`{ content }`, `{ provider }`. `ChatSendResult` is `{ model, text }` where
+`model` is the `provider@model` actually used.
 
-App-config commands — all return the **`AppConfigView`** (no API key; see
+**`ai_chat_send`** parses `content` (the live editor text of the note at
+`docRelPath`), resolves settings (note front matter > agent > global
+`ai` settings), expands links in user messages relative to `docRelPath`,
+and calls the provider. With effective `stream: true` it emits
+`ai:chat-chunk` events as tokens arrive (see [Events](#events)) and returns
+the full text at the end; with `stream: false` no events are emitted. The
+backend never writes the note — the frontend appends the reply.
+Errors:
+
+- `Validation` — no messages after parsing; bad model string (unknown
+  provider prefix / empty); a non-numeric `temperature` etc.; missing agent
+  (`Agent not found: <name>`); base URL failing the base-URL rule; missing
+  key: exactly `No API key for <provider>. Add it in Settings → AI.`;
+  a `requestId` already in flight.
+- `Network` — connection / TLS / timeout (connect 30 s; 300 s of silence
+  between response bytes) or a stream cut off.
+- `Upstream` — non-2xx (`<provider> returned <status>: <error.message or
+  body, ≤400 chars>`), an error object inside the stream, or an
+  unparseable reply.
+- `Cancelled` — stopped by `ai_chat_stop`. Text streamed before the stop
+  was already delivered through events.
+
+**`ai_chat_stop`** aborts the request with that id (drops the HTTP
+connection). A no-op for an unknown or finished id.
+
+**`ai_infer_title`** sends one non-streaming request with the global
+`defaultModel` and a chatgpt-md-style prompt (infer a title from the
+messages, in `inferTitleLanguage`, no `: \ / * ? " < > |`). The reply's
+first line is sanitized: `#`, quotes, backticks and those characters
+removed, whitespace collapsed, capped at 60 characters, trailing `.`
+dropped. Empty → `Upstream`; content with no text → `Validation`.
+
+**`ai_list_models`** returns the provider's model ids sorted, already
+prefixed `provider@` (e.g. `ollama@llama3.2`). Needs the provider's key
+when it requires one (same `Validation` message as above).
+
+### Providers
+
+| id | Default base URL | Key | Chat endpoint | Models endpoint |
+|---|---|---|---|---|
+| `openai` | `https://api.openai.com/v1` | Bearer | `POST /chat/completions` | `GET /models` |
+| `anthropic` | `https://api.anthropic.com` | `x-api-key` + `anthropic-version: 2023-06-01` | `POST /v1/messages` | `GET /v1/models` |
+| `gemini` | `https://generativelanguage.googleapis.com` | `x-goog-api-key` | `POST /v1beta/models/<m>:generateContent` / `:streamGenerateContent?alt=sse` | `GET /v1beta/models` (generateContent-capable) |
+| `openrouter` | `https://openrouter.ai/api/v1` | Bearer | as openai | as openai |
+| `zai` | `https://api.z.ai/api/paas/v4` | Bearer | as openai | as openai |
+| `ollama` | `http://localhost:11434` | none | `POST /api/chat` (NDJSON stream) | `GET /api/tags` |
+| `lmstudio` | `http://localhost:1234/v1` | none | as openai | as openai |
+
+Request mapping: OpenAI-compatible bodies carry `model, messages,
+temperature, max_tokens, top_p?, presence_penalty?, frequency_penalty?,
+stream` (`developer` role kept only for `openai`, else sent as `system`).
+Anthropic gets system/developer messages joined into `system`,
+`max_tokens` always, temperature capped at 1. Gemini gets
+`systemInstruction`, `contents` (assistant → `model`) and
+`generationConfig`. Ollama gets `options { temperature, num_predict, … }`.
+Streams: SSE `data:` lines (OpenAI `choices[0].delta.content` until
+`[DONE]`; Anthropic `content_block_delta`/`text_delta` until
+`message_stop`; Gemini `candidates[0].content.parts[].text`), Ollama
+NDJSON `message.content` until `done`. If a streaming request comes back
+as `application/json`, it is parsed whole and delivered as one chunk.
+
+### App-config commands
+
+All return the **`AppConfigView`** (no API keys; see
 [App Config](app-config.md#ipc-view-vs-disk)):
 
 ```rust
 app_config_get() -> Result<AppConfigView, AppError>
 app_config_set_editor(font_size: u16, line_wrapping: bool) -> Result<AppConfigView, AppError>
-app_config_set_ai(
-    api_key: Option<String>,   // Some(non-empty) = replace; None / blank = keep
+app_config_set_ai(settings: AiSettingsInput) -> Result<AppConfigView, AppError>
+app_config_set_ai_provider(
+    provider: String,          // one of the ids above
+    base_url: Option<String>,  // None / blank = keep current; trailing "/" dropped
+    api_key: Option<String>,   // Some(non-blank) = replace; None / blank = keep
     clear_api_key: bool,       // true = remove the stored key (wins over api_key)
-    model: String,             // required, trimmed
-    base_url: Option<String>,  // None / blank = keep current
 ) -> Result<AppConfigView, AppError>
 app_config_set_appearance(
     palette: String,           // trimmed; one of the palette ids
@@ -329,15 +401,27 @@ app_config_set_appearance(
 app_config_set_clipping(clipping: ClippingConfig) -> Result<AppConfigView, AppError>  // replaces all fields
 ```
 
-Wire arguments are camelCase (`apiKey`, `clearApiKey`, `model`, `baseUrl`,
-`uiFont`, `editorFont`; `clipping` is the camelCase `ClippingConfig` object).
-`app_config_set_appearance` / `app_config_set_clipping` validate every value
-(palette ids, font-family rules, clipping value sets — see
+`AiSettingsInput` (wire `{ settings: { … } }`, camelCase):
+`{ defaultModel, temperature, maxTokens, stream, headingLevel,
+inferTitleLanguage, chatsFolder, agentsFolder }`. Validation (`Validation`
+/ `InvalidPath`, nothing saved): `defaultModel` must parse (a bare model is
+stored as `openai@<model>`); `temperature` 0–2; `maxTokens` 1–1 000 000;
+`headingLevel` 1–6; `inferTitleLanguage` 1–50 chars after trimming;
+folders must be vault-relative normal form (trailing `/` dropped).
+`app_config_set_ai` never touches `providers`; `app_config_set_ai_provider`
+touches only that provider.
+
+Other wire arguments are camelCase (`baseUrl`, `apiKey`, `clearApiKey`,
+`uiFont`, `editorFont`; `clipping` is the camelCase `ClippingConfig`
+object). `app_config_set_appearance` / `app_config_set_clipping` validate
+every value (palette ids, font-family rules, clipping value sets — see
 [App Config](app-config.md#appearance)) and fail with `Validation` without
 saving.
+
 **Base-URL rule:** must parse as a URL with scheme `https`, or `http` only when
 the host is `localhost`, `127.0.0.1` or `[::1]`; anything else → `Validation`
-(nothing is saved).
+(nothing is saved). Re-checked before every request, including a note's
+`url:` override.
 
 ## Auth & Audit
 
@@ -514,7 +598,7 @@ Import behaviour (`services/evernote/`):
 
 ## Events
 
-Besides the request/response commands above, the backend pushes two kinds of
+Besides the request/response commands above, the backend pushes three kinds of
 events to every window (Tauri `emit`; the frontend subscribes with `listen`).
 Payloads are camelCase.
 
@@ -593,6 +677,18 @@ active (`vault_init` alone activates nothing; the frontend follows it with
 `vault_set_active`). It runs on its own OS thread, never holds the vault lock,
 and emits through the `AppHandle`.
 
+### `ai:chat-chunk` — streamed AI reply text
+
+```json
+{ "requestId": "r-17", "delta": "Hello" }
+```
+
+Emitted by `ai_chat_send` for each text delta while a streaming request
+runs (`stream: true`), in order; concatenating every `delta` for a
+`requestId` gives the command's final `text`. Nothing is emitted after the
+command returns (including after `Cancelled`). Non-streaming requests emit
+nothing.
+
 ## Native menu events
 
 Custom native-menu items emit `menu:*` events that `shell/useMenuEvents` routes
@@ -602,8 +698,11 @@ to store actions (not direct IPC):
 |---|---|
 | `menu:view` (payload: ViewMode) | Switch panel (Cmd+1..6) |
 | `menu:command-palette` | Open the palette (Cmd+P) |
-| `menu:toggle-ai` | Toggle AI Assist panel (Cmd+E) |
 | `menu:toggle-edit` | Switch the open note between view and edit mode (Cmd+Shift+E) |
+| `menu:ai-chat-send` | View → Chat: send the active chat note (`ai_chat_send`; Cmd+J) |
+| `menu:ai-new-chat` | View → New Chat: create a chat note in `ai.chatsFolder` (Cmd+Shift+J) |
+| `menu:ai-select-model` | View → Select Model…: pick the note's `model` (`ai_list_models`) |
+| `menu:ai-stop` | View → Stop Streaming (`ai_chat_stop`) |
 | `menu:settings` | Open the settings modal (Cmd+,) |
 | `menu:new-note` | Notes panel new-note prompt (Cmd+N) |
 | `menu:new-folder` | Notes panel new-folder prompt (Cmd+Shift+N) |

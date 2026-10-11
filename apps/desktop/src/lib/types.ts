@@ -172,14 +172,70 @@ export interface JournalConfig {
   splitRatio: number;
 }
 
-/**
- * AI Assist config as the backend reports it. The API key itself is
- * write-only (see `appConfigSetAi`) — only its presence crosses IPC.
- */
-export interface AiConfig {
+/** Chat providers (wiki: app-config). `ollama` / `lmstudio` need no key. */
+export const AI_PROVIDERS = [
+  "openai",
+  "anthropic",
+  "gemini",
+  "openrouter",
+  "zai",
+  "ollama",
+  "lmstudio",
+] as const;
+export type AiProviderId = (typeof AI_PROVIDERS)[number];
+
+/** Per-provider settings. The API key is write-only: only its presence crosses IPC. */
+export interface AiProviderConfig {
   hasApiKey: boolean;
-  model: string;
   baseUrl: string;
+}
+
+/** Chat-in-a-note settings (port of chatgpt-md). */
+export interface AiSettings {
+  /** `provider@model`, e.g. `openai@gpt-4.1-mini`. */
+  defaultModel: string;
+  temperature: number;
+  maxTokens: number;
+  stream: boolean;
+  /** Heading level (1–6) of the `role::` lines written into chat notes. */
+  headingLevel: number;
+  inferTitleLanguage: string;
+  chatsFolder: string;
+  agentsFolder: string;
+}
+
+export interface AiConfig extends AiSettings {
+  providers: Record<AiProviderId, AiProviderConfig>;
+}
+
+export const DEFAULT_AI_SETTINGS: AiSettings = {
+  defaultModel: "openai@gpt-4.1-mini",
+  temperature: 1,
+  maxTokens: 400,
+  stream: true,
+  headingLevel: 3,
+  inferTitleLanguage: "English",
+  chatsFolder: "notes/chats",
+  agentsFolder: "notes/agents",
+};
+
+const DEFAULT_BASE_URLS: Record<AiProviderId, string> = {
+  openai: "https://api.openai.com/v1",
+  anthropic: "https://api.anthropic.com",
+  gemini: "https://generativelanguage.googleapis.com",
+  openrouter: "https://openrouter.ai/api/v1",
+  zai: "https://api.z.ai/api/paas/v4",
+  ollama: "http://localhost:11434",
+  lmstudio: "http://localhost:1234",
+};
+
+/** Config defaults (also the plain-browser fallback and test fixture). */
+export function defaultAiConfig(): AiConfig {
+  const providers = {} as Record<AiProviderId, AiProviderConfig>;
+  for (const id of AI_PROVIDERS) {
+    providers[id] = { hasApiKey: false, baseUrl: DEFAULT_BASE_URLS[id] };
+  }
+  return { ...DEFAULT_AI_SETTINGS, providers };
 }
 
 export type UserRole = "Admin" | "User";

@@ -33,6 +33,15 @@ export type PendingAction =
   | "newFolder"
   | "showBackup";
 
+/** The chat request in flight (lib/chatMd/chatFlow). One at a time. */
+export interface ChatRequest {
+  requestId: string;
+  /** Editor key of the note being answered; never written elsewhere. */
+  docKey: string;
+  /** `provider@model` shown in the status bar. */
+  model: string;
+}
+
 /**
  * How the open document is shown. `view` (the default) renders the
  * Markdown; `edit` shows the source editor. Opening a different document
@@ -44,7 +53,6 @@ interface UIState {
   viewMode: ViewMode;
   listPanelWidth: number;
   journalSplitRatio: number;
-  aiPanelOpen: boolean;
   commandPaletteOpen: boolean;
   /** The Obsidian-style settings modal overlays the whole shell. */
   settingsOpen: boolean;
@@ -64,8 +72,6 @@ interface UIState {
   setViewMode: (mode: ViewMode) => void;
   setListPanelWidth: (px: number) => void;
   setJournalSplitRatio: (ratio: number) => void;
-  setAiPanelOpen: (open: boolean) => void;
-  toggleAiPanel: () => void;
   setCommandPaletteOpen: (open: boolean) => void;
   toggleCommandPalette: () => void;
   setSettingsOpen: (open: boolean) => void;
@@ -81,13 +87,21 @@ interface UIState {
   clearPendingAction: () => void;
   setLiveUpdatesUnavailable: (message: string | null) => void;
   setNotice: (message: string | null) => void;
+  /** Current chat request (status bar "Chat: streaming…" + Stop). */
+  chatRequest: ChatRequest | null;
+  setChatRequest: (request: ChatRequest | null) => void;
+  /** Last chat failure, shown inline above the note it happened on. */
+  chatError: { docKey: string; message: string } | null;
+  setChatError: (error: { docKey: string; message: string } | null) => void;
+  /** The "Chat: Select model" picker overlay. */
+  modelPickerOpen: boolean;
+  setModelPickerOpen: (open: boolean) => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
   viewMode: "journal",
   listPanelWidth: LIST_PANEL_DEFAULT,
   journalSplitRatio: JOURNAL_SPLIT_DEFAULT,
-  aiPanelOpen: false,
   commandPaletteOpen: false,
   settingsOpen: false,
   editorMode: "view",
@@ -101,8 +115,6 @@ export const useUIStore = create<UIState>((set) => ({
     set({
       journalSplitRatio: clamp(ratio, JOURNAL_SPLIT_MIN, JOURNAL_SPLIT_MAX),
     }),
-  setAiPanelOpen: (open) => set({ aiPanelOpen: open }),
-  toggleAiPanel: () => set((s) => ({ aiPanelOpen: !s.aiPanelOpen })),
   setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
   toggleCommandPalette: () =>
     set((s) => ({ commandPaletteOpen: !s.commandPaletteOpen })),
@@ -122,4 +134,10 @@ export const useUIStore = create<UIState>((set) => ({
   setLiveUpdatesUnavailable: (message) =>
     set({ liveUpdatesUnavailable: message }),
   setNotice: (message) => set({ notice: message }),
+  chatRequest: null,
+  setChatRequest: (request) => set({ chatRequest: request }),
+  chatError: null,
+  setChatError: (error) => set({ chatError: error }),
+  modelPickerOpen: false,
+  setModelPickerOpen: (open) => set({ modelPickerOpen: open }),
 }));

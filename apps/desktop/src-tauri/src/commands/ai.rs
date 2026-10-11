@@ -1,215 +1,187 @@
-//! AI Assist IPC command — calls an OpenAI-compatible Chat Completions
-//! endpoint with the user-supplied API key. Privacy-relevant: this is the
-//! only naiteh feature that sends document content over the network. The
-//! UI is responsible for surfacing that to the user; the backend is a
-//! thin transport.
+//! AI chat-in-note IPC commands — a port of the chatgpt-md Obsidian
+//! plugin (https://github.com/bramses/chatgpt-md, MIT). See
+//! vault/wiki/ipc-api.md ("AI chat").
+//!
+//! Privacy-relevant: these commands send note content to the configured
+//! provider. File reads run on the blocking pool without the vault lock;
+//! network work runs on the async runtime, never on the UI thread.
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
+use tauri::{AppHandle, Emitter};
 
 use crate::domain::AppError;
-use crate::services::config;
+use crate::services::chat_doc::{self, Message, Role, SettingsLayer};
+use crate::services::config::{self, AiConfig};
+use crate::services::fs as fsx;
+use crate::services::llm::{self, ChatRequests, Provider};
 use crate::services::session::{require_session, ActiveSession};
 
-const DEFAULT_TIMEOUT_SECS: u64 = 60;
-const SYSTEM_PROMPT: &str = "\
-You are a careful writing assistant inside a Markdown notes app. \
-Apply the user's instruction to the supplied passage and return ONLY the \
-revised text — no preamble, no commentary, no Markdown fencing. \
-Preserve the input's language unless the instruction says otherwise.";
+/// Event carrying one streamed text delta.
+pub const CHUNK_EVENT: &str = "ai:chat-chunk";
+const TITLE_MAX_CHARS: usize = 60;
 
-#[derive(Debug, Serialize)]
-struct ChatRequest<'a> {
-    model: &'a str,
-    messages: Vec<ChatMessage<'a>>,
-    temperature: f32,
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChatSendResult {
+    /// `provider@model` actually used.
+    pub model: String,
+    pub text: String,
 }
 
-#[derive(Debug, Serialize)]
-struct ChatMessage<'a> {
-    role: &'a str,
-    content: String,
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ChunkPayload<'a> {
+    request_id: &'a str,
+    delta: &'a str,
 }
 
-#[derive(Debug, Deserialize)]
-struct ChatResponse {
-    choices: Vec<ChatChoice>,
+fn load_ai() -> Result<AiConfig, AppError> {
+    let dir = config::default_app_config_dir()?;
+    fsx::ensure_dir(&dir)?;
+    Ok(config::load(&dir)?.ai)
 }
 
-#[derive(Debug, Deserialize)]
-struct ChatChoice {
-    message: ChatChoiceMessage,
-}
-
-#[derive(Debug, Deserialize)]
-struct ChatChoiceMessage {
-    content: String,
-}
-
-/// Attach a bearer token only when a non-empty key is configured. Local
-/// providers like Ollama accept (and need) no key, so requiring one
-/// would lock them out.
-fn with_optional_auth(
-    req: reqwest::RequestBuilder,
-    api_key: Option<&str>,
-) -> reqwest::RequestBuilder {
-    match api_key.map(str::trim).filter(|k| !k.is_empty()) {
-        Some(key) => req.bearer_auth(key),
-        None => req,
-    }
-}
-
+/// Send the chat note `content` (live editor text of `doc_rel_path`).
 #[tauri::command]
-pub async fn ai_improve(
+pub async fn ai_chat_send(
     active: tauri::State<'_, ActiveSession>,
-    text: String,
-    instruction: String,
+    requests: tauri::State<'_, ChatRequests>,
+    app: AppHandle,
+    request_id: String,
+    doc_rel_path: String,
+    content: String,
+) -> Result<ChatSendResult, AppError> {
+    require_session(&active)?;
+    let requests = requests.inner().clone();
+    let prepared = fsx::run_blocking(move || {
+        let ai = load_ai()?;
+        let root = config::current_vault_root()?;
+        chat_doc::prepare_chat(&root, &doc_rel_path, &content, &ai)
+    })
+    .await?;
+    let model = prepared.model_label();
+    let rid = request_id.clone();
+    let text = requests
+        .run(&request_id, async move {
+            llm::execute_chat(&prepared, &mut |delta| {
+                let _ = app.emit(
+                    CHUNK_EVENT,
+                    ChunkPayload {
+                        request_id: &rid,
+                        delta,
+                    },
+                );
+            })
+            .await
+        })
+        .await?;
+    Ok(ChatSendResult { model, text })
+}
+
+/// Abort the in-flight `ai_chat_send` with this id (no-op if none).
+#[tauri::command]
+pub async fn ai_chat_stop(
+    active: tauri::State<'_, ActiveSession>,
+    requests: tauri::State<'_, ChatRequests>,
+    request_id: String,
+) -> Result<(), AppError> {
+    require_session(&active)?;
+    requests.stop(&request_id);
+    Ok(())
+}
+
+/// Infer a short, filename-safe title for a chat (default model).
+#[tauri::command]
+pub async fn ai_infer_title(
+    active: tauri::State<'_, ActiveSession>,
+    content: String,
 ) -> Result<String, AppError> {
     require_session(&active)?;
-    let dir = config::default_app_config_dir()?;
-    crate::services::fs::ensure_dir(&dir)?;
-    let cfg = config::load(&dir)?;
-    ai_improve_impl(&cfg.ai, &text, &instruction).await
+    let ai = fsx::run_blocking(load_ai).await?;
+    let prepared = title_request(&ai, &content)?;
+    let raw = llm::execute_chat(&prepared, &mut |_| {}).await?;
+    let title = sanitize_title(&raw);
+    if title.is_empty() {
+        return Err(AppError::Upstream("the model returned no title".into()));
+    }
+    Ok(title)
 }
 
-/// Testable core: takes the AI config explicitly so tests can point it
-/// at a mock HTTP server instead of the user's app config.
-async fn ai_improve_impl(
-    ai: &crate::services::config::AiConfig,
-    text: &str,
-    instruction: &str,
-) -> Result<String, AppError> {
-    if text.trim().is_empty() {
-        return Err(AppError::Validation("nothing to improve".into()));
-    }
-    if instruction.trim().is_empty() {
-        return Err(AppError::Validation("instruction is required".into()));
-    }
-
-    // Re-checked here (not only when saving settings) so a hand-edited
-    // or pre-validation config.json can't send the key over plain http.
-    config::validate_ai_base_url(&ai.base_url)?;
-
-    let prompt = build_user_prompt(text, instruction);
-    let body = ChatRequest {
-        model: &ai.model,
-        messages: vec![
-            ChatMessage {
-                role: "system",
-                content: SYSTEM_PROMPT.to_string(),
-            },
-            ChatMessage {
-                role: "user",
-                content: prompt,
-            },
-        ],
-        temperature: 0.4,
+fn title_request(ai: &AiConfig, content: &str) -> Result<llm::PreparedChat, AppError> {
+    let (_, body) = chat_doc::split_document(content);
+    let msgs = chat_doc::parse_messages(body);
+    let transcript = if msgs.is_empty() {
+        body.trim().to_string()
+    } else {
+        msgs.iter()
+            .map(|m| format!("{}: {}", m.role.as_str(), m.content))
+            .collect::<Vec<_>>()
+            .join("\n\n")
     };
-
-    let url = format!("{}/chat/completions", ai.base_url.trim_end_matches('/'));
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECS))
-        .build()
-        .map_err(|e| AppError::Network(format!("http client: {e}")))?;
-
-    let resp = with_optional_auth(client.post(&url), ai.api_key.as_deref())
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| AppError::Network(format!("ai request failed: {e}")))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body_text = resp.text().await.unwrap_or_default();
-        return Err(AppError::Upstream(format!(
-            "ai request returned {status}: {}",
-            truncate(&body_text, 400)
-        )));
+    if transcript.is_empty() {
+        return Err(AppError::Validation(
+            "No messages to infer a title from".into(),
+        ));
     }
-
-    let parsed: ChatResponse = resp
-        .json()
-        .await
-        .map_err(|e| AppError::Upstream(format!("ai response parse: {e}")))?;
-    parsed
-        .choices
-        .into_iter()
-        .next()
-        .map(|c| c.message.content.trim().to_string())
-        .ok_or_else(|| AppError::Upstream("ai response had no choices".into()))
+    let prompt = format!(
+        "Infer title from the summary of the content of these messages. The title **cannot** \
+         contain any of the following characters: colon, back slash or forward slash, asterisk, \
+         question mark, double quote, less than, greater than, pipe. Just return the title. \
+         Keep it under {TITLE_MAX_CHARS} characters. Write the title in {}.\nMessages:\n\n{}",
+        ai.infer_title_language, transcript
+    );
+    let layer = SettingsLayer {
+        stream: Some(false),
+        ..SettingsLayer::default()
+    };
+    chat_doc::resolve_request(ai, &layer, vec![Message::new(Role::User, prompt)])
 }
 
-#[derive(Debug, Deserialize)]
-struct ModelsResponse {
-    data: Vec<ModelEntry>,
+/// Strip quotes / Markdown heading marks and characters illegal in file
+/// names; collapse whitespace; cap at 60 characters.
+fn sanitize_title(raw: &str) -> String {
+    let first = raw
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+    let cleaned: String = first
+        .trim_start_matches('#')
+        .chars()
+        .filter(|c| {
+            !matches!(
+                c,
+                '"' | '\'' | '`' | '\\' | '/' | ':' | '*' | '?' | '<' | '>' | '|'
+            )
+        })
+        .filter(|c| !c.is_control())
+        .collect();
+    let words: Vec<&str> = cleaned.split_whitespace().collect();
+    let joined = words.join(" ");
+    let capped: String = joined.chars().take(TITLE_MAX_CHARS).collect();
+    capped.trim().trim_end_matches('.').trim().to_string()
 }
 
-#[derive(Debug, Deserialize)]
-struct ModelEntry {
-    id: String,
-}
-
-/// List the models available at the configured endpoint via the
-/// OpenAI-compatible `GET {base_url}/models`. Works for Ollama (returns
-/// locally-pulled models) and OpenAI alike. Lets the Settings UI offer
-/// a picker instead of a free-text model field.
+/// Models offered by `provider` (ids prefixed `provider@`).
 #[tauri::command]
 pub async fn ai_list_models(
     active: tauri::State<'_, ActiveSession>,
+    provider: String,
 ) -> Result<Vec<String>, AppError> {
     require_session(&active)?;
-    let dir = config::default_app_config_dir()?;
-    crate::services::fs::ensure_dir(&dir)?;
-    let cfg = config::load(&dir)?;
-    ai_list_models_impl(&cfg.ai).await
-}
-
-async fn ai_list_models_impl(
-    ai: &crate::services::config::AiConfig,
-) -> Result<Vec<String>, AppError> {
-    config::validate_ai_base_url(&ai.base_url)?;
-    let url = format!("{}/models", ai.base_url.trim_end_matches('/'));
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(DEFAULT_TIMEOUT_SECS))
-        .build()
-        .map_err(|e| AppError::Network(format!("http client: {e}")))?;
-
-    let resp = with_optional_auth(client.get(&url), ai.api_key.as_deref())
-        .send()
-        .await
-        .map_err(|e| AppError::Network(format!("model list request failed: {e}")))?;
-
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body_text = resp.text().await.unwrap_or_default();
-        return Err(AppError::Upstream(format!(
-            "model list returned {status}: {}",
-            truncate(&body_text, 400)
+    let p = Provider::from_id(provider.trim())
+        .ok_or_else(|| AppError::Validation(format!("unknown provider {provider:?}")))?;
+    let ai = fsx::run_blocking(load_ai).await?;
+    let pcfg = ai
+        .provider(p.id())
+        .ok_or_else(|| AppError::Validation(format!("unknown provider {provider:?}")))?;
+    if p.needs_key() && pcfg.key().is_none() {
+        return Err(AppError::Validation(format!(
+            "No API key for {}. Add it in Settings → AI.",
+            p.id()
         )));
     }
-
-    let parsed: ModelsResponse = resp
-        .json()
-        .await
-        .map_err(|e| AppError::Upstream(format!("model list parse: {e}")))?;
-    let mut ids: Vec<String> = parsed.data.into_iter().map(|m| m.id).collect();
-    ids.sort();
-    Ok(ids)
-}
-
-fn build_user_prompt(text: &str, instruction: &str) -> String {
-    format!(
-        "Instruction:\n{}\n\nText:\n---\n{}\n---",
-        instruction.trim(),
-        text
-    )
-}
-
-fn truncate(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        return s.to_string();
-    }
-    let head: String = s.chars().take(max_chars).collect();
-    format!("{head}…")
+    llm::list_models(p, &pcfg.base_url, pcfg.key()).await
 }
 
 #[cfg(test)]
@@ -217,155 +189,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn prompt_includes_instruction_and_text_with_separator() {
-        let prompt = build_user_prompt("body line", "make it shorter");
-        assert!(prompt.contains("Instruction:"));
-        assert!(prompt.contains("make it shorter"));
-        assert!(prompt.contains("Text:"));
-        assert!(prompt.contains("body line"));
-        assert!(prompt.contains("---"));
+    fn titles_are_sanitized() {
+        assert_eq!(sanitize_title("\"Rust: async/await\"\n"), "Rust asyncawait");
+        assert_eq!(sanitize_title("## Plan   for *Q3*?"), "Plan for Q3");
+        assert_eq!(sanitize_title(&"x".repeat(100)).chars().count(), 60);
+        assert_eq!(sanitize_title("  \n  Title.  "), "Title");
     }
 
     #[test]
-    fn truncate_appends_ellipsis_when_over_limit() {
-        let out = truncate("0123456789", 5);
-        assert_eq!(out, "01234…");
-    }
-
-    #[test]
-    fn truncate_passes_short_strings_through() {
-        let out = truncate("short", 100);
-        assert_eq!(out, "short");
-    }
-
-    // ── HTTP behaviour against a mock OpenAI-compatible server ───────
-
-    use crate::services::config::AiConfig;
-    use httpmock::prelude::*;
-
-    fn ai_config(base_url: &str, api_key: Option<&str>) -> AiConfig {
-        AiConfig {
-            api_key: api_key.map(str::to_string),
-            model: "test-model".into(),
-            base_url: base_url.to_string(),
-        }
-    }
-
-    #[tokio::test]
-    async fn improve_returns_trimmed_choice_and_sends_bearer_key() {
-        let server = MockServer::start();
-        let mock = server.mock(|when, then| {
-            when.method(POST)
-                .path("/v1/chat/completions")
-                .header("authorization", "Bearer sk-test")
-                .body_contains("test-model")
-                .body_contains("make it shorter");
-            then.status(200).json_body(serde_json::json!({
-                "choices": [{ "message": { "content": "  improved text  " } }]
-            }));
-        });
-
-        let cfg = ai_config(&format!("{}/v1", server.base_url()), Some("sk-test"));
-        let out = ai_improve_impl(&cfg, "original", "make it shorter")
-            .await
-            .unwrap();
-        assert_eq!(out, "improved text");
-        mock.assert();
-    }
-
-    #[tokio::test]
-    async fn improve_sends_no_auth_header_for_keyless_local_provider() {
-        let server = MockServer::start();
-        let mock = server.mock(|when, then| {
-            when.method(POST)
-                .path("/v1/chat/completions")
-                .matches(|req| {
-                    !req.headers
-                        .iter()
-                        .flatten()
-                        .any(|(k, _)| k.eq_ignore_ascii_case("authorization"))
-                });
-            then.status(200).json_body(serde_json::json!({
-                "choices": [{ "message": { "content": "local result" } }]
-            }));
-        });
-
-        let cfg = ai_config(&format!("{}/v1", server.base_url()), None);
-        let out = ai_improve_impl(&cfg, "original", "fix").await.unwrap();
-        assert_eq!(out, "local result");
-        mock.assert();
-    }
-
-    #[tokio::test]
-    async fn improve_maps_non_2xx_to_upstream_error() {
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(POST).path("/v1/chat/completions");
-            then.status(429).body("rate limited");
-        });
-
-        let cfg = ai_config(&format!("{}/v1", server.base_url()), Some("sk"));
-        let err = ai_improve_impl(&cfg, "x", "y").await.unwrap_err();
-        match err {
-            AppError::Upstream(msg) => {
-                assert!(msg.contains("429"), "got: {msg}");
-                assert!(msg.contains("rate limited"), "got: {msg}");
-            }
-            other => panic!("expected Upstream, got {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn improve_maps_connection_failure_to_network_error() {
-        // Nothing listens on this port.
-        let cfg = ai_config("http://127.0.0.1:1/v1", None);
-        let err = ai_improve_impl(&cfg, "x", "y").await.unwrap_err();
-        assert!(matches!(err, AppError::Network(_)), "got {err:?}");
-    }
-
-    #[tokio::test]
-    async fn improve_rejects_empty_inputs_before_any_request() {
-        let cfg = ai_config("http://127.0.0.1:1/v1", None);
-        assert!(matches!(
-            ai_improve_impl(&cfg, "  ", "fix").await.unwrap_err(),
-            AppError::Validation(_)
-        ));
-        assert!(matches!(
-            ai_improve_impl(&cfg, "text", " ").await.unwrap_err(),
-            AppError::Validation(_)
-        ));
-    }
-
-    #[tokio::test]
-    async fn insecure_base_url_is_refused_before_any_request() {
-        for bad in ["http://api.example.com/v1", "file:///etc/passwd"] {
-            let cfg = ai_config(bad, Some("sk-secret"));
-            assert!(matches!(
-                ai_improve_impl(&cfg, "text", "fix").await.unwrap_err(),
-                AppError::Validation(_)
-            ));
-            assert!(matches!(
-                ai_list_models_impl(&cfg).await.unwrap_err(),
-                AppError::Validation(_)
-            ));
-        }
-    }
-
-    #[tokio::test]
-    async fn list_models_returns_sorted_ids() {
-        let server = MockServer::start();
-        server.mock(|when, then| {
-            when.method(GET).path("/v1/models");
-            then.status(200).json_body(serde_json::json!({
-                "data": [
-                    { "id": "qwen2.5" },
-                    { "id": "llama3.2" }
-                ]
-            }));
-        });
-
-        let cfg = ai_config(&format!("{}/v1", server.base_url()), None);
-        let models = ai_list_models_impl(&cfg).await.unwrap();
-        assert_eq!(models, vec!["llama3.2".to_string(), "qwen2.5".to_string()]);
+    fn title_request_uses_default_model_without_streaming() {
+        let mut ai = AiConfig {
+            infer_title_language: "Korean".into(),
+            ..AiConfig::default()
+        };
+        ai.providers.get_mut("openai").unwrap().api_key = Some("k".into());
+        let doc = format!(
+            "---\nmodel: ollama@x\n---\nhello\n{}\n### role::assistant\nhi",
+            chat_doc::HR
+        );
+        let p = title_request(&ai, &doc).unwrap();
+        assert_eq!(p.model_label(), "openai@gpt-4.1-mini");
+        assert!(!p.stream);
+        assert_eq!(p.messages.len(), 1);
+        assert!(p.messages[0].content.contains("Write the title in Korean."));
+        assert!(p.messages[0]
+            .content
+            .contains("user: hello\n\nassistant: hi"));
+        assert!(title_request(&ai, "---\na: b\n---\n  ").is_err());
     }
 }

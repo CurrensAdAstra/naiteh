@@ -5,9 +5,11 @@ Every note is a plain `.md` file on your own disk. It has a journal mode for
 quick capture with a summary of recent work, a notes mode with a folder tree,
 an Agenda-style calendar timeline, tags, and full-text search. The vault is
 an ordinary folder, so the recommended backup is a folder-sync service such
-as Google Drive; an optional built-in "Sync" uses Git under the hood. An opt-in AI Assist
-panel can revise selected text through an OpenAI-compatible API, and it sends
-nothing unless you click it. The app is built with Tauri v2 (Rust backend)
+as Google Drive; an optional built-in "Sync" uses Git under the hood. For AI,
+naiteh lets you chat inside a note, chatgpt-md style: write a question and
+press Ctrl+J, and the reply from OpenAI, Anthropic, Gemini, OpenRouter, Z.AI,
+Ollama or LM Studio streams into the note (keys in Settings → AI; nothing is
+sent unless you run the command). The app is built with Tauri v2 (Rust backend)
 and React 18 + TypeScript, and runs on Windows, macOS, and Linux.
 
 ## Prerequisites

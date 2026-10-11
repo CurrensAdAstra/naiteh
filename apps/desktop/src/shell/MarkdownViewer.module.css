@@ -243,3 +243,31 @@
   outline: 2px solid var(--color-accent);
   outline-offset: 2px;
 }
+
+/* chatgpt-md role headings: a quiet badge instead of a big heading. */
+.chatRole {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 0.4em 0 0.6em;
+  font-size: 12px;
+  font-weight: 600;
+  border: 0;
+}
+
+.chatRoleBadge {
+  padding: 1px 8px;
+  color: var(--color-text-inverse);
+  background: var(--color-accent);
+  border-radius: 10px;
+}
+
+.chatRole[data-role="user"] .chatRoleBadge {
+  color: var(--color-text-primary);
+  background: var(--color-hover);
+}
+
+.chatRoleModel {
+  color: var(--color-text-muted);
+  font-weight: 400;
+}

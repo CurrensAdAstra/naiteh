@@ -2,7 +2,7 @@
 title: "Domain Model"
 tags: [naiteh-wiki, domain, types, ipc]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-10-11T12:00:00+09:00
+updated: 2026-10-11T18:00:00+09:00
 pinned: false
 ---
 
@@ -154,40 +154,112 @@ pub struct ConflictPair {
 }
 ```
 
-## AI Assist
+## AI chat
 
-```rust
-pub struct AiConfig {              // on disk (config.json) — never sent over IPC
-    pub api_key: Option<String>,   // optional — local providers need none
-    pub model: String,             // e.g. "gpt-4o-mini" or "llama3.2"
-    pub base_url: String,          // OpenAI-compatible base URL (https, or http on loopback)
-}
+Chat-in-note, ported from the
+[chatgpt-md](https://github.com/bramses/chatgpt-md) Obsidian plugin (MIT).
 
-pub struct AiConfigView {          // what the app_config_* commands return
-    pub has_api_key: bool,         // wire: hasApiKey
-    pub model: String,
-    pub base_url: String,          // wire: baseUrl
-}
+### Chat note
+
+Any Markdown note can be a chat; New Chat creates one in `ai.chatsFolder`.
+The format is chatgpt-md's, byte for byte:
+
+```markdown
+---
+model: anthropic@claude-sonnet-4
+temperature: 0.3
+system_commands: ['You are a concise assistant.']
+---
+What is a monad? See [[Category theory]].
+
+<hr class="__chatgpt_plugin">
+
+### role::assistant<span style="font-size: small;"> (anthropic@claude-sonnet-4)</span>
+
+A monad is …
+
+<hr class="__chatgpt_plugin">
+
+### role::user
+
 ```
 
-The endpoint can be a hosted API (OpenAI, key required) or a local
-OpenAI-compatible server such as **Ollama** (`http://localhost:11434/v1`), in
-which case no key is needed and no note text leaves the machine. The feature is
-"ready" when a model is set and either a key is configured (`hasApiKey`) or the
-endpoint is local. `AiConfig` is part of app config; `api_key` is stored in
-plaintext under the app-config directory (OS user permissions are the trust
-boundary; v1 does not use the system keychain) and is write-only from the
+- **Messages.** The body (after front matter) is split on the separator
+  `<hr class="__chatgpt_plugin">`. In each part, the first line containing
+  `role::` is the **role header**: the role is whichever of `assistant`,
+  `user`, `developer`, `system` appears first after `role::` (anything after
+  it on the line, such as the `<span>` model label, is ignored); the content is
+  the lines after the header, trimmed. A part with no `role::` line is a
+  `user` message. Empty messages are dropped. Text between
+  `=begin-chatgpt-md-comment` and `=end-chatgpt-md-comment` is removed
+  first (an unterminated start marker stays). The header the editor writes
+  is `#`×`ai.headingLevel` + ` role::assistant<span style="font-size: small;"> (<provider@model>)</span>`
+  for replies and ` role::user` for the next turn.
+- **Links** in user messages — `[[Name]]` (`|alias` / `#heading` ignored;
+  matched case-insensitively against file-name stems, `notes/` first then
+  the rest of the vault, hidden folders skipped, then against front-matter
+  titles under `notes/`; a `[[dir/Name]]` matches that path) and
+  `[text](rel.md)` (note-relative, then vault-relative; percent-decoding,
+  `.md` targets only) — have the linked note's body (front matter stripped)
+  appended to that message as
+  `\n\nLink title: <title or file stem>\nLink content: <body>`. At most 10
+  per message; duplicates once; missing or out-of-vault targets (checked
+  with `resolve_in_vault`, so no symlink escapes) are skipped silently.
+  Only the request is expanded — the note itself is never changed.
+- **Front-matter keys** (scalar, `[a, b]` or `- item` lists): `model`
+  (`provider@model`; a bare model means `openai`), `temperature`,
+  `max_tokens`, `top_p`, `presence_penalty`, `frequency_penalty`,
+  `system_commands` (string or list → system messages first, in order),
+  `agent`, `url` (base-URL override, same rule as settings), `stream`.
+  A non-numeric number / non-boolean `stream` is a `Validation` error.
+- **Agent.** `agent: <name>` loads `<ai.agentsFolder>/<name>.md`. Its
+  front matter is a settings layer below the note's (its `system_commands`
+  apply only if the note has none); its body (comments removed, trimmed)
+  becomes a system message after the `system_commands`.
+- **Priority:** note front matter > agent front matter > global `ai`
+  settings (`defaultModel`, `temperature`, `maxTokens`, `stream`).
+
+Request order: `system_commands`, agent body, then the note's messages.
+
+### IPC shapes
+
+```rust
+pub struct ChatSendResult {        // ai_chat_send result
+    pub model: String,             // "provider@model" actually used
+    pub text: String,              // the whole reply
+}
+// event "ai:chat-chunk" payload: { requestId: String, delta: String }
+
+pub struct AiConfigView {          // ai in AppConfigView (no keys)
+    pub default_model: String,     // "openai@gpt-4.1-mini"
+    pub temperature: f64,
+    pub max_tokens: u32,
+    pub stream: bool,
+    pub heading_level: u8,         // 1–6
+    pub infer_title_language: String,
+    pub chats_folder: String,
+    pub agents_folder: String,
+    pub providers: BTreeMap<String, ProviderView>, // all seven ids
+}
+pub struct ProviderView { pub has_api_key: bool, pub base_url: String }
+```
+
+On disk, `AiConfig` has the same scalars and
+`providers: { <id>: { apiKey?, baseUrl } }`. Keys are stored in plaintext
+under the app-config directory (OS user permissions are the trust boundary;
+v1 does not use the system keychain) and are write-only from the
 renderer's point of view.
 
 ## Config types
 
 `AppConfig` and its nested `EditorConfig` (`fontSize`, `lineWrapping`),
 `CalendarConfig` (`subView`), `JournalConfig` (`splitRatio`),
-`AppearanceConfig` (`palette`, `uiFont`, `editorFont`) and `ClippingConfig`
-(HTML-paste conversion options) live in `services/config.rs` (not `domain/`). Over IPC the `app_config_*` commands
+`AppearanceConfig` (`palette`, `uiFont`, `editorFont`), `ClippingConfig`
+(HTML-paste conversion options) and `AiConfig` / `ProviderConfig` (`ai`, above) live in
+`services/config.rs` (not `domain/`). Over IPC the `app_config_*` commands
 return `AppConfigView` — `AppConfig` with `ai` replaced by `AiConfigView` above —
 mirrored in `types.ts`, where the frontend's `AppConfig` / `AiConfig`
-interfaces **are** these view shapes (`ai.hasApiKey`, no `apiKey`). The full schema, defaults, and on-disk paths are in
+interfaces **are** these view shapes (`ai.providers.<id>.hasApiKey`, no `apiKey`). The full schema, defaults, and on-disk paths are in
 [app-config.md](app-config.md).
 
 ## Auth & Audit

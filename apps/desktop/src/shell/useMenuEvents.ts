@@ -2,6 +2,7 @@ import { useEffect } from "react";
 
 import { listen } from "@tauri-apps/api/event";
 
+import { newChat, sendChat, stopChat } from "../lib/chatMd/chatFlow";
 import { useUIStore, type ViewMode } from "../state/uiStore";
 
 // A Record keyed by ViewMode (rather than an array) makes the compiler
@@ -30,7 +31,10 @@ function isViewMode(value: unknown): value is ViewMode {
  *   - `menu:view` (payload = mode) → switch panel (Cmd+1..6, one
  *     per view mode: journal, notes, calendar, search, tags, sync)
  *   - `menu:command-palette` → open the palette (Cmd+P)
- *   - `menu:toggle-ai` → toggle the AI panel (Cmd+E)
+ *   - `menu:ai-chat-send` → chat: send the open note (Cmd+J)
+ *   - `menu:ai-new-chat` → new chat note (Shift+Cmd+J)
+ *   - `menu:ai-select-model` → model picker
+ *   - `menu:ai-stop` → stop the streaming reply
  *   - `menu:toggle-edit` → switch the open note between the rendered
  *     view and the source editor (Shift+Cmd+E)
  *   - `menu:settings` → open the settings modal (Cmd+,)
@@ -46,7 +50,10 @@ export function useMenuEvents(): void {
         if (isViewMode(e.payload)) ui().setViewMode(e.payload);
       }),
       listen("menu:command-palette", () => ui().setCommandPaletteOpen(true)),
-      listen("menu:toggle-ai", () => ui().toggleAiPanel()),
+      listen("menu:ai-chat-send", () => void sendChat()),
+      listen("menu:ai-new-chat", () => void newChat()),
+      listen("menu:ai-select-model", () => ui().setModelPickerOpen(true)),
+      listen("menu:ai-stop", () => stopChat()),
       listen("menu:toggle-edit", () => ui().toggleEditorMode()),
       listen("menu:settings", () => ui().setSettingsOpen(true)),
       listen("menu:new-note", () => ui().requestNewNote()),

@@ -32,12 +32,19 @@ the code.
 4. **Sync / Backup** — backed by Git under the hood; the UI never says
    "Git", only "Sync" or "Backup".
 5. **Tagging** — cross-cutting organization in addition to folders.
-6. **AI Assist (opt-in)** — a side panel where the user can revise the
-   currently selected text using a third-party Chat Completions API
-   (default OpenAI). The API key lives in app config; no network call
-   ever fires without an explicit click in the panel. naiteh stays
-   local-first everywhere else — AI Assist is the one feature that
-   knowingly leaves the local trust boundary.
+6. **AI chat in notes (opt-in)** — a port of the Obsidian plugin
+   chatgpt-md (MIT). A note is the conversation: messages are separated by
+   `<hr class="__chatgpt_plugin">` and headed `### role::assistant` /
+   `### role::user`. *Chat* (Cmd/Ctrl+J) sends the note to the model and
+   streams the reply into the note (`ai_chat_send` + `ai:chat-chunk`), then
+   adds the next user header. Front matter (`model: provider@model`,
+   `temperature`, `max_tokens`, `system_commands`, `agent`, …) overrides
+   agent notes, which override Settings → AI. Providers: OpenAI,
+   Anthropic, Gemini, OpenRouter, Z.AI, Ollama, LM Studio; keys stay in app
+   config and never reach the renderer. Linked notes are sent as context.
+   No network call fires without an explicit command. naiteh stays
+   local-first everywhere else — this is the one feature that knowingly
+   leaves the local trust boundary.
 7. **Local user access control** — the app opens on a login screen before
    any vault content is shown, and the backend enforces it with a session
    gate on every non-auth command. A single `admin` account is seeded only
@@ -83,7 +90,7 @@ The canonical feature list and non-goals are mirrored in the wiki's
 | Styling           | **CSS Modules**                                           |
 | Editor            | **CodeMirror 6** (added in a later task)                  |
 | Git integration   | **`git2` crate** (libgit2 bindings)                       |
-| AI HTTP client    | **`reqwest` 0.13 (rustls: aws-lc-rs + OS cert store)** — used only by AI Assist |
+| AI HTTP client    | **`reqwest` 0.13 (rustls: aws-lc-rs + OS cert store)** — used only by AI chat |
 | Package manager   | **pnpm** 10 (pinned via `packageManager`, Corepack)       |
 | Rust toolchain    | `rust-version = "1.90"`; CI pins 1.90.0                   |
 | Target OS (v1)    | Windows, macOS, Linux                                     |
@@ -138,7 +145,7 @@ naiteh/
         │   │                             ActivityBar, StatusBar, CommandPalette,
         │   │                             useMenuEvents, useWorkspaceLifecycle
         │   ├── features/
-        │   │   ├── ai/                 ← AI Assist side panel
+        │   │   ├── chat/               ← ModelPicker (AI chat in notes; flow in lib/chatMd/)
         │   │   ├── auth/               ← LoginScreen (incl. forced password
         │   │   │                          change), AdminDashboard, shared
         │   │   │                          AccountList / AuditLogList /
@@ -483,14 +490,17 @@ payloads are listed in the wiki's
 | File          | Import from Evernote… | —               | Settings modal import flow |
 | View          | Journal … Sync      | Cmd/Ctrl+1 … 6    | Switch `ViewMode` |
 | View          | Command Palette…    | Cmd/Ctrl+P        | Open the palette |
-| View          | Toggle AI Assist    | Cmd/Ctrl+E        | Toggle the AI panel |
+| View          | Chat                | Cmd/Ctrl+J        | Send the open note to the model; stream the reply into it |
+| View          | New Chat            | Cmd/Ctrl+Shift+J  | Create a chat note in the chats folder |
+| View          | Select Model…       | —                 | Set the note's `model:` (or the default) |
+| View          | Stop Streaming      | —                 | Abort the running chat request |
 | View          | Toggle Edit Mode    | Cmd/Ctrl+Shift+E  | Switch the note between rendered view and source editor |
 
 Settings is **not** a `ViewMode`; it is a full-screen modal
 (`features/settings/SettingsModal`) overlaying the shell, opened from
 the app menu (Cmd/Ctrl+,), the Activity Bar gear, the status-bar user
 name, or the palette. It mirrors the Obsidian settings layout: a
-left section nav (Vault, Backup, Appearance, Editor, Web Clipping, AI Assist,
+left section nav (Vault, Backup, Appearance, Editor, Web Clipping, AI,
 Import from Evernote, Account, plus an Administration group — Accounts /
 Audit Log — for admins) beside a scrolling column of "name + description →
 control" rows. Backup is explanatory: it walks through backing the vault up
@@ -629,7 +639,7 @@ explicitly assign notes to past or future dates (true Agenda-style
 - Pinning via front matter `pinned: true`
 - Full-text search (naive grep first; ripgrep-via-Rust later)
 - Sync: init, set remote, sync now, basic conflict surfacing
-- AI Assist side panel (opt-in; OpenAI Chat Completions by default)
+- AI Assist side panel (opt-in; OpenAI Chat Completions by default) — replaced by AI chat in notes
 - Light theme (VS Code Light Modern)
 
 ### Shipped since v1.0
@@ -663,6 +673,10 @@ explicitly assign notes to past or future dates (true Agenda-style
   version-checked writes (`StaleWrite`), conflict banner with keep / load /
   save-as-copy, focus re-check (§4.1 "External file changes")
 - Local AI providers (Ollama) — key-free, on-device AI Assist
+- AI chat in notes (port of chatgpt-md, MIT): chat-note format, Cmd/Ctrl+J
+  streaming into the note, new chat / select model / infer title / clear /
+  stop, agents, linked-note context, seven providers; replaced the AI
+  panel, the browser chat window and the clipboard capability
 - Native application menu with global shortcuts (§4.3)
 - CLI hooks (`<app-config-dir>/hooks/on-note-save|on-journal-save|on-sync`;
   `.exe` / `.cmd` / `.bat` / `.ps1` on Windows) — the first slice of the v2

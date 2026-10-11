@@ -2,7 +2,7 @@
 title: "Product Overview"
 tags: [naiteh-wiki, product, stack]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-10-10T20:00:00+09:00
+updated: 2026-10-11T18:00:00+09:00
 pinned: false
 ---
 
@@ -22,11 +22,21 @@ pinned: false
    backed by Git under the hood; the UI never says "Git", only "Sync" or
    "Backup".
 5. **Tagging** — cross-cutting organization in addition to folders.
-6. **AI Assist (opt-in)** — a side panel where the user can revise the currently
-   selected text using a third-party Chat Completions API (default OpenAI). The
-   API key lives in app config; no network call ever fires without an explicit
-   click in the panel. naiteh stays local-first everywhere else — AI Assist is
-   the one feature that knowingly leaves the local trust boundary.
+6. **AI chat (opt-in)** — chat with an LLM *inside a note*, a port of the
+   [chatgpt-md](https://github.com/bramses/chatgpt-md) Obsidian plugin
+   (MIT, by Bram Adams) with its document format unchanged. A chat note is
+   plain Markdown: messages separated by `<hr class="__chatgpt_plugin">`
+   with `role::` headers, settings in front matter (`model:
+   provider@model`, `temperature`, `system_commands`, `agent`, …). View ▸
+   *Chat* (Cmd+J) sends the conversation — with the bodies of `[[linked]]`
+   notes as context — and streams the reply into the note; *New Chat*
+   (Cmd+Shift+J), *Select Model…* and *Stop Streaming* complete the set,
+   plus title inference. Providers: OpenAI, Anthropic, Gemini, OpenRouter,
+   Z.ai (API keys stored in app config, never sent to the renderer) and
+   local Ollama / LM Studio (no key; nothing leaves the machine). No
+   network call ever fires without an explicit command. naiteh stays
+   local-first everywhere else — AI chat is the one feature that knowingly
+   leaves the local trust boundary.
 7. **Local user access control** — the app opens on a login screen before any
    vault content is shown, and the backend enforces it: every non-auth command
    refuses to run until someone is signed in (session gate). A single `admin`
@@ -58,7 +68,9 @@ pinned: false
 - Mobile app (revisited after v1.5)
 - Calendar event integration (system Calendar / Reminders)
 - Implicit AI calls — auto-completion, ghost text, background revision,
-  embedding-based search, etc. v1 AI Assist is strictly user-initiated.
+  embedding-based search, etc. v1 AI chat is strictly user-initiated.
+- Model hosting or a separate chat app/window. Conversations live in
+  ordinary notes (chatgpt-md format); there is no conversation database.
 - Cloud identity, SSO, or multi-tenant server authorization. v1 auth is local
   app access control backed by the OS app-config directory.
 
@@ -73,7 +85,7 @@ pinned: false
 | Reading view     | **react-markdown** + `remark-gfm`, raw HTML via `rehype-raw` then `rehype-sanitize` (GitHub schema); external links via `tauri-plugin-opener` (http/https/mailto only) |
 | Editor           | **CodeMirror 6** — fenced code blocks get per-language syntax highlighting (100+ grammars via `@codemirror/language-data`, lazy-loaded; exact name/alias match with extension fallback, e.g. ```py) |
 | Git integration  | **`git2` crate** (libgit2 bindings)                        |
-| AI HTTP client   | **`reqwest` 0.13** with rustls (aws-lc-rs provider, OS certificate store via `rustls-platform-verifier`) — used only by AI Assist |
+| AI HTTP client   | **`reqwest` 0.13** with rustls (aws-lc-rs provider, OS certificate store via `rustls-platform-verifier`) — used only by AI chat (SSE / NDJSON streaming read incrementally, no extra crates) |
 | Package manager  | **pnpm**                                                   |
 | Target OS (v1)   | Windows, macOS, Linux                                      |
 

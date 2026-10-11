@@ -16,11 +16,10 @@
     var(--activity-width)
     var(--list-panel-width, 280px)
     var(--resizer-width)
-    1fr
-    var(--ai-panel-width, 0px);
+    1fr;
   grid-template-areas:
-    "activity list resizer editor    ai"
-    "status   status status status   status";
+    "activity list resizer editor"
+    "status   status status status";
 }
 
 .activity {
@@ -55,13 +54,6 @@
   height: 100%;
   background: var(--color-bg-editor);
   border-left: 1px solid var(--color-border);
-}
-
-.ai {
-  grid-area: ai;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
 }
 
 .status {

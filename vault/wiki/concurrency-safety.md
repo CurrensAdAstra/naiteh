@@ -144,12 +144,13 @@ pinned: false
   the vault, and any symlink along the path (a remote can commit symlinks).
 - **Privacy boundary** — v1 has exactly three outbound network paths, all
   user-initiated: (1) Sync sends note bytes to the user's chosen Git remote;
-  (2) AI Assist (`ai_improve`) sends the selected passage to the configured Chat
-  Completions endpoint; (3) the model picker (`ai_list_models`) does a
-  `GET {baseUrl}/models`. If the AI endpoint is a local provider (Ollama), paths
-  (2) and (3) stay on the machine. The AI base URL must be `https`, or `http`
-  only on loopback, checked before every request; the API key never leaves the
-  backend except in that request's `Authorization` header. No telemetry, no background calls, no implicit
+  (2) AI chat (`ai_chat_send` / `ai_infer_title`) sends a chat note's messages
+  (plus the bodies of notes it links to) to the provider its model names;
+  (3) the model picker (`ai_list_models`) lists that provider's models. With a
+  local provider (Ollama, LM Studio), paths (2) and (3) stay on the machine.
+  Every AI base URL must be `https`, or `http` only on loopback, checked before
+  every request; an API key never leaves the backend except in that request's
+  auth header. No telemetry, no background calls, no implicit
   AI rewriting.
 - **Audit trail** — login attempts and selected work events are recorded in
   append-only local JSONL, visible to admin users from Settings.

@@ -41,7 +41,7 @@ const NAV: readonly NavEntry[] = [
   { id: "appearance", label: "Appearance", group: "options" },
   { id: "editor", label: "Editor", group: "options" },
   { id: "clipping", label: "Web Clipping", group: "options" },
-  { id: "ai", label: "AI Assist", group: "options" },
+  { id: "ai", label: "AI", group: "options" },
   { id: "import", label: "Import from Evernote", group: "options" },
   { id: "account", label: "Account", group: "options" },
   { id: "accounts", label: "Accounts", group: "administration" },

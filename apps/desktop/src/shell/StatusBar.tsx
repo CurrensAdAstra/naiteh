@@ -1,5 +1,6 @@
 import { useEffect, useMemo } from "react";
 
+import { stopChat } from "../lib/chatMd/chatFlow";
 import { describeSyncStatus } from "../lib/syncStatusLabel";
 import { countWords } from "../lib/wordCount";
 import { useAuthStore } from "../state/authStore";
@@ -21,6 +22,7 @@ export function StatusBar() {
   const setSettingsOpen = useUIStore((s) => s.setSettingsOpen);
   const liveUpdatesUnavailable = useUIStore((s) => s.liveUpdatesUnavailable);
   const notice = useUIStore((s) => s.notice);
+  const chatRequest = useUIStore((s) => s.chatRequest);
   const setNotice = useUIStore((s) => s.setNotice);
   const session = useAuthStore((s) => s.session);
 
@@ -76,6 +78,23 @@ export function StatusBar() {
           data-testid="status-notice"
         >
           {notice}
+        </span>
+      )}
+      {chatRequest !== null && (
+        <span
+          className={styles.placeholder}
+          role="status"
+          data-testid="status-chat"
+        >
+          Chat: streaming… ({chatRequest.model}){" "}
+          <button
+            type="button"
+            className={styles.linkLike}
+            onClick={stopChat}
+            data-testid="status-chat-stop"
+          >
+            Stop
+          </button>
         </span>
       )}
       {liveUpdatesUnavailable !== null && (

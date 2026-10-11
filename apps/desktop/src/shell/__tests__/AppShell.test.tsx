@@ -131,7 +131,7 @@ describe("AppShell", () => {
 
     const track = shell.style.getPropertyValue("--list-panel-width");
     expect(track).toContain("* 0.7");
-    expect(track).toContain("--ai-panel-width");
+    expect(track).not.toContain("--ai-panel-width");
     // The drag handle is gone — the width is proportional, not drag-sized.
     expect(screen.queryByTestId("list-panel-resizer")).not.toBeInTheDocument();
   });

@@ -39,13 +39,6 @@ export interface ExternalChange {
   diskVersion: string;
 }
 
-export interface CurrentSelection {
-  /** Selected text (empty when the cursor is collapsed). */
-  text: string;
-  from: number;
-  to: number;
-}
-
 /** Last autosave failure, scoped to the note it happened on. */
 export interface SaveError {
   key: string;
@@ -67,8 +60,8 @@ interface EditorState {
   externalChange: ExternalChange | null;
   /**
    * Live CodeMirror view; set by EditorPanel on mount. Stored here (rather
-   * than in a ref) so sibling panels — most importantly AiPanel — can read
-   * the current selection and dispatch replacements without prop drilling.
+   * than in a ref) so sibling panels — e.g. the chat flow — can append text
+   * and dispatch replacements without prop drilling.
    * Not serialised by zustand.
    */
   view: EditorView | null;
@@ -273,24 +266,6 @@ export function readCurrentDoc(): string | null {
 }
 
 /**
- * Read the current editor selection (or the entire document when nothing
- * is selected). Returns null when no editor view is mounted. In view mode
- * the source editor is hidden, so its selection is stale and invisible —
- * the whole document is used instead.
- */
-export function readCurrentSelection(): CurrentSelection | null {
-  const view = useEditorStore.getState().view;
-  if (view === null) return null;
-  const range = view.state.selection.main;
-  if (range.from === range.to || useUIStore.getState().editorMode === "view") {
-    const text = view.state.doc.toString();
-    return { text, from: 0, to: view.state.doc.length };
-  }
-  const text = view.state.sliceDoc(range.from, range.to);
-  return { text, from: range.from, to: range.to };
-}
-
-/**
  * Mirror the view's document into `open.content` for the note identified
  * by `key`. The view's updateListener normally does this already (inside
  * `dispatch`); calling it again is idempotent and covers views without
@@ -370,4 +345,69 @@ export function insertAtCursor(insert: string): boolean {
   }
   const range = view.state.selection.main;
   return replaceRange(range.from, range.to, insert);
+}
+
+/**
+ * Append `text` at the end of the document identified by `key`. Returns
+ * false (writing nothing) when a different document is open. In edit
+ * mode the end is scrolled into view; the cursor is left alone so typing
+ * elsewhere is not disturbed.
+ */
+export function appendToDocument(key: string, text: string): boolean {
+  const { open, view } = useEditorStore.getState();
+  if (open === null || open.key !== key) return false;
+  if (text === "") return true;
+  if (hasLiveView(view)) {
+    const end = view.state.doc.length;
+    const editing = useUIStore.getState().editorMode === "edit";
+    view.dispatch({ changes: { from: end, insert: text } });
+    // Follow the reply as it streams (no EditorView import here: the
+    // editor bundle is lazy-loaded).
+    const scroller = view.scrollDOM as HTMLElement | undefined;
+    if (editing && scroller !== undefined) {
+      scroller.scrollTop = scroller.scrollHeight;
+    }
+    syncStoreFromView(key, view);
+    return true;
+  }
+  useEditorStore.setState((s) =>
+    s.open === null || s.open.key !== key
+      ? s
+      : { open: { ...s.open, content: s.open.content + text } },
+  );
+  return true;
+}
+
+/**
+ * Remove `suffix` from the end of document `key` if the document still
+ * ends with it (undo of an append nothing followed). Returns whether it
+ * was removed.
+ */
+export function removeDocumentSuffix(key: string, suffix: string): boolean {
+  const { open, view } = useEditorStore.getState();
+  if (open === null || open.key !== key || suffix === "") return false;
+  const doc = hasLiveView(view) ? view.state.doc.toString() : open.content;
+  if (!doc.endsWith(suffix)) return false;
+  const from = doc.length - suffix.length;
+  if (hasLiveView(view)) {
+    view.dispatch({ changes: { from, to: doc.length, insert: "" } });
+    syncStoreFromView(key, view);
+    return true;
+  }
+  useEditorStore.setState((s) =>
+    s.open === null || s.open.key !== key
+      ? s
+      : { open: { ...s.open, content: doc.slice(0, from) } },
+  );
+  return true;
+}
+
+/** Edit mode only: put the cursor at the end of document `key` and focus. */
+export function placeCursorAtEnd(key: string): void {
+  const { open, view } = useEditorStore.getState();
+  if (open === null || open.key !== key || !hasLiveView(view)) return;
+  if (useUIStore.getState().editorMode !== "edit") return;
+  const end = view.state.doc.length;
+  view.dispatch({ selection: { anchor: end, head: end }, scrollIntoView: true });
+  if (typeof view.focus === "function") view.focus();
 }

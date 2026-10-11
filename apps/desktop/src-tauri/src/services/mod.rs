@@ -3,6 +3,7 @@
 
 pub mod attachments;
 pub mod auth;
+pub mod chat_doc;
 pub mod config;
 pub mod conflicts;
 pub mod evernote;
@@ -11,6 +12,7 @@ pub mod fs_naming;
 pub mod git;
 pub mod hooks;
 pub mod index;
+pub mod llm;
 pub mod notes;
 pub mod own_changes;
 pub mod session;

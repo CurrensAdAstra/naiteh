@@ -17,7 +17,7 @@ describe("uiStore", () => {
       viewMode: "journal",
       listPanelWidth: LIST_PANEL_DEFAULT,
       journalSplitRatio: JOURNAL_SPLIT_DEFAULT,
-      aiPanelOpen: false,
+      chatRequest: null,
       commandPaletteOpen: false,
       editorMode: "edit",
     });
@@ -81,6 +81,16 @@ describe("uiStore", () => {
 
     useUIStore.getState().clearPendingAction();
     expect(useUIStore.getState().pendingAction).toBeNull();
+  });
+
+  it("tracks the chat request and the model picker", () => {
+    const request = { requestId: "r1", docKey: "note:notes/a.md", model: "openai@x" };
+    useUIStore.getState().setChatRequest(request);
+    expect(useUIStore.getState().chatRequest).toEqual(request);
+    useUIStore.getState().setChatRequest(null);
+    expect(useUIStore.getState().chatRequest).toBeNull();
+    useUIStore.getState().setModelPickerOpen(true);
+    expect(useUIStore.getState().modelPickerOpen).toBe(true);
   });
 
   it("requestNewNote / requestNewFolder navigate to Notes and queue", () => {

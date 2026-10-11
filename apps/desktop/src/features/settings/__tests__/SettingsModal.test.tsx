@@ -3,6 +3,8 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  DEFAULT_AI_SETTINGS,
+  defaultAiConfig,
   EDITOR_FONT_DEFAULT,
   type AppConfig,
   type NoteMeta,
@@ -23,10 +25,10 @@ vi.mock("../../../lib/api/vault", () => ({
 }));
 vi.mock("../../../lib/api/settings", () => ({
   appConfigSetAi: vi.fn(),
+  appConfigSetAiProvider: vi.fn(),
   appConfigSetEditor: vi.fn(),
 }));
 vi.mock("../../../lib/api/ai", () => ({
-  aiImprove: vi.fn(),
   aiListModels: vi.fn(),
 }));
 vi.mock("../../../lib/api/auth", () => ({
@@ -66,6 +68,7 @@ import { aiListModels } from "../../../lib/api/ai";
 import { notesWrite } from "../../../lib/api/notes";
 import {
   appConfigSetAi,
+  appConfigSetAiProvider,
   appConfigSetEditor,
 } from "../../../lib/api/settings";
 import {
@@ -77,6 +80,7 @@ import {
 import { useAuthStore } from "../../../state/authStore";
 
 const mockedSetAi = vi.mocked(appConfigSetAi);
+const mockedSetAiProvider = vi.mocked(appConfigSetAiProvider);
 const mockedListModels = vi.mocked(aiListModels);
 const mockedListKnown = vi.mocked(vaultListKnown);
 const mockedPick = vi.mocked(vaultPickFolder);
@@ -108,11 +112,11 @@ function config(
     editor: { fontSize, lineWrapping },
     calendar: { subView: "timeline" },
     journal: { splitRatio: 0.5 },
-    ai: {
-      hasApiKey,
-      model: "gpt-4o-mini",
-      baseUrl: "https://api.openai.com/v1",
-    },
+    ai: (() => {
+      const ai = defaultAiConfig();
+      ai.providers.openai = { ...ai.providers.openai, hasApiKey };
+      return ai;
+    })(),
     appearance: { palette: "default", uiFont: "", editorFont: "" },
     clipping: {
       htmlPaste: "markdown",
@@ -192,6 +196,8 @@ describe("SettingsModal", () => {
     mockedAuthListAuditLogs.mockResolvedValue([]);
     mockedSetAi.mockReset();
     mockedSetAi.mockResolvedValue(config());
+    mockedSetAiProvider.mockReset();
+    mockedSetAiProvider.mockResolvedValue(config());
     mockedListModels.mockReset();
     mockedListModels.mockResolvedValue([]);
     mockedEvernoteImport.mockReset();
@@ -436,110 +442,113 @@ describe("SettingsModal", () => {
   });
 
   describe("AI", () => {
-    it("'Use local Ollama' switches the endpoint to the Ollama URL", async () => {
+    it("explains the chat note format and credits chatgpt-md", async () => {
       const user = userEvent.setup();
       render(<SettingsModal />);
       await gotoSection(user, "ai");
-      await user.click(await screen.findByTestId("ai-use-ollama"));
-      await waitFor(() => {
-        expect(mockedSetAi).toHaveBeenCalledWith({
-          apiKey: null,
-          clearApiKey: false,
-          model: "gpt-4o-mini", // keeps the existing model (non-empty)
-          baseUrl: "http://localhost:11434/v1",
-        });
-      });
+      expect(await screen.findByText(/Based on chatgpt-md \(MIT\)/)).toBeInTheDocument();
+      for (const id of ["openai", "anthropic", "gemini", "openrouter", "zai", "ollama", "lmstudio"]) {
+        expect(screen.getByTestId(`ai-provider-${id}`)).toBeInTheDocument();
+      }
+      // Local providers take no key.
+      expect(screen.queryByTestId("ai-key-input-ollama")).toBeNull();
     });
 
-    it("'Load models' populates the model picker options", async () => {
-      mockedListModels.mockResolvedValue(["llama3.2", "qwen2.5"]);
-      const user = userEvent.setup();
-      render(<SettingsModal />);
-      await gotoSection(user, "ai");
-      await user.click(await screen.findByTestId("ai-load-models"));
-      await waitFor(() => expect(mockedListModels).toHaveBeenCalled());
-      expect(await screen.findByText(/2 models available/i)).toBeInTheDocument();
-    });
-
-    it("the API key is sent once and never kept in state", async () => {
-      mockedSetAi.mockResolvedValue(config(EDITOR_FONT_DEFAULT, true, true));
+    it("a provider API key is sent once and never kept in state", async () => {
+      mockedSetAiProvider.mockResolvedValue(config(EDITOR_FONT_DEFAULT, true, true));
       const user = userEvent.setup();
       render(<SettingsModal />);
       await gotoSection(user, "ai");
 
-      const keyInput = screen.getByLabelText("API key");
-      expect(keyInput).toHaveValue("");
+      const keyInput = screen.getByTestId("ai-key-input-openai");
       expect(keyInput).toHaveAttribute("type", "password");
       await user.type(keyInput, "sk-secret-123");
-      await user.click(screen.getByTestId("ai-save"));
+      await user.click(screen.getByTestId("ai-provider-save-openai"));
 
-      await waitFor(() => {
-        expect(mockedSetAi).toHaveBeenCalledWith({
+      await waitFor(() =>
+        expect(mockedSetAiProvider).toHaveBeenCalledWith({
+          provider: "openai",
+          baseUrl: null,
           apiKey: "sk-secret-123",
           clearApiKey: false,
-          model: "gpt-4o-mini",
-          baseUrl: "https://api.openai.com/v1",
-        });
-      });
-      expect(await screen.findByTestId("ai-key-status")).toHaveTextContent(
+        }),
+      );
+      expect(await screen.findByTestId("ai-key-status-openai")).toHaveTextContent(
         "Key saved",
       );
-      expect(screen.queryByTestId("ai-key-input")).not.toBeInTheDocument();
       expect(screen.queryByDisplayValue("sk-secret-123")).toBeNull();
-      expect(JSON.stringify(useSettingsStore.getState())).not.toContain(
-        "sk-secret",
-      );
+      expect(JSON.stringify(useSettingsStore.getState())).not.toContain("sk-secret");
 
-      // "Replace key" starts from an empty field, not the old key.
-      await user.click(screen.getByTestId("ai-replace-key"));
-      expect(screen.getByTestId("ai-key-input")).toHaveValue("");
+      await user.click(screen.getByTestId("ai-replace-key-openai"));
+      expect(screen.getByTestId("ai-key-input-openai")).toHaveValue("");
     });
 
-    it("saving without typing a key keeps the stored one", async () => {
+    it("'Remove' asks the backend to clear the key", async () => {
       useSettingsStore.setState({ config: config(EDITOR_FONT_DEFAULT, true, true) });
-      mockedSetAi.mockResolvedValue(config(EDITOR_FONT_DEFAULT, true, true));
+      mockedSetAiProvider.mockResolvedValue(config());
       const user = userEvent.setup();
       render(<SettingsModal />);
       await gotoSection(user, "ai");
-      expect(screen.getByTestId("ai-key-status")).toHaveTextContent("Key saved");
-      await user.click(screen.getByTestId("ai-save"));
+      await user.click(screen.getByTestId("ai-remove-key-openai"));
       await waitFor(() =>
-        expect(mockedSetAi).toHaveBeenCalledWith(
-          expect.objectContaining({ apiKey: null, clearApiKey: false }),
-        ),
+        expect(mockedSetAiProvider).toHaveBeenCalledWith({
+          provider: "openai",
+          baseUrl: null,
+          apiKey: null,
+          clearApiKey: true,
+        }),
       );
+      expect(await screen.findByTestId("ai-key-input-openai")).toHaveValue("");
     });
 
-    it("'Remove key' asks the backend to clear it", async () => {
-      useSettingsStore.setState({ config: config(EDITOR_FONT_DEFAULT, true, true) });
+    it("saves the chat defaults", async () => {
       mockedSetAi.mockResolvedValue(config());
       const user = userEvent.setup();
       render(<SettingsModal />);
       await gotoSection(user, "ai");
-      await user.click(screen.getByTestId("ai-remove-key"));
+      const chats = screen.getByTestId("ai-chats-folder-input");
+      await user.clear(chats);
+      await user.type(chats, "notes/ai");
+      await user.click(screen.getByTestId("ai-stream-toggle"));
+      await user.click(screen.getByTestId("ai-save"));
       await waitFor(() =>
         expect(mockedSetAi).toHaveBeenCalledWith({
-          apiKey: null,
-          clearApiKey: true,
-          model: "gpt-4o-mini",
-          baseUrl: null,
+          ...DEFAULT_AI_SETTINGS,
+          chatsFolder: "notes/ai",
+          stream: false,
         }),
       );
-      expect(await screen.findByTestId("ai-key-input")).toHaveValue("");
     });
 
-    it("rejects a plain-http remote endpoint before calling the backend", async () => {
+    it("rejects a default model without a provider prefix", async () => {
       const user = userEvent.setup();
       render(<SettingsModal />);
       await gotoSection(user, "ai");
-      const url = screen.getByLabelText("Endpoint URL");
-      await user.clear(url);
-      await user.type(url, "http://llm.example.com/v1");
+      const model = screen.getByTestId("ai-default-model-input");
+      await user.clear(model);
+      await user.type(model, "gpt-4o");
       await user.click(screen.getByTestId("ai-save"));
       expect(await screen.findByTestId("ai-settings-error")).toHaveTextContent(
-        /only allowed for localhost/i,
+        /provider@model/,
       );
       expect(mockedSetAi).not.toHaveBeenCalled();
+    });
+
+    it("'Choose…' lists models of configured providers", async () => {
+      mockedListModels.mockImplementation(async (provider) =>
+        provider === "ollama" ? ["ollama@llama3.2"] : [],
+      );
+      const user = userEvent.setup();
+      render(<SettingsModal />);
+      await gotoSection(user, "ai");
+      await user.click(screen.getByTestId("ai-choose-model"));
+      await user.click(await screen.findByTestId("model-option-ollama@llama3.2"));
+      expect(mockedListModels).toHaveBeenCalledWith("ollama");
+      expect(mockedListModels).toHaveBeenCalledWith("lmstudio");
+      expect(mockedListModels).not.toHaveBeenCalledWith("openai");
+      expect(screen.getByTestId("ai-default-model-input")).toHaveValue(
+        "ollama@llama3.2",
+      );
     });
   });
 

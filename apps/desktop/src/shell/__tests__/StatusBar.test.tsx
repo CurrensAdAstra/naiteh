@@ -1,12 +1,31 @@
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../../lib/chatMd/chatFlow", () => ({ stopChat: vi.fn() }));
+
+import { stopChat } from "../../lib/chatMd/chatFlow";
 import { useUIStore } from "../../state/uiStore";
 import { StatusBar } from "../StatusBar";
 
 describe("StatusBar live-update state", () => {
   beforeEach(() => {
-    useUIStore.setState({ liveUpdatesUnavailable: null, notice: null });
+    useUIStore.setState({
+      liveUpdatesUnavailable: null,
+      notice: null,
+      chatRequest: null,
+    });
+  });
+
+  it("shows the streaming chat with a Stop button", () => {
+    useUIStore.setState({
+      chatRequest: { requestId: "r", docKey: "note:a", model: "openai@gpt-x" },
+    });
+    render(<StatusBar />);
+    expect(screen.getByTestId("status-chat")).toHaveTextContent(
+      "Chat: streaming… (openai@gpt-x)",
+    );
+    screen.getByTestId("status-chat-stop").click();
+    expect(stopChat).toHaveBeenCalled();
   });
 
   afterEach(() => {

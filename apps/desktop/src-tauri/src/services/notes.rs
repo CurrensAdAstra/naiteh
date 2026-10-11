@@ -80,12 +80,12 @@ pub struct FrontMatter {
 }
 
 /// A front-matter block split out of a document.
-struct FrontMatterParts<'a> {
+pub(crate) struct FrontMatterParts<'a> {
     /// Lines between the fences, without the fences or the newline that
     /// precedes the closing fence (may be empty).
-    header: &'a str,
+    pub(crate) header: &'a str,
     /// Everything after the closing fence's line terminator.
-    body: &'a str,
+    pub(crate) body: &'a str,
     /// The opening fence's line ending, reused when rewriting the block
     /// so a CRLF file stays CRLF.
     eol: &'static str,
@@ -95,7 +95,7 @@ struct FrontMatterParts<'a> {
 /// CRLF line endings (files edited on Windows) and a closing fence at
 /// end of file with no trailing newline. `None` when there is no block
 /// or it is never closed.
-fn split_front_matter(content: &str) -> Option<FrontMatterParts<'_>> {
+pub(crate) fn split_front_matter(content: &str) -> Option<FrontMatterParts<'_>> {
     let (eol, rest) = match content.strip_prefix("---\r\n") {
         Some(r) => ("\r\n", r),
         None => ("\n", content.strip_prefix("---\n")?),

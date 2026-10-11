@@ -1,7 +1,14 @@
 import { markdown } from "@codemirror/lang-markdown";
 import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import { EditorView, basicSetup } from "codemirror";
-import { BookOpen, Paperclip, Pencil, Sparkles, Star } from "lucide-react";
+import {
+  BookOpen,
+  MessageSquare,
+  Paperclip,
+  Pencil,
+  Square,
+  Star,
+} from "lucide-react";
 import {
   useEffect,
   useMemo,
@@ -11,6 +18,7 @@ import {
 } from "react";
 
 import { attachmentsImport } from "../lib/api/attachments";
+import { sendChat, stopChat } from "../lib/chatMd/chatFlow";
 import { resolveFenceLanguage } from "../lib/codeBlockLanguages";
 import { editorAttachmentDrop } from "../lib/editorAttachmentDrop";
 import { editorHtmlPaste } from "../lib/editorHtmlPaste";
@@ -67,6 +75,8 @@ export function EditorPanel() {
   const setEditorMode = useUIStore((s) => s.setEditorMode);
   const viewing = editorMode === "view";
   const logAction = useAuthStore((s) => s.logAction);
+  const chatErrorState = useUIStore((s) => s.chatError);
+  const setChatError = useUIStore((s) => s.setChatError);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
@@ -74,6 +84,10 @@ export function EditorPanel() {
   const readOnlyCompartmentRef = useRef<Compartment | null>(null);
 
   const editorKey = open?.key ?? null;
+  const chatError =
+    chatErrorState !== null && chatErrorState.docKey === editorKey
+      ? chatErrorState.message
+      : null;
   const dirty = open !== null && isDirty(open);
 
   // Audit-log every successful write (autosave, flush, Cmd+S).
@@ -237,7 +251,7 @@ export function EditorPanel() {
               onError={setAttachmentError}
             />
             <EditModeToggleButton />
-            <AiToggleButton />
+            <ChatButton />
             <span
               className={
                 dirty || inConflict ? styles.statusDirty : styles.statusSaved
@@ -262,6 +276,22 @@ export function EditorPanel() {
             >
               Couldn&rsquo;t save: {saveError}. Your changes are kept and
               will be retried.
+            </div>
+          )}
+          {chatError !== null && (
+            <div
+              className={styles.inlineError}
+              role="alert"
+              data-testid="editor-chat-error"
+            >
+              Chat failed: {chatError}{" "}
+              <button
+                type="button"
+                className={styles.inlineDismiss}
+                onClick={() => setChatError(null)}
+              >
+                Dismiss
+              </button>
             </div>
           )}
           {attachmentError !== null && (
@@ -506,20 +536,31 @@ function EditModeToggleButton() {
   );
 }
 
-function AiToggleButton() {
-  const open = useUIStore((s) => s.aiPanelOpen);
-  const toggle = useUIStore((s) => s.toggleAiPanel);
+/** chatgpt-md's "Chat": send this note, stream the reply into it. */
+function ChatButton() {
+  const openKey = useEditorStore((s) => s.open?.key ?? null);
+  const request = useUIStore((s) => s.chatRequest);
+  const streamingHere = request !== null && request.docKey === openKey;
   return (
     <button
       type="button"
-      className={`${styles.aiToggle} ${open ? styles.aiToggleOn : ""}`}
-      aria-pressed={open}
-      aria-label="Toggle AI Assist panel"
-      title="AI Assist"
-      onClick={toggle}
-      data-testid="editor-ai-toggle"
+      className={`${styles.chatButton} ${streamingHere ? styles.chatButtonOn : ""}`}
+      aria-label={streamingHere ? "Stop chat reply" : "Chat"}
+      title={
+        streamingHere
+          ? "Stop the reply"
+          : "Chat: send this note to the model and append the reply (Ctrl+J)"
+      }
+      onClick={() => (streamingHere ? stopChat() : void sendChat())}
+      disabled={request !== null && !streamingHere}
+      data-testid="editor-chat-button"
     >
-      <Sparkles size={14} aria-hidden="true" />
+      {streamingHere ? (
+        <Square size={13} aria-hidden="true" />
+      ) : (
+        <MessageSquare size={14} aria-hidden="true" />
+      )}
+      <span>{streamingHere ? "Stop" : "Chat"}</span>
     </button>
   );
 }

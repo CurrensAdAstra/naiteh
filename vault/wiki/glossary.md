@@ -2,7 +2,7 @@
 title: "Glossary"
 tags: [naiteh-wiki, glossary]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-10-11T12:00:00+09:00
+updated: 2026-10-11T18:00:00+09:00
 pinned: false
 ---
 
@@ -19,7 +19,11 @@ pinned: false
 | ViewMode | Which feature the List Panel is showing |
 | Timeline | Calendar mode's date-grouped list of notes/entries |
 | On the Agenda | The pinned area at the top of the calendar timeline |
-| AI Assist | Opt-in side panel that sends selected text to a Chat Completions API and replaces it with the model's revision |
+| AI chat | naiteh's opt-in AI feature: chat inside a note, ported from the chatgpt-md Obsidian plugin (MIT). View ▸ Chat (Cmd+J) sends the note's conversation to the model and appends the reply. See [Domain Model](domain-model.md#chat-note) |
+| Chat note | A Markdown note holding a conversation in chatgpt-md format: messages separated by `<hr class="__chatgpt_plugin">`, each starting with a role header; settings in front matter (`model`, `temperature`, `system_commands`, `agent`, …) |
+| Role header | The line that opens a message, e.g. `### role::assistant<span style="font-size: small;"> (openai@gpt-4.1-mini)</span>`; the role (`assistant` / `user` / `developer` / `system`) follows `role::`. A part without one is a user message |
+| Model string | `provider@model`, e.g. `anthropic@claude-sonnet-4`, `ollama@llama3.2`; a bare model means `openai` |
+| Agent | A note in `ai.agentsFolder` named by a chat's `agent:` key: its front matter is a settings layer under the chat's, its body a system prompt |
 | Admin | Local account role that can create / enable / disable users and inspect logs |
 | Audit log | Local JSONL history of login and selected work events |
 | Session gate | Backend check (`require_session`) that makes every non-auth IPC fail with `Unauthorized` unless someone is signed in to this app instance |

@@ -29,13 +29,13 @@ describe("AppShell layout", () => {
   });
 
   it("every first-row cell may shrink below its content", () => {
-    for (const cell of [".activity", ".list", ".resizer", ".editor", ".ai"]) {
+    for (const cell of [".activity", ".list", ".resizer", ".editor"]) {
       expect(rule(cell), cell).toMatch(/min-height:\s*0/);
     }
   });
 
   it("the editor and side panels clip overflow themselves", () => {
-    for (const cell of [".list", ".editor", ".ai"]) {
+    for (const cell of [".list", ".editor"]) {
       expect(rule(cell), cell).toMatch(/overflow:\s*hidden/);
     }
   });

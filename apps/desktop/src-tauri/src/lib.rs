@@ -9,7 +9,10 @@ const MENU_IMPORT_EVERNOTE: &str = "import_evernote";
 const MENU_NEW_NOTE: &str = "new_note";
 const MENU_NEW_FOLDER: &str = "new_folder";
 const MENU_COMMAND_PALETTE: &str = "command_palette";
-const MENU_TOGGLE_AI: &str = "toggle_ai";
+const MENU_AI_CHAT_SEND: &str = "ai_chat_send";
+const MENU_AI_NEW_CHAT: &str = "ai_new_chat";
+const MENU_AI_SELECT_MODEL: &str = "ai_select_model";
+const MENU_AI_STOP: &str = "ai_stop";
 const MENU_TOGGLE_EDIT: &str = "toggle_edit";
 const MENU_SETTINGS: &str = "settings";
 const VIEW_ID_PREFIX: &str = "view:";
@@ -28,8 +31,9 @@ const VIEW_ITEMS: &[(&str, &str, &str)] = &[
 /// Native application menu. Standard App / Edit submenus (so the editor's
 /// undo/cut/copy/paste/select-all work from the menu bar with their usual
 /// shortcuts), a File menu (new note/folder + Evernote import), and a
-/// View menu that switches panels and toggles the palette, the AI panel
-/// and the note view/edit mode.
+/// View menu that switches panels, toggles the palette and the note
+/// view/edit mode, and drives chat-in-note AI (Chat / New Chat / Select
+/// Model… / Stop Streaming).
 /// Custom items carry accelerators and emit `menu:*` events the frontend
 /// routes to store actions.
 fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
@@ -115,13 +119,25 @@ fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         true,
         Some("CmdOrCtrl+P"),
     )?;
-    let toggle_ai = MenuItem::with_id(
+    // Chat-in-note (chatgpt-md port; wiki ipc-api.md, "AI chat"). The
+    // frontend acts on the active note.
+    let ai_chat_send =
+        MenuItem::with_id(handle, MENU_AI_CHAT_SEND, "Chat", true, Some("CmdOrCtrl+J"))?;
+    let ai_new_chat = MenuItem::with_id(
         handle,
-        MENU_TOGGLE_AI,
-        "Toggle AI Assist",
+        MENU_AI_NEW_CHAT,
+        "New Chat",
         true,
-        Some("CmdOrCtrl+E"),
+        Some("CmdOrCtrl+Shift+J"),
     )?;
+    let ai_select_model = MenuItem::with_id(
+        handle,
+        MENU_AI_SELECT_MODEL,
+        "Select Model…",
+        true,
+        None::<&str>,
+    )?;
+    let ai_stop = MenuItem::with_id(handle, MENU_AI_STOP, "Stop Streaming", true, None::<&str>)?;
     let toggle_edit = MenuItem::with_id(
         handle,
         MENU_TOGGLE_EDIT,
@@ -130,14 +146,19 @@ fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         Some("CmdOrCtrl+Shift+E"),
     )?;
     let separator = PredefinedMenuItem::separator(handle)?;
+    let ai_separator = PredefinedMenuItem::separator(handle)?;
     let mut view_refs: Vec<&dyn tauri::menu::IsMenuItem<R>> = view_items
         .iter()
         .map(|i| i as &dyn tauri::menu::IsMenuItem<R>)
         .collect();
     view_refs.push(&separator);
     view_refs.push(&command_palette);
-    view_refs.push(&toggle_ai);
     view_refs.push(&toggle_edit);
+    view_refs.push(&ai_separator);
+    view_refs.push(&ai_chat_send);
+    view_refs.push(&ai_new_chat);
+    view_refs.push(&ai_select_model);
+    view_refs.push(&ai_stop);
     let view_menu = Submenu::with_items(handle, "View", true, &view_refs)?;
 
     Menu::with_items(handle, &[&app_menu, &file_menu, &edit_menu, &view_menu])
@@ -163,7 +184,10 @@ fn route_menu_id(id: &str) -> MenuRoute {
         MENU_NEW_NOTE => MenuRoute::Unit("menu:new-note"),
         MENU_NEW_FOLDER => MenuRoute::Unit("menu:new-folder"),
         MENU_COMMAND_PALETTE => MenuRoute::Unit("menu:command-palette"),
-        MENU_TOGGLE_AI => MenuRoute::Unit("menu:toggle-ai"),
+        MENU_AI_CHAT_SEND => MenuRoute::Unit("menu:ai-chat-send"),
+        MENU_AI_NEW_CHAT => MenuRoute::Unit("menu:ai-new-chat"),
+        MENU_AI_SELECT_MODEL => MenuRoute::Unit("menu:ai-select-model"),
+        MENU_AI_STOP => MenuRoute::Unit("menu:ai-stop"),
         MENU_TOGGLE_EDIT => MenuRoute::Unit("menu:toggle-edit"),
         MENU_SETTINGS => MenuRoute::Unit("menu:settings"),
         MENU_IMPORT_EVERNOTE => MenuRoute::Unit("menu:import-evernote"),
@@ -213,6 +237,9 @@ pub fn run() {
         // restarted by the vault commands whenever the active vault
         // changes.
         .manage(services::watcher::VaultWatcher::default())
+        // In-flight AI chat requests, so `ai_chat_stop` can abort one.
+        // See services::llm.
+        .manage(services::llm::ChatRequests::default())
         .setup(|app| {
             services::watcher::restart_for_active_vault(app.handle());
             Ok(())
@@ -272,9 +299,12 @@ pub fn run() {
             commands::settings::app_config_get,
             commands::settings::app_config_set_editor,
             commands::settings::app_config_set_ai,
+            commands::settings::app_config_set_ai_provider,
             commands::settings::app_config_set_appearance,
             commands::settings::app_config_set_clipping,
-            commands::ai::ai_improve,
+            commands::ai::ai_chat_send,
+            commands::ai::ai_chat_stop,
+            commands::ai::ai_infer_title,
             commands::ai::ai_list_models,
             commands::attachments::attachments_import,
             commands::attachments::attachments_import_bytes,
@@ -316,7 +346,10 @@ mod tests {
             (MENU_NEW_NOTE, "menu:new-note"),
             (MENU_NEW_FOLDER, "menu:new-folder"),
             (MENU_COMMAND_PALETTE, "menu:command-palette"),
-            (MENU_TOGGLE_AI, "menu:toggle-ai"),
+            (MENU_AI_CHAT_SEND, "menu:ai-chat-send"),
+            (MENU_AI_NEW_CHAT, "menu:ai-new-chat"),
+            (MENU_AI_SELECT_MODEL, "menu:ai-select-model"),
+            (MENU_AI_STOP, "menu:ai-stop"),
             (MENU_TOGGLE_EDIT, "menu:toggle-edit"),
             (MENU_IMPORT_EVERNOTE, "menu:import-evernote"),
         ];
@@ -337,6 +370,9 @@ mod tests {
     #[test]
     fn unknown_id_is_ignored() {
         assert!(matches!(route_menu_id("bogus"), MenuRoute::None));
+        // The removed AI Assist / AI Chat window items route nowhere.
+        assert!(matches!(route_menu_id("toggle_ai"), MenuRoute::None));
+        assert!(matches!(route_menu_id("ai_chat"), MenuRoute::None));
     }
 
     // ── session gate coverage ────────────────────────────────────────

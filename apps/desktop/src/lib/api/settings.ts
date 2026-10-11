@@ -1,6 +1,9 @@
 import {
+  defaultAiConfig,
   DEFAULT_APPEARANCE,
   DEFAULT_CLIPPING,
+  type AiProviderId,
+  type AiSettings,
   type AppConfig,
   type AppearanceConfig,
   type ClippingConfig,
@@ -22,11 +25,7 @@ function defaultWebConfig(): AppConfig {
     journal: {
       splitRatio: 0.5,
     },
-    ai: {
-      hasApiKey: false,
-      model: "gpt-4o-mini",
-      baseUrl: "https://api.openai.com/v1",
-    },
+    ai: defaultAiConfig(),
     appearance: { ...DEFAULT_APPEARANCE },
     clipping: { ...DEFAULT_CLIPPING },
   };
@@ -53,39 +52,59 @@ export function appConfigSetEditor(
   });
 }
 
+/** Replace the chat settings (`AppConfig.ai` minus the providers). */
+export function appConfigSetAi(settings: AiSettings): Promise<AppConfig> {
+  if (!hasTauriRuntime()) {
+    const defaults = defaultWebConfig();
+    return Promise.resolve({
+      ...defaults,
+      ai: { ...defaults.ai, ...settings },
+    });
+  }
+  return invoke<AppConfig>("app_config_set_ai", { settings });
+}
+
 /**
- * Update AI Assist settings. The API key is write-only: the backend
- * never returns it (only `ai.hasApiKey`).
+ * Update one provider. The API key is write-only: the backend only
+ * reports `hasApiKey`.
  *
  * - `apiKey` non-empty → replace the stored key
  * - `apiKey: null`, `clearApiKey: false` → keep the stored key
  * - `clearApiKey: true` → remove the stored key
  * - `baseUrl: null` → keep the stored endpoint
  */
-export interface AiSettingsUpdate {
+export interface AiProviderUpdate {
+  provider: AiProviderId;
+  baseUrl: string | null;
   apiKey: string | null;
   clearApiKey: boolean;
-  model: string;
-  baseUrl: string | null;
 }
 
-export function appConfigSetAi(update: AiSettingsUpdate): Promise<AppConfig> {
+export function appConfigSetAiProvider(
+  update: AiProviderUpdate,
+): Promise<AppConfig> {
   if (!hasTauriRuntime()) {
     const defaults = defaultWebConfig();
+    const current = defaults.ai.providers[update.provider];
     return Promise.resolve({
       ...defaults,
       ai: {
-        hasApiKey: !update.clearApiKey && update.apiKey !== null,
-        model: update.model,
-        baseUrl: update.baseUrl ?? defaults.ai.baseUrl,
+        ...defaults.ai,
+        providers: {
+          ...defaults.ai.providers,
+          [update.provider]: {
+            hasApiKey: !update.clearApiKey && update.apiKey !== null,
+            baseUrl: update.baseUrl ?? current.baseUrl,
+          },
+        },
       },
     });
   }
-  return invoke<AppConfig>("app_config_set_ai", {
+  return invoke<AppConfig>("app_config_set_ai_provider", {
+    provider: update.provider,
+    baseUrl: update.baseUrl,
     apiKey: update.apiKey,
     clearApiKey: update.clearApiKey,
-    model: update.model,
-    baseUrl: update.baseUrl,
   });
 }
 

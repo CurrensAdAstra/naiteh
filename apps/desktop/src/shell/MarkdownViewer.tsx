@@ -14,6 +14,7 @@ import rehypeRaw from "rehype-raw";
 import rehypeSanitize, { defaultSchema } from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 
+import { parseRoleHeading, roleLabel } from "../lib/chatMd/format";
 import { splitFrontMatterBody } from "../lib/frontMatter";
 import {
   classifyLink,
@@ -80,17 +81,34 @@ export function MarkdownViewer({
   const components = useMemo<Components>(() => {
     const heading =
       (Tag: "h1" | "h2" | "h3" | "h4" | "h5" | "h6") =>
-      ({ node, children }: { children?: ReactNode } & ExtraProps) => (
-        <Tag
-          id={
-            node === undefined
-              ? undefined
-              : slugify(textOf(node as unknown as HastNode))
-          }
-        >
-          {children}
-        </Tag>
-      );
+      ({ node, children }: { children?: ReactNode } & ExtraProps) => {
+        const text =
+          node === undefined ? "" : textOf(node as unknown as HastNode);
+        // chatgpt-md role headings (`### role::assistant (model)`) render
+        // as a small badge; the source is untouched.
+        const role = parseRoleHeading(text);
+        if (role !== null) {
+          return (
+            <Tag
+              className={styles.chatRole}
+              data-role={role.role}
+              data-testid="chat-role-heading"
+            >
+              <span className={styles.chatRoleBadge}>
+                {roleLabel(role.role)}
+              </span>
+              {role.model !== null && (
+                <span className={styles.chatRoleModel}>{role.model}</span>
+              )}
+            </Tag>
+          );
+        }
+        return (
+          <Tag id={node === undefined ? undefined : slugify(text)}>
+            {children}
+          </Tag>
+        );
+      };
 
     return {
       h1: heading("h1"),

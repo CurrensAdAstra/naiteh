@@ -11,7 +11,14 @@ vi.mock("@tauri-apps/api/event", () => ({
   }),
 }));
 
+vi.mock("../../lib/chatMd/chatFlow", () => ({
+  sendChat: vi.fn(() => Promise.resolve()),
+  newChat: vi.fn(() => Promise.resolve()),
+  stopChat: vi.fn(),
+}));
+
 import { listen } from "@tauri-apps/api/event";
+import { newChat, sendChat, stopChat } from "../../lib/chatMd/chatFlow";
 import { useUIStore, type ViewMode } from "../../state/uiStore";
 import { useMenuEvents } from "../useMenuEvents";
 
@@ -34,7 +41,7 @@ describe("useMenuEvents", () => {
       viewMode: "journal",
       pendingAction: null,
       commandPaletteOpen: false,
-      aiPanelOpen: false,
+      modelPickerOpen: false,
       settingsOpen: false,
     });
   });
@@ -43,7 +50,11 @@ describe("useMenuEvents", () => {
     render(<Harness />);
     expect(handlers.has("menu:view")).toBe(true);
     expect(handlers.has("menu:command-palette")).toBe(true);
-    expect(handlers.has("menu:toggle-ai")).toBe(true);
+    expect(handlers.has("menu:ai-chat-send")).toBe(true);
+    expect(handlers.has("menu:ai-new-chat")).toBe(true);
+    expect(handlers.has("menu:ai-select-model")).toBe(true);
+    expect(handlers.has("menu:ai-stop")).toBe(true);
+    expect(handlers.has("menu:toggle-ai")).toBe(false);
     expect(handlers.has("menu:new-note")).toBe(true);
     expect(handlers.has("menu:new-folder")).toBe(true);
     expect(handlers.has("menu:import-evernote")).toBe(true);
@@ -93,12 +104,16 @@ describe("useMenuEvents", () => {
     expect(useUIStore.getState().commandPaletteOpen).toBe(true);
   });
 
-  it("menu:toggle-ai toggles the AI panel", () => {
+  it("chat menu items run the chat actions", () => {
     render(<Harness />);
-    fire("menu:toggle-ai");
-    expect(useUIStore.getState().aiPanelOpen).toBe(true);
-    fire("menu:toggle-ai");
-    expect(useUIStore.getState().aiPanelOpen).toBe(false);
+    fire("menu:ai-chat-send");
+    expect(sendChat).toHaveBeenCalledTimes(1);
+    fire("menu:ai-new-chat");
+    expect(newChat).toHaveBeenCalledTimes(1);
+    fire("menu:ai-stop");
+    expect(stopChat).toHaveBeenCalledTimes(1);
+    fire("menu:ai-select-model");
+    expect(useUIStore.getState().modelPickerOpen).toBe(true);
   });
 
   it("menu:new-note / new-folder queue the Notes prompt", () => {
