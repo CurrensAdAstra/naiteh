@@ -96,6 +96,7 @@ describe("CalendarListPanel", () => {
       path: "ignored",
       content: "",
       exists: false,
+    version: "v1",
     };
     mockedJournalOpen.mockResolvedValue(result);
 
@@ -123,6 +124,7 @@ describe("CalendarListPanel", () => {
       path: "ignored",
       content: "today body",
       exists: true,
+    version: "v1",
     });
 
     const user = userEvent.setup();
@@ -141,7 +143,7 @@ describe("CalendarListPanel", () => {
   it("clicking a note item opens it via notesRead", async () => {
     mockedRange.mockResolvedValue([dayWith(TODAY, [noteItem])]);
     mockedPinned.mockResolvedValue([]);
-    mockedNotesRead.mockResolvedValue("note body");
+    mockedNotesRead.mockResolvedValue({ content: "note body", version: "v1" });
 
     const user = userEvent.setup();
     render(<CalendarListPanel />);

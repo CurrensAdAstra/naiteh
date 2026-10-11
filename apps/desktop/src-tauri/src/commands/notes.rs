@@ -10,7 +10,7 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::domain::{AppError, NoteMeta};
+use crate::domain::{AppError, NoteDocument, NoteMeta, NoteWriteResult};
 use crate::services::config;
 use crate::services::fs as fsx;
 use crate::services::hooks;
@@ -63,11 +63,13 @@ fn notes_list_impl(vault_root: &Path, rel_dir: Option<&str>) -> Result<Vec<NoteM
 
 // ── notes_read ────────────────────────────────────────────────────────────
 
+/// Content plus the **version** (hex SHA-256 of the bytes read) the
+/// frontend passes back to `notes_write` as `expected_version`.
 #[tauri::command]
 pub async fn notes_read(
     active: tauri::State<'_, ActiveSession>,
     rel_path: String,
-) -> Result<String, AppError> {
+) -> Result<NoteDocument, AppError> {
     require_session(&active)?;
     fsx::run_blocking(move || {
         let vault_root = config::current_vault_root()?;
@@ -76,16 +78,45 @@ pub async fn notes_read(
     .await
 }
 
-fn notes_read_impl(vault_root: &Path, rel_path: &str) -> Result<String, AppError> {
+fn notes_read_impl(vault_root: &Path, rel_path: &str) -> Result<NoteDocument, AppError> {
     let abs = notes::resolve_in_vault(vault_root, rel_path)?;
-    std::fs::read_to_string(&abs).map_err(|e| match e.kind() {
+    let (content, version) = notes::read_document(&abs).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => AppError::NotFound(rel_path.to_string()),
         _ => AppError::Io(e.to_string()),
+    })?;
+    Ok(NoteDocument { content, version })
+}
+
+// ── notes_version ─────────────────────────────────────────────────────────
+
+/// Current on-disk version of a note — a cheap freshness check (e.g. on
+/// window focus) without transferring the content. `NotFound` if the
+/// file is missing. Read-only: no vault lock.
+#[tauri::command]
+pub async fn notes_version(
+    active: tauri::State<'_, ActiveSession>,
+    rel_path: String,
+) -> Result<String, AppError> {
+    require_session(&active)?;
+    fsx::run_blocking(move || {
+        let vault_root = config::current_vault_root()?;
+        notes_version_impl(&vault_root, &rel_path)
     })
+    .await
+}
+
+fn notes_version_impl(vault_root: &Path, rel_path: &str) -> Result<String, AppError> {
+    let abs = notes::resolve_in_vault(vault_root, rel_path)?;
+    notes::current_version(&abs)?.ok_or_else(|| AppError::NotFound(rel_path.to_string()))
 }
 
 // ── notes_write ───────────────────────────────────────────────────────────
 
+/// Conflict-safe save. With `expected_version` set, the write happens
+/// only if the file on disk still has that version; otherwise nothing is
+/// written and `StaleWrite(<current version>)` is returned (`""` when the
+/// file was deleted underneath). `None` writes unconditionally. The
+/// check and the write run under the per-vault lock.
 #[tauri::command]
 pub async fn notes_write(
     active: tauri::State<'_, ActiveSession>,
@@ -93,16 +124,20 @@ pub async fn notes_write(
     index: tauri::State<'_, TagIndex>,
     rel_path: String,
     content: String,
-) -> Result<NoteMeta, AppError> {
+    expected_version: Option<String>,
+) -> Result<NoteWriteResult, AppError> {
     require_session(&active)?;
     let vault_root = config::current_vault_root()?;
     let lock = locks.for_vault(&vault_root);
     let _guard = lock.lock().await;
     let root = vault_root.clone();
-    let result = fsx::run_blocking(move || notes_write_impl(&root, &rel_path, &content)).await;
-    if let Ok(meta) = &result {
+    let result = fsx::run_blocking(move || {
+        notes_write_impl(&root, &rel_path, &content, expected_version.as_deref())
+    })
+    .await;
+    if let Ok(written) = &result {
         index.invalidate(&vault_root);
-        fire_note_saved(&vault_root, &meta.rel_path);
+        fire_note_saved(&vault_root, &written.meta.rel_path);
     }
     result
 }
@@ -111,10 +146,12 @@ fn notes_write_impl(
     vault_root: &Path,
     rel_path: &str,
     content: &str,
-) -> Result<NoteMeta, AppError> {
+    expected_version: Option<&str>,
+) -> Result<NoteWriteResult, AppError> {
     let abs = notes::resolve_in_vault(vault_root, rel_path)?;
-    fsx::atomic_write(&abs, content.as_bytes())?;
-    notes::read_note_meta(vault_root, &abs)
+    let version = notes::write_versioned(&abs, content, expected_version)?;
+    let meta = notes::read_note_meta(vault_root, &abs)?;
+    Ok(NoteWriteResult { meta, version })
 }
 
 // ── notes_create ──────────────────────────────────────────────────────────
@@ -183,7 +220,7 @@ pub async fn notes_delete(
 
 fn notes_delete_impl(vault_root: &Path, rel_path: &str) -> Result<(), AppError> {
     let abs = notes::resolve_in_vault(vault_root, rel_path)?;
-    std::fs::remove_file(&abs).map_err(|e| match e.kind() {
+    fsx::remove_file(&abs).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => AppError::NotFound(rel_path.to_string()),
         _ => AppError::Io(e.to_string()),
     })
@@ -421,7 +458,7 @@ fn notes_delete_dir_impl(vault_root: &Path, rel_dir: &str) -> Result<(), AppErro
         return Err(AppError::NotFound(rel_dir.to_string()));
     }
     // remove_dir_all removes a symlink itself, never its target.
-    std::fs::remove_dir_all(&dir.abs).map_err(|e| AppError::Io(e.to_string()))
+    fsx::remove_dir_all(&dir.abs).map_err(|e| AppError::Io(e.to_string()))
 }
 
 #[tauri::command]
@@ -472,6 +509,17 @@ fn notes_rename_dir_impl(vault_root: &Path, from: &str, to: &str) -> Result<(), 
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    /// A write that bypasses `services::fs` on purpose: it stands in for
+    /// another program (Google Drive, an editor) changing the file, so it
+    /// must be neither atomic nor tagged as naiteh's own change.
+    fn write_externally(path: &Path, bytes: &[u8]) {
+        use std::io::Write as _;
+        std::fs::File::create(path)
+            .unwrap()
+            .write_all(bytes)
+            .unwrap();
+    }
 
     fn vault() -> tempfile::TempDir {
         let dir = tempdir().unwrap();
@@ -602,7 +650,8 @@ mod tests {
         let v = vault();
         fsx::atomic_write(&v.path().join("notes/x.md"), b"hello").unwrap();
         let got = notes_read_impl(v.path(), "notes/x.md").unwrap();
-        assert_eq!(got, "hello");
+        assert_eq!(got.content, "hello");
+        assert_eq!(got.version, notes::file_version(b"hello"));
     }
 
     #[test]
@@ -622,11 +671,102 @@ mod tests {
     #[test]
     fn notes_write_atomic_round_trip() {
         let v = vault();
-        let meta = notes_write_impl(v.path(), "notes/x.md", "first version").unwrap();
-        assert_eq!(meta.size, "first version".len() as u64);
-        notes_write_impl(v.path(), "notes/x.md", "second version").unwrap();
+        let written = notes_write_impl(v.path(), "notes/x.md", "first version", None).unwrap();
+        assert_eq!(written.meta.size, "first version".len() as u64);
+        notes_write_impl(v.path(), "notes/x.md", "second version", None).unwrap();
         let read = notes_read_impl(v.path(), "notes/x.md").unwrap();
-        assert_eq!(read, "second version");
+        assert_eq!(read.content, "second version");
+    }
+
+    // ── versions / stale writes ────────────────────────────────────────
+
+    #[test]
+    fn notes_read_version_matches_notes_write_and_notes_version() {
+        let v = vault();
+        let written = notes_write_impl(v.path(), "notes/x.md", "body", None).unwrap();
+        let read = notes_read_impl(v.path(), "notes/x.md").unwrap();
+        assert_eq!(read.version, written.version);
+        assert_eq!(read.version.len(), 64);
+        assert!(read
+            .version
+            .chars()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()));
+        assert_eq!(
+            notes_version_impl(v.path(), "notes/x.md").unwrap(),
+            written.version
+        );
+        // Stable across reads; changes with the bytes.
+        assert_eq!(
+            notes_read_impl(v.path(), "notes/x.md").unwrap().version,
+            read.version
+        );
+        write_externally(&v.path().join("notes/x.md"), b"edited elsewhere");
+        assert_ne!(
+            notes_version_impl(v.path(), "notes/x.md").unwrap(),
+            read.version
+        );
+    }
+
+    #[test]
+    fn notes_version_not_found_and_traversal() {
+        let v = vault();
+        assert!(matches!(
+            notes_version_impl(v.path(), "notes/missing.md"),
+            Err(AppError::NotFound(_))
+        ));
+        assert!(matches!(
+            notes_version_impl(v.path(), "../x.md"),
+            Err(AppError::InvalidPath(_))
+        ));
+    }
+
+    #[test]
+    fn notes_write_with_matching_version_succeeds_and_returns_new_version() {
+        let v = vault();
+        let first = notes_write_impl(v.path(), "notes/x.md", "v1", None).unwrap();
+        let second = notes_write_impl(v.path(), "notes/x.md", "v2", Some(&first.version)).unwrap();
+        assert_ne!(second.version, first.version);
+        assert_eq!(
+            notes_read_impl(v.path(), "notes/x.md").unwrap().content,
+            "v2"
+        );
+        assert_eq!(second.version, notes::file_version(b"v2"));
+    }
+
+    #[test]
+    fn notes_write_with_stale_version_refuses_and_reports_current() {
+        let v = vault();
+        let first = notes_write_impl(v.path(), "notes/x.md", "v1", None).unwrap();
+        // Simulate Google Drive dropping a newer copy on disk.
+        write_externally(&v.path().join("notes/x.md"), b"from the other pc");
+        let current = notes_version_impl(v.path(), "notes/x.md").unwrap();
+        let err = notes_write_impl(v.path(), "notes/x.md", "my autosave", Some(&first.version))
+            .unwrap_err();
+        match err {
+            AppError::StaleWrite(reported) => assert_eq!(reported, current),
+            other => panic!("expected StaleWrite, got {other:?}"),
+        }
+        // Nothing was written.
+        assert_eq!(
+            notes_read_impl(v.path(), "notes/x.md").unwrap().content,
+            "from the other pc"
+        );
+    }
+
+    #[test]
+    fn notes_write_with_version_on_deleted_file_is_stale_with_empty_message() {
+        let v = vault();
+        let first = notes_write_impl(v.path(), "notes/x.md", "v1", None).unwrap();
+        std::fs::remove_file(v.path().join("notes/x.md")).unwrap();
+        let err = notes_write_impl(v.path(), "notes/x.md", "v2", Some(&first.version)).unwrap_err();
+        assert!(
+            matches!(&err, AppError::StaleWrite(m) if m.is_empty()),
+            "{err:?}"
+        );
+        assert!(!v.path().join("notes/x.md").exists());
+        // Without an expected version the file is simply (re)created.
+        notes_write_impl(v.path(), "notes/x.md", "v2", None).unwrap();
+        assert!(v.path().join("notes/x.md").exists());
     }
 
     #[test]
@@ -634,7 +774,7 @@ mod tests {
         let v = vault();
         let meta = notes_create_impl(v.path(), "notes/work", "Hello World!").unwrap();
         assert_eq!(meta.rel_path, "notes/work/hello-world.md");
-        let content = notes_read_impl(v.path(), &meta.rel_path).unwrap();
+        let content = notes_read_impl(v.path(), &meta.rel_path).unwrap().content;
         assert!(content.starts_with("---\ntitle: \"Hello World!\"\n---\n"));
         assert_eq!(meta.title, "Hello World!");
     }
@@ -702,12 +842,12 @@ mod tests {
         fsx::atomic_write(&v.path().join("notes/x.md"), b"---\ntitle: T\n---\nbody").unwrap();
         let meta = notes_set_pinned_impl(v.path(), "notes/x.md", true).unwrap();
         assert!(meta.pinned);
-        let content = notes_read_impl(v.path(), "notes/x.md").unwrap();
+        let content = notes_read_impl(v.path(), "notes/x.md").unwrap().content;
         assert!(content.contains("pinned: true"));
 
         let meta2 = notes_set_pinned_impl(v.path(), "notes/x.md", false).unwrap();
         assert!(!meta2.pinned);
-        let content2 = notes_read_impl(v.path(), "notes/x.md").unwrap();
+        let content2 = notes_read_impl(v.path(), "notes/x.md").unwrap().content;
         assert!(content2.contains("pinned: false"));
     }
 
@@ -716,7 +856,7 @@ mod tests {
         let v = vault();
         fsx::atomic_write(&v.path().join("notes/x.md"), b"plain body\n").unwrap();
         notes_set_pinned_impl(v.path(), "notes/x.md", true).unwrap();
-        let content = notes_read_impl(v.path(), "notes/x.md").unwrap();
+        let content = notes_read_impl(v.path(), "notes/x.md").unwrap().content;
         assert!(content.starts_with("---\npinned: true\n---\n"));
     }
 
@@ -924,7 +1064,7 @@ mod tests {
             let meta = notes_create_impl(v.path(), "notes", title).unwrap();
             assert_eq!(meta.title, title.trim(), "title {title:?}");
             assert!(!meta.pinned, "title {title:?} injected front matter");
-            let content = notes_read_impl(v.path(), &meta.rel_path).unwrap();
+            let content = notes_read_impl(v.path(), &meta.rel_path).unwrap().content;
             // Front matter is exactly one title line.
             assert_eq!(content.matches('\n').count(), 4, "{content:?}");
         }

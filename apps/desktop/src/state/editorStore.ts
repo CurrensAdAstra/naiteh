@@ -17,8 +17,26 @@ export interface OpenFile {
   key: string;
   /** Content as it exists on disk (last saved). */
   savedContent: string;
+  /**
+   * Version token (hex SHA-256 of the file bytes) of `savedContent` on
+   * disk; `""` for a journal entry that doesn't exist yet. Sent back as
+   * `expectedVersion` on every autosave so a file changed outside naiteh
+   * is never overwritten blindly.
+   */
+  savedVersion: string;
   /** Content currently in the editor (may be ahead of disk). */
   content: string;
+}
+
+/**
+ * The open document changed on disk while it had unsaved local edits (or
+ * an autosave was refused with `StaleWrite`). Autosave is held for `key`
+ * until the user resolves it (lib/externalChange); `diskVersion` is the
+ * version the file has now — `""` when it was removed.
+ */
+export interface ExternalChange {
+  key: string;
+  diskVersion: string;
 }
 
 export interface CurrentSelection {
@@ -45,6 +63,8 @@ interface EditorState {
   revision: number;
   /** Most recent autosave failure (null when the last save succeeded). */
   saveError: SaveError | null;
+  /** Unresolved conflict with the file on disk (see {@link ExternalChange}). */
+  externalChange: ExternalChange | null;
   /**
    * Live CodeMirror view; set by EditorPanel on mount. Stored here (rather
    * than in a ref) so sibling panels — most importantly AiPanel — can read
@@ -52,8 +72,13 @@ interface EditorState {
    * Not serialised by zustand.
    */
   view: EditorView | null;
-  openNote: (relPath: string, content: string) => void;
-  openJournal: (date: string, relPath: string, content: string) => void;
+  openNote: (relPath: string, content: string, version: string) => void;
+  openJournal: (
+    date: string,
+    relPath: string,
+    content: string,
+    version: string,
+  ) => void;
   closeNote: () => void;
   /** Close the note *and* drop the view / error state (logout, vault switch). */
   resetEditor: () => void;
@@ -63,18 +88,20 @@ interface EditorState {
    * `key`. No-op when a different note is open now. Only the written text
    * becomes `savedContent` — edits typed during the write stay dirty.
    */
-  markSaved: (key: string, content: string) => void;
+  markSaved: (key: string, content: string, version: string) => void;
   /**
    * Replace the open document with fresh disk content (e.g. after a sync
    * pull). Marks it clean and bumps `revision` so the view reloads.
    */
-  reloadOpen: (key: string, content: string) => void;
+  reloadOpen: (key: string, content: string, version: string) => void;
   /**
    * Point the open document at a new location (rename / folder move)
    * while keeping the in-memory content and dirty state.
    */
   retargetOpen: (fromKey: string, source: OpenSource) => void;
   setSaveError: (key: string, message: string | null) => void;
+  /** Enter (or, with `null`, leave) the changed-on-disk conflict state. */
+  setExternalChange: (change: ExternalChange | null) => void;
   setView: (view: EditorView | null) => void;
 }
 
@@ -88,31 +115,36 @@ export const useEditorStore = create<EditorState>((set) => ({
   open: null,
   revision: 0,
   saveError: null,
+  externalChange: null,
   view: null,
-  openNote: (relPath, content) =>
+  openNote: (relPath, content, version) =>
     set((s) => ({
       open: {
         source: { kind: "note", relPath },
         key: keyFor({ kind: "note", relPath }),
         savedContent: content,
+        savedVersion: version,
         content,
       },
       revision: s.revision + 1,
+      externalChange: null,
     })),
-  openJournal: (date, relPath, content) =>
+  openJournal: (date, relPath, content, version) =>
     set((s) => ({
       open: {
         source: { kind: "journal", date, relPath },
         key: keyFor({ kind: "journal", date, relPath }),
         savedContent: content,
+        savedVersion: version,
         content,
       },
       revision: s.revision + 1,
+      externalChange: null,
     })),
-  closeNote: () => set({ open: null }),
+  closeNote: () => set({ open: null, externalChange: null }),
   resetEditor: () => {
     cancelPendingOpens();
-    set({ open: null, view: null, saveError: null });
+    set({ open: null, view: null, saveError: null, externalChange: null });
   },
   setContent: (content) =>
     set((state) =>
@@ -120,17 +152,29 @@ export const useEditorStore = create<EditorState>((set) => ({
         ? state
         : { open: { ...state.open, content } },
     ),
-  markSaved: (key, content) =>
+  markSaved: (key, content, version) =>
     set((state) => {
       if (state.open === null || state.open.key !== key) return state;
-      if (state.open.savedContent === content) return state;
-      return { open: { ...state.open, savedContent: content } };
+      if (
+        state.open.savedContent === content &&
+        state.open.savedVersion === version
+      ) {
+        return state;
+      }
+      return {
+        open: { ...state.open, savedContent: content, savedVersion: version },
+      };
     }),
-  reloadOpen: (key, content) =>
+  reloadOpen: (key, content, version) =>
     set((state) => {
       if (state.open === null || state.open.key !== key) return state;
       return {
-        open: { ...state.open, content, savedContent: content },
+        open: {
+          ...state.open,
+          content,
+          savedContent: content,
+          savedVersion: version,
+        },
         revision: state.revision + 1,
         saveError: state.saveError?.key === key ? null : state.saveError,
       };
@@ -138,9 +182,14 @@ export const useEditorStore = create<EditorState>((set) => ({
   retargetOpen: (fromKey, source) =>
     set((state) => {
       if (state.open === null || state.open.key !== fromKey) return state;
+      const key = keyFor(source);
       return {
-        open: { ...state.open, source, key: keyFor(source) },
+        open: { ...state.open, source, key },
         saveError: state.saveError?.key === fromKey ? null : state.saveError,
+        externalChange:
+          state.externalChange?.key === fromKey
+            ? { ...state.externalChange, key }
+            : state.externalChange,
       };
     }),
   setSaveError: (key, message) =>
@@ -150,8 +199,28 @@ export const useEditorStore = create<EditorState>((set) => ({
       }
       return { saveError: { key, message } };
     }),
+  setExternalChange: (change) =>
+    set((state) => {
+      if (change === null) {
+        return state.externalChange === null ? state : { externalChange: null };
+      }
+      // Only the open document can be in conflict.
+      if (state.open === null || state.open.key !== change.key) return state;
+      return { externalChange: change };
+    }),
   setView: (view) => set({ view }),
 }));
+
+/** True while the open document is in the changed-on-disk conflict state. */
+export function hasExternalChange(
+  state: Pick<EditorState, "open" | "externalChange">,
+): boolean {
+  return (
+    state.open !== null &&
+    state.externalChange !== null &&
+    state.externalChange.key === state.open.key
+  );
+}
 
 export function isDirty(open: OpenFile): boolean {
   return open.content !== open.savedContent;

@@ -6,6 +6,7 @@ import { openByRelPath } from "../../lib/openByRelPath";
 import { formatAppError } from "../../lib/types";
 import type { SearchHit } from "../../lib/types";
 import { useEditorStore } from "../../state/editorStore";
+import { useVaultContentStore } from "../../state/vaultContentStore";
 import styles from "./SearchListPanel.module.css";
 
 const DEBOUNCE_MS = 250;
@@ -18,6 +19,9 @@ export function SearchListPanel() {
   const [error, setError] = useState<string | null>(null);
   const [hasSearched, setHasSearched] = useState(false);
   const openRelPath = useEditorStore((s) => s.open?.source.relPath ?? null);
+  // Re-run the current query when vault files change elsewhere (sync,
+  // other panels, changes made outside naiteh).
+  const contentVersion = useVaultContentStore((s) => s.version);
 
   useEffect(() => {
     const trimmed = query.trim();
@@ -49,7 +53,7 @@ export function SearchListPanel() {
       cancelled = true;
       clearTimeout(handle);
     };
-  }, [query]);
+  }, [query, contentVersion]);
 
   async function handleOpen(hit: SearchHit) {
     try {

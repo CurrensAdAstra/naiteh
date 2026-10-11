@@ -94,6 +94,12 @@ Keep in mind:
 - Use **one** sync method per vault. If you also turn on the in-app Sync (Git)
   for a vault that Drive syncs between several PCs, Drive and Git will fight
   over the `.git` folder. Backup from a single PC is fine either way.
+- naiteh watches the vault folder: a note changed by Drive is reloaded if
+  you weren't editing it, and if you were, a banner lets you keep yours,
+  load the disk version, or save yours as a `.local-…` copy. Edits are
+  never overwritten silently. "Live updates off" in the status bar means the
+  folder can't be watched (naiteh then re-checks whenever the window gets
+  focus).
 - Don't edit the same note on two PCs at once; Drive keeps both versions as
   separate files and naiteh won't merge them.
 - The in-app Sync (Git) is optional. If you use it with GitHub, use a

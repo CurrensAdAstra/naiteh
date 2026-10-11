@@ -98,13 +98,16 @@ describe("SyncListPanel", () => {
     mockedNotesWrite.mockImplementation(async (relPath, content) => {
       order.push(`write:${relPath}:${content}`);
       return {
-        path: "",
-        relPath,
-        title: "",
-        tags: [],
-        mtime: 0,
-        size: 0,
-        pinned: false,
+        meta: {
+          path: "",
+          relPath,
+          title: "",
+          tags: [],
+          mtime: 0,
+          size: 0,
+          pinned: false,
+        },
+        version: "v2",
       };
     });
     mockedNow.mockImplementation(async () => {
@@ -113,7 +116,7 @@ describe("SyncListPanel", () => {
     });
     mockedNotesRead.mockImplementation(async () => {
       order.push("read");
-      return "pulled from remote";
+      return { content: "pulled from remote", version: "v3" };
     });
     useEditorStore.setState({
       open: {
@@ -121,6 +124,7 @@ describe("SyncListPanel", () => {
         key: "note:notes/a.md",
         content: "local unsaved",
         savedContent: "local",
+        savedVersion: "v1",
       },
     });
     const versionBefore = useVaultContentStore.getState().version;
@@ -168,6 +172,7 @@ describe("SyncListPanel", () => {
         key: `note:${pair.conflictRelPath}`,
         content: "theirs",
         savedContent: "theirs",
+        savedVersion: "v1",
       },
     });
     const user = userEvent.setup();

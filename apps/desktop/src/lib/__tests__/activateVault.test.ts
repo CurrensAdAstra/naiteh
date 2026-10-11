@@ -31,6 +31,7 @@ describe("activateVault", () => {
         key: "note:notes/x.md",
         content: "x",
         savedContent: "x",
+        savedVersion: "v1",
       },
     });
 

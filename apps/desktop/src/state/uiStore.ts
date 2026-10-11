@@ -50,6 +50,17 @@ interface UIState {
   settingsOpen: boolean;
   editorMode: EditorMode;
   pendingAction: PendingAction | null;
+  /**
+   * The vault file watcher reported an error (`vault:watch-error`): list
+   * panels and the open note no longer follow changes made outside naiteh
+   * until the vault is reopened. Holds the backend's message.
+   */
+  liveUpdatesUnavailable: string | null;
+  /**
+   * A short, transient status-bar message ("Unsaved edits kept as …"),
+   * cleared by the status bar after a few seconds.
+   */
+  notice: string | null;
   setViewMode: (mode: ViewMode) => void;
   setListPanelWidth: (px: number) => void;
   setJournalSplitRatio: (ratio: number) => void;
@@ -68,6 +79,8 @@ interface UIState {
   requestNewNote: () => void;
   requestNewFolder: () => void;
   clearPendingAction: () => void;
+  setLiveUpdatesUnavailable: (message: string | null) => void;
+  setNotice: (message: string | null) => void;
 }
 
 export const useUIStore = create<UIState>((set) => ({
@@ -79,6 +92,8 @@ export const useUIStore = create<UIState>((set) => ({
   settingsOpen: false,
   editorMode: "view",
   pendingAction: null,
+  liveUpdatesUnavailable: null,
+  notice: null,
   setViewMode: (mode) => set({ viewMode: mode }),
   setListPanelWidth: (px) =>
     set({ listPanelWidth: clamp(px, LIST_PANEL_MIN, LIST_PANEL_MAX) }),
@@ -104,4 +119,7 @@ export const useUIStore = create<UIState>((set) => ({
   requestNewFolder: () =>
     set({ viewMode: "notes", pendingAction: "newFolder" }),
   clearPendingAction: () => set({ pendingAction: null }),
+  setLiveUpdatesUnavailable: (message) =>
+    set({ liveUpdatesUnavailable: message }),
+  setNotice: (message) => set({ notice: message }),
 }));

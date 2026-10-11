@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
 
 import { describeSyncStatus } from "../lib/syncStatusLabel";
 import { countWords } from "../lib/wordCount";
@@ -9,6 +9,8 @@ import { useUIStore } from "../state/uiStore";
 import { useVaultStore } from "../state/vaultStore";
 import styles from "./StatusBar.module.css";
 
+const NOTICE_MS = 6_000;
+
 export function StatusBar() {
   const active = useVaultStore((s) => s.active);
   const openContent = useEditorStore((s) => s.open?.content ?? null);
@@ -17,7 +19,17 @@ export function StatusBar() {
   const syncNotInitialized = useSyncStore((s) => s.notInitialized);
   const setViewMode = useUIStore((s) => s.setViewMode);
   const setSettingsOpen = useUIStore((s) => s.setSettingsOpen);
+  const liveUpdatesUnavailable = useUIStore((s) => s.liveUpdatesUnavailable);
+  const notice = useUIStore((s) => s.notice);
+  const setNotice = useUIStore((s) => s.setNotice);
   const session = useAuthStore((s) => s.session);
+
+  // Transient notices ("Unsaved edits kept as …") fade after a moment.
+  useEffect(() => {
+    if (notice === null) return;
+    const handle = setTimeout(() => setNotice(null), NOTICE_MS);
+    return () => clearTimeout(handle);
+  }, [notice, setNotice]);
   const clearSession = useAuthStore((s) => s.clearSession);
   const logAction = useAuthStore((s) => s.logAction);
 
@@ -57,6 +69,24 @@ export function StatusBar() {
         </button>
       )}
       <span className={styles.spacer} />
+      {notice !== null && (
+        <span
+          className={styles.placeholder}
+          role="status"
+          data-testid="status-notice"
+        >
+          {notice}
+        </span>
+      )}
+      {liveUpdatesUnavailable !== null && (
+        <span
+          className={styles.placeholder}
+          title={`Changes made outside naiteh are not detected: ${liveUpdatesUnavailable}`}
+          data-testid="status-live-updates"
+        >
+          Live updates off
+        </span>
+      )}
       {saveError !== null && (
         <span
           className={styles.placeholder}

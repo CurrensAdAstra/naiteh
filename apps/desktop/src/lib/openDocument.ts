@@ -1,7 +1,7 @@
 import { journalOpen } from "./api/journal";
 import { notesRead } from "./api/notes";
 import { journalDateFromRelPath, journalRelPathFor } from "./journalPath";
-import { isAppError } from "./types";
+import { isAppError, type NoteDocument } from "./types";
 import { useAuthStore } from "../state/authStore";
 import { useUIStore } from "../state/uiStore";
 import { discardPendingSave, flushPendingSave } from "../state/autosave";
@@ -26,10 +26,14 @@ export function targetForRelPath(relPath: string): OpenTarget {
     : { kind: "note", relPath };
 }
 
-async function readTarget(target: OpenTarget): Promise<string> {
+/**
+ * Read a document plus its on-disk version token. A journal entry that
+ * doesn't exist yet reads as empty with version `""`.
+ */
+export async function readTarget(target: OpenTarget): Promise<NoteDocument> {
   if (target.kind === "journal") {
     const result = await journalOpen(target.date);
-    return result.content;
+    return { content: result.content, version: result.version };
   }
   return notesRead(target.relPath);
 }
@@ -38,7 +42,8 @@ async function readTarget(target: OpenTarget): Promise<string> {
  * The one way to open a document in the editor.
  *
  * 1. Flushes any pending autosave so the document being left is written
- *    to *its own* path (and a re-open of the same path reads fresh text).
+ *    to *its own* path (and a re-open of the same path reads fresh text);
+ *    edits held by a changed-on-disk conflict are kept as a local copy.
  * 2. Reads the target from disk.
  * 3. Applies the result only if no newer open request started meanwhile,
  *    so out-of-order IPC replies can't open a stale selection.
@@ -65,18 +70,23 @@ export async function openDocument(
   opts: OpenOptions = {},
 ): Promise<boolean> {
   const ticket = beginOpen();
-  await flushPendingSave();
+  await flushPendingSave({ leaving: true });
   if (!isLatestOpen(ticket)) return false;
-  const content = await readTarget(target);
+  const { content, version } = await readTarget(target);
   if (!isLatestOpen(ticket)) return false;
   const editor = useEditorStore.getState();
   const previousKey = editor.open?.key ?? null;
   const logAction = useAuthStore.getState().logAction;
   if (target.kind === "journal") {
-    editor.openJournal(target.date, journalRelPathFor(target.date), content);
+    editor.openJournal(
+      target.date,
+      journalRelPathFor(target.date),
+      content,
+      version,
+    );
     void logAction("journal_open", target.date).catch(() => {});
   } else {
-    editor.openNote(target.relPath, content);
+    editor.openNote(target.relPath, content, version);
     void logAction("note_open", target.relPath).catch(() => {});
   }
   // A different document starts in the rendered view; re-opening the
@@ -101,12 +111,13 @@ export async function closeDocument(
   if (opts.discard === true) {
     if (open !== null) discardPendingSave(open.key);
   } else {
-    await flushPendingSave();
+    await flushPendingSave({ leaving: true });
   }
   useEditorStore.getState().closeNote();
 }
 
-function sourceAsTarget(source: OpenSource): OpenTarget {
+/** The open document's source as an {@link OpenTarget} (for re-reads). */
+export function sourceAsTarget(source: OpenSource): OpenTarget {
   return source.kind === "journal"
     ? { kind: "journal", date: source.date }
     : { kind: "note", relPath: source.relPath };
@@ -129,9 +140,9 @@ export async function reloadOpenDocument(): Promise<void> {
   if (open === null || isDirty(open)) return;
   // No open ticket here: a reload must never cancel a user-initiated open.
   // The key check below discards the result if the user moved on.
-  let content: string;
+  let doc: NoteDocument;
   try {
-    content = await readTarget(sourceAsTarget(open.source));
+    doc = await readTarget(sourceAsTarget(open.source));
   } catch (e) {
     const current = useEditorStore.getState().open;
     if (
@@ -149,6 +160,11 @@ export async function reloadOpenDocument(): Promise<void> {
   }
   const current = useEditorStore.getState().open;
   if (current === null || current.key !== open.key || isDirty(current)) return;
-  if (current.content === content) return;
-  useEditorStore.getState().reloadOpen(open.key, content);
+  if (
+    current.content === doc.content &&
+    current.savedVersion === doc.version
+  ) {
+    return;
+  }
+  useEditorStore.getState().reloadOpen(open.key, doc.content, doc.version);
 }

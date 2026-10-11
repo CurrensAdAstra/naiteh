@@ -2,7 +2,7 @@
 title: "Concurrency & Safety"
 tags: [naiteh-wiki, safety, concurrency, privacy]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-10-10T18:00:00+09:00
+updated: 2026-10-11T12:00:00+09:00
 pinned: false
 ---
 
@@ -41,6 +41,52 @@ pinned: false
 - **Read commands off the UI thread** — read / walk commands are `async` and do
   their I/O on the blocking pool, so a large vault never freezes the window
   (see [IPC API → Threading](ipc-api.md#threading)).
+- **External change detection** — the vault folder is usually mirrored by
+  Google Drive for desktop (and may be synced to a second PC), so files change
+  on disk while the app runs. A Tauri-managed `VaultWatcher`
+  (`services/watcher.rs`, built on the `notify` crate) watches the active vault
+  root recursively from its own OS thread — started at app setup, replaced by
+  `vault_set_active` / `vault_create_default`. Raw OS events are debounced
+  into ~400 ms batches, mapped to vault-relative paths in canonical space (so
+  Windows' case / 8.3 spellings strip cleanly; paths that can't be placed under
+  the root are dropped), filtered (`.naiteh/`, `.git/`, naiteh's temp files,
+  Drive / OS junk — list in [IPC API → Events](ipc-api.md#events)), collapsed
+  to one entry per path, and emitted as `vault:changed`. Each batch with a
+  non-own change (or an overflow) also invalidates the tag index. If the
+  native watcher can't start, `notify`'s polling watcher (2 s) takes over;
+  only when both fail — or the running watcher dies — is `vault:watch-error`
+  emitted and the frontend falls back to focus-time `notes_version` checks.
+  The watcher **never takes the vault lock** (it only reads the own-change
+  registry and bumps the index generation), so it cannot deadlock with
+  writers; emission goes through the `AppHandle`.
+- **Own-change tagging** — so the frontend can tell an external edit from the
+  echo of its own save, every mutation `services/fs.rs` performs (`atomic_write`
+  target and any directories it creates, `ensure_dir`, `rename_entry` — both
+  ends, and a renamed directory's subtree — `remove_file`, `remove_dir_all` —
+  the whole tree) is recorded in a process-wide registry
+  (`services/own_changes.rs`: canonical-form path key, case-folded on Windows →
+  `Instant`, **3 s TTL**, pruned on every access, one short `std::sync::Mutex`).
+  Backend code therefore never removes or renames through `std::fs` directly
+  (`notes_delete`, `notes_delete_dir`, conflict resolution and the Evernote
+  rollback all go through the `fsx` helpers). The watcher marks a change
+  `own: true` when its path was recorded within the TTL; it does not consume
+  the record, because one save surfaces as several raw events. Known gap:
+  files libgit2 checks out during a pull are reported as external (harmless —
+  the frontend reloads after a pull anyway).
+- **Optimistic version check** — a **version** is the lowercase hex SHA-256 of
+  a file's bytes (`services/notes.rs` `file_version`), returned by
+  `notes_read` / `journal_open` (and cheaply by `notes_version`). `notes_write`
+  / `journal_save` accept `expected_version`: with `Some(v)` the write happens
+  only if the on-disk version is still `v`, otherwise nothing is written and
+  `AppError::StaleWrite(current)` comes back (`current` = the on-disk version,
+  `""` if the file is gone) so the UI can re-read and let the user reconcile;
+  `None` writes unconditionally (new file / legacy). The compare and the
+  atomic write run **under the per-vault lock**, so they are atomic with
+  respect to every other app write; an external writer landing between the
+  check and the rename is caught by the watcher's next batch and by the
+  version the frontend holds afterwards. This is the safety net under the
+  watcher: even if an own-tagged event hides an external edit within the TTL,
+  the next autosave refuses to overwrite it.
 - **Path containment** — note paths are resolved with `notes::resolve_in_vault`,
   which canonicalizes the deepest existing ancestor and refuses anything escaping
   the vault, including via a symlink committed by a malicious synced remote. It
@@ -55,7 +101,10 @@ pinned: false
   fast-forward / merge checkout would otherwise clobber them). Use `sync_now` (commits first)
   when there are local edits.
 - **Auto-save (frontend, `src/state/autosave.ts`)** — the editor debounces
-  saves at 800 ms idle; explicit save on Ctrl/Cmd-S. Each pending save is keyed
+  saves at 800 ms idle; explicit save on Ctrl/Cmd-S. Saves pass the version
+  the editor last read or wrote as `expected_version`, so a copy that arrived
+  on disk from outside (Drive, another PC) is never silently overwritten — a
+  `StaleWrite` keeps the edit dirty and surfaces the conflict. Each pending save is keyed
   **per document** and captures its target (note path or journal date) and
   vault when the edit happens, so a timer firing after the user switched notes
   still writes the original file — and is dropped if the active vault changed.

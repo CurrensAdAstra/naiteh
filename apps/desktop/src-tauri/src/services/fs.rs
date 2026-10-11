@@ -4,6 +4,12 @@
 //! vault/wiki/concurrency-safety.md). The implementation writes to a sibling temp file,
 //! fsyncs it, then renames over the target — atomic on POSIX and on
 //! NTFS via `MoveFileEx` semantics that Rust's `rename` invokes.
+//!
+//! Every mutation here — writes, directory creation, renames, removals —
+//! also records its paths in `services::own_changes`, so the vault
+//! watcher can tag the resulting filesystem events as naiteh's own.
+//! Backend code must therefore remove / rename through [`remove_file`],
+//! [`remove_dir_all`] and [`rename_entry`] rather than `std::fs`.
 
 use std::fs::{self, File};
 use std::io::Write;
@@ -15,8 +21,16 @@ use serde::de::DeserializeOwned;
 use serde::Serialize;
 
 use crate::domain::AppError;
+use crate::services::own_changes;
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Marker inside the sibling temp-file name `atomic_write` uses
+/// (`.<name>.tmp.<suffix>`); the watcher filters such names out.
+pub const TMP_MARKER: &str = ".tmp.";
+/// Marker inside the sibling name `rename_entry` uses for a case-only
+/// rename (`.<name>.rename.<suffix>`); filtered out likewise.
+pub const RENAME_MARKER: &str = ".rename.";
 
 fn unique_suffix() -> String {
     let pid = std::process::id();
@@ -36,7 +50,7 @@ pub fn atomic_write(target: &Path, contents: &[u8]) -> Result<(), AppError> {
     let parent = target.parent().ok_or_else(|| {
         AppError::InvalidPath(format!("path has no parent: {}", target.display()))
     })?;
-    fs::create_dir_all(parent)?;
+    ensure_dir(parent)?;
 
     let file_name = target
         .file_name()
@@ -46,7 +60,7 @@ pub fn atomic_write(target: &Path, contents: &[u8]) -> Result<(), AppError> {
         .to_string_lossy()
         .into_owned();
 
-    let tmp_path: PathBuf = parent.join(format!(".{file_name}.tmp.{}", unique_suffix()));
+    let tmp_path: PathBuf = parent.join(format!(".{file_name}{TMP_MARKER}{}", unique_suffix()));
 
     let write_result = (|| -> Result<(), AppError> {
         let mut f = File::create(&tmp_path)?;
@@ -60,17 +74,69 @@ pub fn atomic_write(target: &Path, contents: &[u8]) -> Result<(), AppError> {
         return Err(e);
     }
 
+    // Recorded before and after the rename: the watcher's debounce makes
+    // the "after" record sufficient in practice, the "before" one covers
+    // a flush racing the rename.
+    own_changes::record(target);
     if let Err(e) = fs::rename(&tmp_path, target) {
         let _ = fs::remove_file(&tmp_path);
         return Err(AppError::Io(e.to_string()));
     }
+    own_changes::record(target);
     Ok(())
 }
 
-/// Ensure a directory exists (no error if already present).
+/// Ensure a directory exists (no error if already present). Every level
+/// this call creates is recorded as an own change.
 pub fn ensure_dir(dir: &Path) -> Result<(), AppError> {
+    if dir.is_dir() {
+        return Ok(());
+    }
+    let mut created: Vec<&Path> = Vec::new();
+    let mut cur = Some(dir);
+    while let Some(p) = cur {
+        if p.exists() {
+            break;
+        }
+        created.push(p);
+        cur = p.parent();
+    }
     fs::create_dir_all(dir)?;
+    for p in created {
+        own_changes::record(p);
+    }
     Ok(())
+}
+
+/// Remove a file, recording it as an own change first. Returns the raw
+/// `io::Error` so callers keep mapping `NotFound` to their own message.
+pub fn remove_file(path: &Path) -> std::io::Result<()> {
+    own_changes::record(path);
+    fs::remove_file(path)
+}
+
+/// Remove a directory tree, recording the directory and every entry
+/// under it as own changes first (the watcher reports each removal).
+/// Like `std::fs::remove_dir_all`, a symlinked directory is removed
+/// itself, never its target. Returns the raw `io::Error`.
+pub fn remove_dir_all(path: &Path) -> std::io::Result<()> {
+    record_tree(path);
+    fs::remove_dir_all(path)
+}
+
+fn record_tree(path: &Path) {
+    own_changes::record(path);
+    let is_link = fs::symlink_metadata(path)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(true);
+    if is_link || !path.is_dir() {
+        return;
+    }
+    if let Ok(entries) = fs::read_dir(path) {
+        for entry in entries.flatten() {
+            record_tree(&entry.path());
+        }
+    }
 }
 
 /// Run blocking filesystem work on Tauri's blocking thread pool.
@@ -132,8 +198,15 @@ pub fn is_case_only_alias(from: &Path, to: &Path) -> bool {
 /// through a unique temporary sibling name. Callers are expected to
 /// have already rejected a genuinely different existing `to`.
 pub fn rename_entry(from: &Path, to: &Path) -> Result<(), AppError> {
+    // Both ends are own changes: the watcher reports a rename as
+    // removed(from) + created(to). A directory rename moves its whole
+    // subtree, so record that too (events may name the children).
+    record_tree(from);
+    own_changes::record(to);
     if !is_case_only_alias(from, to) {
-        return fs::rename(from, to).map_err(|e| AppError::Io(e.to_string()));
+        fs::rename(from, to).map_err(|e| AppError::Io(e.to_string()))?;
+        own_changes::record(to);
+        return Ok(());
     }
     let parent = to
         .parent()
@@ -142,13 +215,14 @@ pub fn rename_entry(from: &Path, to: &Path) -> Result<(), AppError> {
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let tmp = parent.join(format!(".{name}.rename.{}", unique_suffix()));
+    let tmp = parent.join(format!(".{name}{RENAME_MARKER}{}", unique_suffix()));
     fs::rename(from, &tmp).map_err(|e| AppError::Io(e.to_string()))?;
     if let Err(e) = fs::rename(&tmp, to) {
         // Put it back so the user doesn't lose the entry to a hidden name.
         let _ = fs::rename(&tmp, from);
         return Err(AppError::Io(e.to_string()));
     }
+    own_changes::record(to);
     Ok(())
 }
 
@@ -285,6 +359,45 @@ mod tests {
             Err::<(), _>(AppError::NotFound("x".into()))
         }));
         assert!(matches!(e, Err(AppError::NotFound(_))));
+    }
+
+    // ── own-change tagging ─────────────────────────────────────────────
+
+    #[test]
+    fn atomic_write_records_target_and_created_dirs_as_own() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("deep/er/note.md");
+        atomic_write(&target, b"hi").unwrap();
+        assert!(own_changes::is_own(&target));
+        assert!(own_changes::is_own(&dir.path().join("deep")));
+        assert!(own_changes::is_own(&dir.path().join("deep/er")));
+        // Unrelated siblings are not.
+        assert!(!own_changes::is_own(&dir.path().join("deep/other.md")));
+    }
+
+    #[test]
+    fn remove_and_rename_helpers_record_both_ends() {
+        let dir = tempdir().unwrap();
+        let a = dir.path().join("a.md");
+        let b = dir.path().join("b.md");
+        std::fs::write(&a, b"x").unwrap();
+        rename_entry(&a, &b).unwrap();
+        assert!(own_changes::is_own(&a));
+        assert!(own_changes::is_own(&b));
+        remove_file(&b).unwrap();
+        assert!(!b.exists());
+        assert!(own_changes::is_own(&b));
+
+        let tree = dir.path().join("tree");
+        std::fs::create_dir_all(tree.join("sub")).unwrap();
+        std::fs::write(tree.join("sub/x.md"), b"x").unwrap();
+        remove_dir_all(&tree).unwrap();
+        assert!(!tree.exists());
+        assert!(own_changes::is_own(&tree));
+        assert!(own_changes::is_own(&tree.join("sub")));
+        assert!(own_changes::is_own(&tree.join("sub/x.md")));
+        // A missing file still surfaces the io error.
+        assert!(remove_file(&dir.path().join("ghost.md")).is_err());
     }
 
     #[test]

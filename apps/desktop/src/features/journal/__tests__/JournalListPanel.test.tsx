@@ -119,7 +119,7 @@ describe("JournalListPanel", () => {
     mockedQuickList.mockResolvedValue([]);
     mockedActivityRecent.mockResolvedValue([]);
     mockedQuickCreate.mockResolvedValue(noteFixture);
-    mockedNotesRead.mockResolvedValue("");
+    mockedNotesRead.mockResolvedValue({ content: "", version: "v1" });
     const user = userEvent.setup();
     render(<JournalListPanel />);
     await screen.findByText(/no quick notes yet/i);
@@ -144,7 +144,7 @@ describe("JournalListPanel", () => {
   it("clicking a Quick Capture entry opens it via notesRead", async () => {
     mockedQuickList.mockResolvedValue([noteFixture]);
     mockedActivityRecent.mockResolvedValue([]);
-    mockedNotesRead.mockResolvedValue("note body");
+    mockedNotesRead.mockResolvedValue({ content: "note body", version: "v1" });
     const user = userEvent.setup();
     render(<JournalListPanel />);
     const button = await screen.findByTestId(
@@ -167,6 +167,7 @@ describe("JournalListPanel", () => {
       path: "ignored",
       content: "day body",
       exists: true,
+    version: "v1",
     });
     const user = userEvent.setup();
     render(<JournalListPanel />);
@@ -188,7 +189,7 @@ describe("JournalListPanel", () => {
   it("clicking a Recent Activity note dispatches notesRead", async () => {
     mockedQuickList.mockResolvedValue([]);
     mockedActivityRecent.mockResolvedValue([noteItemFixture]);
-    mockedNotesRead.mockResolvedValue("standup body");
+    mockedNotesRead.mockResolvedValue({ content: "standup body", version: "v1" });
     const user = userEvent.setup();
     render(<JournalListPanel />);
     const button = await screen.findByTestId(

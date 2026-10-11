@@ -25,11 +25,21 @@ export function journalOpen(date: string): Promise<JournalOpenResult> {
   return invoke<JournalOpenResult>("journal_open", { date });
 }
 
+/**
+ * Save an entry. `expectedVersion` follows the `notes_write` rule
+ * (`StaleWrite` when the on-disk version differs); pass `null` for an
+ * entry that doesn't exist yet or to overwrite unconditionally.
+ */
 export function journalSave(
   date: string,
   content: string,
+  expectedVersion: string | null,
 ): Promise<JournalSaveResult> {
-  return invoke<JournalSaveResult>("journal_save", { date, content });
+  return invoke<JournalSaveResult>("journal_save", {
+    date,
+    content,
+    expectedVersion,
+  });
 }
 
 export function journalMonthMeta(

@@ -123,7 +123,7 @@ describe("SearchListPanel", () => {
       mockedSearch.mockResolvedValue([
         hit("notes/work/standup.md", "Standup", 1, "agenda"),
       ]);
-      mockedNotesRead.mockResolvedValue("body");
+      mockedNotesRead.mockResolvedValue({ content: "body", version: "v1" });
       const user = userEvent.setup();
       render(<SearchListPanel />);
       await user.type(screen.getByTestId("search-input"), "agenda");
@@ -155,6 +155,7 @@ describe("SearchListPanel", () => {
         path: "ignored",
         content: "day body",
         exists: true,
+      version: "v1",
       });
       const user = userEvent.setup();
       render(<SearchListPanel />);

@@ -2,7 +2,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { NoteMeta } from "../../../lib/types";
+import type { NoteDocument, NoteMeta } from "../../../lib/types";
 import { useEditorStore } from "../../../state/editorStore";
 import { useUIStore } from "../../../state/uiStore";
 import { NotesListPanel } from "../NotesListPanel";
@@ -75,6 +75,7 @@ function openNoteState(relPath: string, content: string, saved: string) {
       key: `note:${relPath}`,
       content,
       savedContent: saved,
+      savedVersion: "v1",
     },
   });
 }
@@ -83,7 +84,10 @@ describe("NotesListPanel", () => {
   beforeEach(() => {
     resetAutosaveForTests();
     mockedWrite.mockReset();
-    mockedWrite.mockImplementation(async (relPath) => note(relPath, "x"));
+    mockedWrite.mockImplementation(async (relPath) => ({
+      meta: note(relPath, "x"),
+      version: "v2",
+    }));
     mockedList.mockReset();
     mockedRead.mockReset();
     mockedCreate.mockReset();
@@ -126,7 +130,7 @@ describe("NotesListPanel", () => {
 
   it("loads file content and updates editorStore on click", async () => {
     mockedList.mockResolvedValue([note("notes/loose.md", "Loose")]);
-    mockedRead.mockResolvedValue("hello body");
+    mockedRead.mockResolvedValue({ content: "hello body", version: "v1" });
     const user = userEvent.setup();
     render(<NotesListPanel />);
     const fileButton = await screen.findByTestId("notes-file-notes/loose.md");
@@ -150,7 +154,7 @@ describe("NotesListPanel", () => {
     mockedList.mockResolvedValueOnce([]);
     mockedList.mockResolvedValueOnce([created]);
     mockedCreate.mockResolvedValue(created);
-    mockedRead.mockResolvedValue("---\ntitle: My New Note\n---\n");
+    mockedRead.mockResolvedValue({ content: "---\ntitle: My New Note\n---\n", version: "v1" });
 
     const user = userEvent.setup();
     render(<NotesListPanel />);
@@ -183,6 +187,7 @@ describe("NotesListPanel", () => {
         key: "note:notes/loose.md",
         content: "x",
         savedContent: "x",
+        savedVersion: "v1",
       },
     });
     render(<NotesListPanel />);
@@ -257,6 +262,7 @@ describe("NotesListPanel", () => {
         key: "note:notes/loose.md",
         content: "x",
         savedContent: "x",
+        savedVersion: "v1",
       },
     });
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -302,7 +308,7 @@ describe("NotesListPanel", () => {
     );
     // Pending edits were written to the file before it was deleted.
     expect(mockedWrite).toHaveBeenCalledTimes(1);
-    expect(mockedWrite).toHaveBeenCalledWith("notes/loose.md", "edited");
+    expect(mockedWrite).toHaveBeenCalledWith("notes/loose.md", "edited", "v1");
 
     // While the delete is in flight the user types and the debounce fires.
     useEditorStore.getState().setContent("edited more");
@@ -329,7 +335,7 @@ describe("NotesListPanel", () => {
       await screen.findByTestId("notes-rename-notes/loose.md"),
     );
     await waitFor(() => expect(mockedRename).toHaveBeenCalled());
-    expect(mockedWrite).toHaveBeenCalledWith("notes/loose.md", "v1");
+    expect(mockedWrite).toHaveBeenCalledWith("notes/loose.md", "v1", "v1");
 
     // Typing during the rename; its debounce fires mid-rename.
     useEditorStore.getState().setContent("v2");
@@ -348,7 +354,7 @@ describe("NotesListPanel", () => {
     const oldPathWrites = mockedWrite.mock.calls.filter(
       ([p]) => p === "notes/loose.md",
     );
-    expect(oldPathWrites).toEqual([["notes/loose.md", "v1"]]);
+    expect(oldPathWrites).toEqual([["notes/loose.md", "v1", "v1"]]);
     promptSpy.mockRestore();
   });
 
@@ -357,8 +363,8 @@ describe("NotesListPanel", () => {
       note("notes/a.md", "A"),
       note("notes/b.md", "B"),
     ]);
-    const a = deferred<string>();
-    const b = deferred<string>();
+    const a = deferred<NoteDocument>();
+    const b = deferred<NoteDocument>();
     mockedRead.mockImplementation((p) =>
       p === "notes/a.md" ? a.promise : b.promise,
     );
@@ -368,11 +374,11 @@ describe("NotesListPanel", () => {
     await waitFor(() => expect(mockedRead).toHaveBeenCalledWith("notes/a.md"));
     await user.click(screen.getByTestId("notes-file-notes/b.md"));
     await waitFor(() => expect(mockedRead).toHaveBeenCalledWith("notes/b.md"));
-    b.resolve("B body");
+    b.resolve({ content: "B body", version: "vb" });
     await waitFor(() =>
       expect(useEditorStore.getState().open?.key).toBe("note:notes/b.md"),
     );
-    a.resolve("A body");
+    a.resolve({ content: "A body", version: "va" });
     await new Promise((r) => setTimeout(r, 20));
     expect(useEditorStore.getState().open?.key).toBe("note:notes/b.md");
     expect(useEditorStore.getState().open?.content).toBe("B body");
@@ -441,7 +447,7 @@ describe("NotesListPanel", () => {
     const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("From Menu");
     mockedList.mockResolvedValue([]);
     mockedCreate.mockResolvedValue(note("notes/from-menu.md", "From Menu"));
-    mockedRead.mockResolvedValue("body");
+    mockedRead.mockResolvedValue({ content: "body", version: "v1" });
     useUIStore.setState({ pendingAction: "newNote" });
 
     render(<NotesListPanel />);

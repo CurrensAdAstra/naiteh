@@ -13,6 +13,7 @@ function setOpen(content: string) {
       key: "note:notes/x.md",
       content,
       savedContent: content,
+      savedVersion: "v1",
     },
   });
 }

@@ -135,16 +135,18 @@ fn journal_open_impl(vault_root: &Path, date: &str) -> Result<JournalOpenResult,
     validate_date(date)?;
     let path = journal_path_for(vault_root, date)?;
     let path_str = path.to_string_lossy().to_string();
-    match std::fs::read_to_string(&path) {
-        Ok(content) => Ok(JournalOpenResult {
+    match notes::read_document(&path) {
+        Ok((content, version)) => Ok(JournalOpenResult {
             path: path_str,
             content,
             exists: true,
+            version,
         }),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(JournalOpenResult {
             path: path_str,
             content: String::new(),
             exists: false,
+            version: String::new(),
         }),
         Err(e) => Err(AppError::Io(e.to_string())),
     }
@@ -152,6 +154,9 @@ fn journal_open_impl(vault_root: &Path, date: &str) -> Result<JournalOpenResult,
 
 // ── journal_save ─────────────────────────────────────────────────────────
 
+/// Conflict-safe save with the same `expected_version` / `StaleWrite`
+/// semantics as `notes_write` (`""` is the version of a missing entry,
+/// so passing `journal_open`'s `version` back always works).
 #[tauri::command]
 pub async fn journal_save(
     active: tauri::State<'_, ActiveSession>,
@@ -159,6 +164,7 @@ pub async fn journal_save(
     index: tauri::State<'_, TagIndex>,
     date: String,
     content: String,
+    expected_version: Option<String>,
 ) -> Result<JournalSaveResult, AppError> {
     require_session(&active)?;
     let vault_root = config::current_vault_root()?;
@@ -166,8 +172,10 @@ pub async fn journal_save(
     let _guard = lock.lock().await;
     let root = vault_root.clone();
     let date_for_save = date.clone();
-    let result =
-        fsx::run_blocking(move || journal_save_impl(&root, &date_for_save, &content)).await;
+    let result = fsx::run_blocking(move || {
+        journal_save_impl(&root, &date_for_save, &content, expected_version.as_deref())
+    })
+    .await;
     if result.is_ok() {
         index.invalidate(&vault_root);
         if let Ok(config_dir) = config::default_app_config_dir() {
@@ -187,14 +195,16 @@ fn journal_save_impl(
     vault_root: &Path,
     date: &str,
     content: &str,
+    expected_version: Option<&str>,
 ) -> Result<JournalSaveResult, AppError> {
     validate_date(date)?;
     let path = journal_path_for(vault_root, date)?;
-    fsx::atomic_write(&path, content.as_bytes())?;
+    let version = notes::write_versioned(&path, content, expected_version)?;
     let mtime = notes::mtime_secs(&path);
     Ok(JournalSaveResult {
         path: path.to_string_lossy().to_string(),
         mtime,
+        version,
     })
 }
 
@@ -555,7 +565,7 @@ mod tests {
         let vault = tempfile::tempdir().unwrap();
         let outside = tempfile::tempdir().unwrap();
         symlink(outside.path(), vault.path().join("journal")).unwrap();
-        let err = journal_save_impl(vault.path(), "2026-05-09", "x").unwrap_err();
+        let err = journal_save_impl(vault.path(), "2026-05-09", "x", None).unwrap_err();
         assert!(matches!(err, AppError::InvalidPath(_)), "got {err:?}");
         assert!(std::fs::read_dir(outside.path()).unwrap().next().is_none());
     }
@@ -573,7 +583,7 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success());
-        let err = journal_save_impl(vault.path(), "2026-05-09", "x").unwrap_err();
+        let err = journal_save_impl(vault.path(), "2026-05-09", "x", None).unwrap_err();
         assert!(matches!(err, AppError::InvalidPath(_)), "got {err:?}");
         let err = journal_open_impl(vault.path(), "2026-05-09").unwrap_err();
         assert!(matches!(err, AppError::InvalidPath(_)), "got {err:?}");
@@ -612,7 +622,7 @@ mod tests {
     #[test]
     fn journal_save_creates_directory_tree_and_file() {
         let vault = tempfile::tempdir().unwrap();
-        let result = journal_save_impl(vault.path(), "2026-05-09", "first version").unwrap();
+        let result = journal_save_impl(vault.path(), "2026-05-09", "first version", None).unwrap();
         let path = vault.path().join("journal/2026/05/2026-05-09.md");
         assert!(path.is_file());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "first version");
@@ -623,10 +633,58 @@ mod tests {
     #[test]
     fn journal_save_overwrites_existing_file() {
         let vault = tempfile::tempdir().unwrap();
-        journal_save_impl(vault.path(), "2026-05-09", "v1").unwrap();
-        journal_save_impl(vault.path(), "2026-05-09", "v2").unwrap();
+        journal_save_impl(vault.path(), "2026-05-09", "v1", None).unwrap();
+        journal_save_impl(vault.path(), "2026-05-09", "v2", None).unwrap();
         let read = journal_open_impl(vault.path(), "2026-05-09").unwrap();
         assert_eq!(read.content, "v2");
+    }
+
+    #[test]
+    fn journal_open_version_matches_save_and_is_empty_when_missing() {
+        let vault = tempfile::tempdir().unwrap();
+        let missing = journal_open_impl(vault.path(), "2026-05-09").unwrap();
+        assert!(!missing.exists);
+        assert_eq!(missing.version, "");
+        let saved = journal_save_impl(vault.path(), "2026-05-09", "entry", None).unwrap();
+        assert_eq!(saved.version, notes::file_version(b"entry"));
+        let opened = journal_open_impl(vault.path(), "2026-05-09").unwrap();
+        assert!(opened.exists);
+        assert_eq!(opened.version, saved.version);
+    }
+
+    #[test]
+    fn journal_save_stale_write_semantics() {
+        let vault = tempfile::tempdir().unwrap();
+        let path = vault.path().join("journal/2026/05/2026-05-09.md");
+        // A brand-new entry: journal_open gave "" — but with Some("") the
+        // entry must not exist yet, which it doesn't: stale check passes
+        // only when current == expected, and current of a missing file
+        // is "" too.
+        let v1 = journal_save_impl(vault.path(), "2026-05-09", "v1", Some("")).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "v1");
+        // Match → written.
+        let v2 = journal_save_impl(vault.path(), "2026-05-09", "v2", Some(&v1.version)).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "v2");
+        // Mismatch → StaleWrite(current), nothing written.
+        let err =
+            journal_save_impl(vault.path(), "2026-05-09", "v3", Some(&v1.version)).unwrap_err();
+        assert!(
+            matches!(&err, AppError::StaleWrite(cur) if *cur == v2.version),
+            "{err:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "v2");
+        // Deleted underneath → StaleWrite("").
+        std::fs::remove_file(&path).unwrap();
+        let err =
+            journal_save_impl(vault.path(), "2026-05-09", "v3", Some(&v2.version)).unwrap_err();
+        assert!(
+            matches!(&err, AppError::StaleWrite(cur) if cur.is_empty()),
+            "{err:?}"
+        );
+        assert!(!path.exists());
+        // None → unconditional.
+        journal_save_impl(vault.path(), "2026-05-09", "v3", None).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "v3");
     }
 
     // ── journal_month_meta ────────────────────────────────────────────────

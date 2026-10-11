@@ -2,7 +2,7 @@
 title: "IPC API (Tauri Commands)"
 tags: [naiteh-wiki, ipc, api, commands]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-10-10T20:00:00+09:00
+updated: 2026-10-11T12:00:00+09:00
 pinned: false
 ---
 
@@ -23,6 +23,8 @@ pub enum AppError {
     Validation(String),         // semantic input check (empty field, …)
     Network(String),            // transport didn't reach the remote
     Upstream(String),           // remote replied with error / bad body
+    StaleWrite(String),         // conflict-safe write refused: message = current on-disk
+                                // version (hex SHA-256), "" if the file is gone; nothing written
     Cancelled,                  // user dismissed a picker / dialog
 }
 ```
@@ -33,7 +35,12 @@ categories — `Network` ("Network error — …"), `Upstream` ("Service error �
 for the rest. A network failure is never mislabelled as I/O.
 
 On the wire the `kind` is the variant name, e.g.
-`{ "kind": "Unauthorized", "message": "not signed in" }`.
+`{ "kind": "Unauthorized", "message": "not signed in" }` or
+`{ "kind": "StaleWrite", "message": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" }`.
+`StaleWrite` is returned only by `notes_write` / `journal_save` called with an
+`expected_version` (see [Concurrency & Safety → Optimistic version
+check](concurrency-safety.md)); the frontend re-reads and lets the user
+reconcile instead of overwriting.
 
 ## Session gate
 
@@ -101,9 +108,16 @@ naiteh vault (`.naiteh/`, or `notes/` + `journal/`). The stored / returned
 
 ```rust
 journal_month_meta(year: u16, month: u8) -> Result<Vec<DayMeta>, AppError>
-journal_open(date: String) -> Result<JournalOpenResult, AppError>
-journal_save(date: String, content: String) -> Result<JournalSaveResult, AppError>
+journal_open(date: String) -> Result<JournalOpenResult, AppError>   // { path, content, exists, version }
+journal_save(date: String, content: String, expected_version: Option<String>)
+    -> Result<JournalSaveResult, AppError>                          // { path, mtime, version }
 ```
+
+`journal_open` returns the **version** of the entry on disk (`""` when
+`exists` is false). `journal_save` has the same `expected_version` /
+`StaleWrite` semantics as `notes_write` below; passing `journal_open`'s
+`version` back always works, because `""` is also the current version of a
+missing entry. Wire argument: `expectedVersion`.
 
 ## Quick capture
 
@@ -127,8 +141,10 @@ All three read the in-memory index snapshot (`services/index.rs` →
 
 ```rust
 notes_list(rel_dir: Option<String>) -> Result<Vec<NoteMeta>, AppError>
-notes_read(rel_path: String) -> Result<String, AppError>
-notes_write(rel_path: String, content: String) -> Result<NoteMeta, AppError>
+notes_read(rel_path: String) -> Result<NoteDocument, AppError>      // { content, version }
+notes_version(rel_path: String) -> Result<String, AppError>         // current version; NotFound if missing
+notes_write(rel_path: String, content: String, expected_version: Option<String>)
+    -> Result<NoteWriteResult, AppError>                            // { meta: NoteMeta, version }
 notes_create(rel_dir: String, title: String) -> Result<NoteMeta, AppError>
 notes_delete(rel_path: String) -> Result<(), AppError>
 notes_rename(from: String, to: String) -> Result<NoteMeta, AppError>
@@ -151,6 +167,20 @@ already be in the normal form described in
 [Vault & Data → Vault-relative paths](vault-and-data.md#vault-relative-paths);
 nothing is silently "fixed up".
 
+- **Versions / conflict-safe writes.** A `version` is the lowercase hex
+  SHA-256 of the file's bytes on disk (`services/notes.rs` `file_version`).
+  `notes_read` returns the version of what it read; `notes_write` with
+  `expected_version: Some(v)` writes only if the file still has version `v`
+  (compared under the per-vault lock) and otherwise returns
+  `StaleWrite(current)` without touching the file — `current` being the
+  on-disk version, or `""` if the file was deleted underneath.
+  `expected_version: None` writes unconditionally (new file, legacy caller).
+  On success the result carries the version of the bytes just written (what
+  the next save should expect). `notes_version` is the cheap freshness probe
+  (e.g. on window focus) that avoids transferring content; it is read-only and
+  takes no lock. `notes_create` / `quick_create` keep returning `NoteMeta` —
+  the frontend opens the new file via `notes_read`. Wire argument:
+  `expectedVersion`.
 - `notes_create` names the file from the title by the
   [slug rules](vault-and-data.md#file-names-and-slugs) (`-1`, `-2`, … on
   collision) and writes `title:` as a double-quoted, escaped YAML string, so
@@ -188,7 +218,7 @@ is skipped.
 ## Threading
 
 Every command that reads or walks the vault — `notes_list`, `notes_read`,
-`notes_list_dirs`, `quick_list`, `journal_open`, `journal_month_meta`,
+`notes_version`, `notes_list_dirs`, `quick_list`, `journal_open`, `journal_month_meta`,
 `activity_recent`, `timeline_*`, `tags_*`, `search_text` — is `async` and does
 its filesystem work on the blocking pool (`services::fs::run_blocking`), as do
 the vault-mutating notes / journal / attachment / Evernote commands and the
@@ -482,6 +512,87 @@ Import behaviour (`services/evernote/`):
   `index-2.md`) so it can never overwrite the note body. Dropped resources
   (e.g. ink) become per-note `warnings`.
 
+## Events
+
+Besides the request/response commands above, the backend pushes two kinds of
+events to every window (Tauri `emit`; the frontend subscribes with `listen`).
+Payloads are camelCase.
+
+### `vault:changed` — files changed on disk
+
+Emitted by the vault watcher (`services/watcher.rs`, a `notify` watcher on the
+active vault root, recursive) once per debounced batch (~400 ms after the
+first raw OS event of the batch):
+
+```json
+{
+  "vaultRoot": "C:\\Users\\me\\Documents\\duramen",
+  "changes": [
+    { "relPath": "notes/work/plan.md", "kind": "modified", "own": false },
+    { "relPath": "notes/old.md",       "kind": "removed",  "own": false },
+    { "relPath": "notes/new.md",       "kind": "created",  "own": false },
+    { "relPath": "notes/_inbox/2026-10-11T09-00-00.md", "kind": "created", "own": true }
+  ],
+  "overflow": false
+}
+```
+
+- `vaultRoot` is the active vault's stored (canonical) path, as in
+  `VaultInfo.root`; a late batch from a watcher that was just replaced carries
+  the old root, so compare before acting.
+- `relPath` is vault-relative in [normal form](vault-and-data.md#vault-relative-paths)
+  (forward slashes). Directories appear with their own path (`kind` applies to
+  the directory). A rename arrives as `removed` (old) + `created` (new).
+- `kind` ∈ `created` | `modified` | `removed`. One entry per path per batch:
+  the raw events for a path are collapsed, and the final kind is decided by
+  what was reported **and** whether the path exists when the batch closes —
+  gone → `removed`; present after a create **and** a remove in the same batch
+  (replace / delete-and-recreate) → `modified`; present after a create →
+  `created`; anything else present → `modified`. Because atomic saves (naiteh's
+  own, Drive's, many editors') replace the file by rename, an edited note may
+  surface as `created`; treat `created` and `modified` alike for an open
+  document (reload if its version differs).
+- `own` is true when naiteh itself caused the change: every write, directory
+  creation, rename and removal the backend performs is recorded in a
+  process-wide "recent own changes" set (`services/own_changes.rs`, canonical
+  path → instant, 3 s TTL), and the watcher checks each change's path against
+  it. Conflict sidecars written by sync, Evernote imports, attachments and
+  quick notes are own. Files that libgit2 checks out during a pull are **not**
+  tagged (the frontend already reloads after a pull).
+- Filtered out entirely (never reported): anything under `.naiteh/` or `.git/`
+  (any depth, case-insensitive); naiteh's own temp files
+  (`.<name>.tmp.<suffix>`, `.<name>.rename.<suffix>`); `desktop.ini`,
+  `Thumbs.db`, `.DS_Store`; `~$*`; `*.tmp`, `*.crdownload`; `*.gdoc`,
+  `*.gsheet`, `*.gslides`; names starting with `.~lock.`; and any path that
+  cannot be made vault-relative (outside the canonical root, non-UTF-8 name).
+- `overflow: true` means the OS watcher lost events (buffer overflow / rescan
+  requested); `changes` may then be empty. Treat it as "refresh everything".
+- Every batch that contains a non-own change (or an overflow) also invalidates
+  the in-memory tag index for that vault, so tags / search / timeline reflect
+  external edits on their next read.
+
+### `vault:watch-error` — live updates unavailable
+
+```json
+{ "vaultRoot": "G:\\My Drive\\duramen", "message": "native watcher: …; polling watcher: …" }
+```
+
+Emitted when no watcher could be started for the active vault or the running
+one died (e.g. the vault folder became inaccessible). The native watcher
+(ReadDirectoryChangesW / FSEvents / inotify) is tried first; if it fails to
+start, `notify`'s polling watcher (2 s scans) takes over silently, so a
+virtual drive such as `G:\My Drive` degrades to polling, not to an error.
+Only when both fail is this event sent; the frontend shows "live updates
+unavailable" and falls back to focus-time `notes_version` checks.
+
+**Lifecycle.** The watcher is Tauri-managed state (`VaultWatcher`, `lib.rs`).
+It is started at app setup for the configured active vault (if any) and
+restarted — replacing the previous watcher — by `vault_set_active` and
+`vault_create_default`, the two commands after which a different vault is
+active (`vault_init` alone activates nothing; the frontend follows it with
+`vault_set_active`). It runs on its own OS thread, never holds the vault lock,
+and emits through the `AppHandle`.
+
 ## Native menu events
 
 Custom native-menu items emit `menu:*` events that `shell/useMenuEvents` routes
@@ -510,5 +621,8 @@ the conflict-resolution commands — acquires the per-vault mutex
 (`services/vault_lock.rs`) before touching files and, when note files changed,
 invalidates the tag index on success. Two exceptions to "hold it for the whole
 command": `evernote_import` takes the lock per note, and the sync commands hold
-it only for their local phases (never across the network). See
+it only for their local phases (never across the network). The vault watcher
+never takes the lock; `notes_write` / `journal_save` perform their
+`expected_version` check and the write under it, so the compare-and-write is
+atomic with respect to every other app write. See
 [Concurrency & Safety](concurrency-safety.md).

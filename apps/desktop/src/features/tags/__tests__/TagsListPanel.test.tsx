@@ -89,7 +89,7 @@ describe("TagsListPanel", () => {
     mockedTagsNotes.mockResolvedValue([
       note("notes/work/standup.md", "Standup"),
     ]);
-    mockedNotesRead.mockResolvedValue("standup body");
+    mockedNotesRead.mockResolvedValue({ content: "standup body", version: "v1" });
 
     const user = userEvent.setup();
     render(<TagsListPanel />);
@@ -117,6 +117,7 @@ describe("TagsListPanel", () => {
       path: "ignored",
       content: "day body",
       exists: true,
+    version: "v1",
     });
 
     const user = userEvent.setup();
@@ -148,6 +149,7 @@ describe("TagsListPanel", () => {
         key: "note:notes/work/standup.md",
         content: "x",
         savedContent: "x",
+        savedVersion: "v1",
       },
     });
 

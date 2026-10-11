@@ -2,7 +2,7 @@
 title: "Domain Model"
 tags: [naiteh-wiki, domain, types, ipc]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-10-10T20:00:00+09:00
+updated: 2026-10-11T12:00:00+09:00
 pinned: false
 ---
 
@@ -10,7 +10,7 @@ pinned: false
 
 IPC-boundary types are defined in Rust under `src-tauri/src/domain/`, one module
 per area (`error.rs`, `auth.rs`, `journal.rs`, `note.rs`, `search.rs`, `sync.rs`,
-`vault.rs`, `attachment.rs`, `evernote.rs`), re-exported flat as
+`vault.rs`, `attachment.rs`, `evernote.rs`, `watch.rs`), re-exported flat as
 `crate::domain::Foo` via `mod.rs`, and mirrored in TypeScript (`src/lib/types.ts`).
 A few types live next to the service that owns their serialized form:
 `AppConfig` / `AiConfig` (on disk) and `AppConfigView` / `AiConfigView` (over
@@ -19,9 +19,10 @@ IPC) in `services/config.rs`, `LastOpened` / `WorkspaceState` in
 are `camelCase` over the IPC boundary (the Rust field names shown below are
 snake_case; they serialize camelCase via `#[serde(rename_all = "camelCase")]`).
 Two exceptions: the `AppError` error type (incl. `Unauthorized`, returned by the
-session gate and by credential / token failures) is documented in
-[ipc-api.md](ipc-api.md), and `UserRole` serializes as the bare PascalCase
-strings `"Admin"` / `"User"` (no renaming, no tag — see below).
+session gate and by credential / token failures, and `StaleWrite`, returned by
+a refused conflict-safe write) is documented in [ipc-api.md](ipc-api.md), and
+`UserRole` serializes as the bare PascalCase strings `"Admin"` / `"User"` (no
+renaming, no tag — see below).
 
 ## Journal
 
@@ -35,8 +36,14 @@ pub struct DayMeta {
     pub snippet: Option<String>, // first ~200 chars of body, no front matter
 }
 
-pub struct JournalOpenResult { pub path: String, pub content: String, pub exists: bool }
-pub struct JournalSaveResult { pub path: String, pub mtime: i64 }
+pub struct JournalOpenResult {
+    pub path: String, pub content: String, pub exists: bool,
+    pub version: String,         // version of the bytes read; "" when !exists
+}
+pub struct JournalSaveResult {
+    pub path: String, pub mtime: i64,
+    pub version: String,         // version of the bytes just written
+}
 ```
 
 ## Notes
@@ -51,7 +58,28 @@ pub struct NoteMeta {
     pub size: u64,
     pub pinned: bool,        // from front matter
 }
+
+pub struct NoteDocument {    // notes_read
+    pub content: String,
+    pub version: String,     // version of the bytes read
+}
+
+pub struct NoteWriteResult { // notes_write
+    pub meta: NoteMeta,
+    pub version: String,     // version of the bytes just written
+}
 ```
+
+**Version** — the lowercase hex SHA-256 of a file's bytes on disk (64
+characters; `services/notes.rs` `file_version`). It is content-derived, so it
+needs no shared state between machines and is identical wherever the same
+bytes land (a Drive mirror, the other PC). `notes_read` / `journal_open`
+return it, `notes_version` reads it cheaply, and `notes_write` /
+`journal_save` take it back as `expected_version` for an optimistic
+concurrency check: a mismatch is `AppError::StaleWrite(current_version)`
+(`""` when the file no longer exists) and nothing is written. See
+[IPC API → Notes](ipc-api.md#notes) and [Concurrency &
+Safety](concurrency-safety.md).
 
 ## Activity / Timeline
 
@@ -70,6 +98,33 @@ pub struct TimelineDay { pub date: String, pub items: Vec<TimelineItem> } // dat
 
 ```rust
 pub struct VaultInfo { pub root: String, pub name: String, pub initialized: bool } // initialized = .naiteh/ exists
+```
+
+## Vault change events
+
+Payloads of the two events the vault watcher pushes to the frontend
+(`domain/watch.rs`; semantics in [IPC API → Events](ipc-api.md#events)):
+
+```rust
+#[serde(rename_all = "lowercase")]
+pub enum ChangeKind { Created, Modified, Removed }     // "created" | "modified" | "removed"
+
+pub struct VaultChange {
+    pub rel_path: String,      // vault-relative, normal form; directories included
+    pub kind: ChangeKind,
+    pub own: bool,             // naiteh itself caused it (recorded within the 3 s own-change TTL)
+}
+
+pub struct VaultChanged {      // event `vault:changed` — one debounced batch
+    pub vault_root: String,    // the watched vault (compare with VaultInfo.root)
+    pub changes: Vec<VaultChange>,   // at most one entry per rel_path
+    pub overflow: bool,        // OS watcher lost events → refresh everything; changes may be empty
+}
+
+pub struct VaultWatchError {   // event `vault:watch-error` — live updates unavailable
+    pub vault_root: String,
+    pub message: String,
+}
 ```
 
 ## Search & Tags

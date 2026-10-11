@@ -36,10 +36,10 @@ vi.mock("@codemirror/state", () => ({
 }));
 
 vi.mock("../../lib/api/notes", () => ({
-  notesWrite: vi.fn().mockResolvedValue({}),
+  notesWrite: vi.fn().mockResolvedValue({ meta: {}, version: "v2" }),
 }));
 vi.mock("../../lib/api/journal", () => ({
-  journalSave: vi.fn().mockResolvedValue({}),
+  journalSave: vi.fn().mockResolvedValue({ path: "", mtime: 0, version: "v2" }),
 }));
 vi.mock("../../lib/api/attachments", () => ({
   attachmentsImport: vi.fn().mockResolvedValue({
@@ -63,6 +63,7 @@ function noteOpen(relPath: string, content: string, saved: string) {
     key: `note:${relPath}`,
     content,
     savedContent: saved,
+    savedVersion: "v1",
   };
 }
 
@@ -76,6 +77,7 @@ function journalOpen(date: string, content: string, saved: string) {
     key: `journal:${date}`,
     content,
     savedContent: saved,
+    savedVersion: "v1",
   };
 }
 
@@ -195,7 +197,12 @@ describe("EditorPanel", () => {
     });
     expect(useEditorStore.getState().open?.content).toBe("- [x] buy milk\n");
     await waitFor(
-      () => expect(mockedWrite).toHaveBeenCalledWith("notes/x.md", "- [x] buy milk\n"),
+      () =>
+        expect(mockedWrite).toHaveBeenCalledWith(
+          "notes/x.md",
+          "- [x] buy milk\n",
+          "v1",
+        ),
       { timeout: 2000 },
     );
   });
@@ -259,7 +266,7 @@ describe("EditorPanel", () => {
       });
       await waitFor(
         () => {
-          expect(mockedWrite).toHaveBeenCalledWith("notes/x.md", "dirty");
+          expect(mockedWrite).toHaveBeenCalledWith("notes/x.md", "dirty", "v1");
         },
         { timeout: 1500 },
       );
@@ -284,6 +291,7 @@ describe("EditorPanel", () => {
           expect(mockedJournalSave).toHaveBeenCalledWith(
             "2026-05-09",
             "dirty",
+            "v1",
           );
         },
         { timeout: 1500 },
@@ -300,7 +308,7 @@ describe("EditorPanel", () => {
       new KeyboardEvent("keydown", { key: "s", metaKey: true }),
     );
     await waitFor(() => {
-      expect(mockedWrite).toHaveBeenCalledWith("notes/x.md", "fresh");
+      expect(mockedWrite).toHaveBeenCalledWith("notes/x.md", "fresh", "v1");
     });
   });
 });

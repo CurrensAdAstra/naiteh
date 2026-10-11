@@ -49,15 +49,61 @@ export interface DayMeta {
   snippet: string | null;
 }
 
+/**
+ * A note's text plus its version token: the hex SHA-256 of the file bytes
+ * as read. Writes send it back as `expectedVersion` so a file that changed
+ * on disk meanwhile (Google Drive sync, another editor) is never silently
+ * overwritten — see `AppError` kind `StaleWrite`.
+ */
+export interface NoteDocument {
+  content: string;
+  version: string;
+}
+
+export interface NoteWriteResult {
+  meta: NoteMeta;
+  /** Version token of the bytes just written. */
+  version: string;
+}
+
 export interface JournalOpenResult {
   path: string;
   content: string;
   exists: boolean;
+  /** Version token of the entry on disk; `""` when it doesn't exist yet. */
+  version: string;
 }
 
 export interface JournalSaveResult {
   path: string;
   mtime: number;
+  version: string;
+}
+
+// ── vault watcher events (lib/vaultWatch) ───────────────────────────────
+
+export type VaultChangeKind = "created" | "modified" | "removed";
+
+export interface VaultChange {
+  /** Vault-relative, forward slashes. Renames arrive as removed + created. */
+  relPath: string;
+  kind: VaultChangeKind;
+  /** True when naiteh itself caused the change (autosave, create, delete…). */
+  own: boolean;
+}
+
+/** Payload of the `vault:changed` Tauri event. */
+export interface VaultChangedPayload {
+  vaultRoot: string;
+  changes: VaultChange[];
+  /** The watcher lost events: treat everything as possibly changed. */
+  overflow: boolean;
+}
+
+/** Payload of the `vault:watch-error` Tauri event. */
+export interface VaultWatchErrorPayload {
+  vaultRoot: string;
+  message: string;
 }
 
 export interface TagCount {
@@ -257,6 +303,12 @@ export type AppError =
   | { kind: "Validation"; message: string }
   | { kind: "Network"; message: string }
   | { kind: "Upstream"; message: string }
+  /**
+   * A write with `expectedVersion` was refused because the file on disk
+   * has a different version (or is gone). `message` carries the current
+   * on-disk version token — `""` when the file no longer exists.
+   */
+  | { kind: "StaleWrite"; message: string }
   | { kind: "Cancelled" };
 
 export function isAppError(err: unknown): err is AppError {
@@ -266,11 +318,19 @@ export function isAppError(err: unknown): err is AppError {
   return typeof kind === "string";
 }
 
+/** The optimistic-concurrency refusal; `message` is the on-disk version. */
+export function isStaleWrite(
+  err: unknown,
+): err is { kind: "StaleWrite"; message: string } {
+  return isAppError(err) && err.kind === "StaleWrite";
+}
+
 export function formatAppError(err: unknown): string {
   if (isAppError(err)) {
     if (err.kind === "Cancelled") return "Operation cancelled";
     if (err.kind === "Network") return `Network error — ${err.message}`;
     if (err.kind === "Upstream") return `Service error — ${err.message}`;
+    if (err.kind === "StaleWrite") return "The file changed on disk";
     return err.message;
   }
   if (err instanceof Error) return err.message;

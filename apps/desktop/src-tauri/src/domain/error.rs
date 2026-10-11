@@ -45,6 +45,15 @@ pub enum AppError {
     #[error("Upstream: {0}")]
     Upstream(String),
 
+    /// A conflict-safe write (`notes_write` / `journal_save` with an
+    /// `expected_version`) found a different version on disk, so nothing
+    /// was written. The message is the **current on-disk version** (the
+    /// hex SHA-256 the caller must re-read against), or `""` when the
+    /// file no longer exists. See vault/wiki/concurrency-safety.md
+    /// ("Optimistic version check").
+    #[error("Stale write: {0}")]
+    StaleWrite(String),
+
     #[error("Cancelled")]
     Cancelled,
 }
@@ -69,6 +78,11 @@ mod tests {
 
         let json = serde_json::to_string(&AppError::Validation("empty field".into())).unwrap();
         assert_eq!(json, r#"{"kind":"Validation","message":"empty field"}"#);
+
+        let json = serde_json::to_string(&AppError::StaleWrite("ab12".into())).unwrap();
+        assert_eq!(json, r#"{"kind":"StaleWrite","message":"ab12"}"#);
+        let json = serde_json::to_string(&AppError::StaleWrite(String::new())).unwrap();
+        assert_eq!(json, r#"{"kind":"StaleWrite","message":""}"#);
     }
 
     #[test]

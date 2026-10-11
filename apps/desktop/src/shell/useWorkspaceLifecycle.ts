@@ -7,6 +7,7 @@ import {
 } from "../lib/api/workspace";
 import { openDocument, type OpenTarget } from "../lib/openDocument";
 import type { LastOpened } from "../lib/types";
+import { startVaultWatch } from "../lib/vaultWatch";
 import { flushPendingSave } from "../state/autosave";
 import { useEditorStore } from "../state/editorStore";
 import { useSyncStore } from "../state/syncStore";
@@ -33,6 +34,9 @@ function targetForLastOpened(last: LastOpened): OpenTarget {
  *    a stale marker if that file no longer exists.
  * 3. Persist the last-opened file on every fresh open-transition.
  * 4. Flush unsaved edits before the window closes.
+ * 5. Follow changes made to the vault outside naiteh (Google Drive sync,
+ *    other editors) so lists refetch and the open note reloads or enters
+ *    the conflict state (lib/vaultWatch).
  */
 export function useWorkspaceLifecycle(): void {
   // 1. Sync status refresh.
@@ -106,7 +110,7 @@ export function useWorkspaceLifecycle(): void {
         const win = getCurrentWindow();
         const un = await win.onCloseRequested(async (event) => {
           event.preventDefault();
-          await flushPendingSave();
+          await flushPendingSave({ leaving: true });
           try {
             await win.destroy();
           } catch (e) {
@@ -125,6 +129,26 @@ export function useWorkspaceLifecycle(): void {
       disposed = true;
       unlisten?.();
       unlisten = null;
+    };
+  }, []);
+
+  // 5. Watch the vault for changes made outside naiteh. Torn down when the
+  // shell unmounts (logout) or remounts for another vault.
+  useEffect(() => {
+    let disposed = false;
+    let stop: (() => void) | null = null;
+    void startVaultWatch()
+      .then((s) => {
+        if (disposed) s();
+        else stop = s;
+      })
+      .catch((e: unknown) => {
+        console.warn("vault watch unavailable:", e);
+      });
+    return () => {
+      disposed = true;
+      stop?.();
+      stop = null;
     };
   }, []);
 }

@@ -116,7 +116,7 @@ describe("session gate (Unauthorized from a non-auth command)", () => {
   });
 
   it("logs out through the normal logout path and explains why", async () => {
-    useEditorStore.getState().openNote("notes/private.md", "secret");
+    useEditorStore.getState().openNote("notes/private.md", "secret", "v1");
     mockedTauriInvoke.mockRejectedValue({
       kind: "Unauthorized",
       message: "no active session",
@@ -161,13 +161,16 @@ describe("authStore.clearSession (logout)", () => {
     resetAutosaveForTests();
     mockedWrite.mockReset();
     mockedWrite.mockResolvedValue({
-      path: "",
-      relPath: "",
-      title: "",
-      tags: [],
-      mtime: 0,
-      size: 0,
-      pinned: false,
+      meta: {
+        path: "",
+        relPath: "",
+        title: "",
+        tags: [],
+        mtime: 0,
+        size: 0,
+        pinned: false,
+      },
+      version: "v2",
     });
     useEditorStore.setState({ open: null, view: null, saveError: null });
     useAuthStore.setState({
@@ -184,16 +187,19 @@ describe("authStore.clearSession (logout)", () => {
       // The note must still be open while its edits are written.
       order.push(`open:${useEditorStore.getState().open?.key ?? "none"}`);
       return {
-        path: "",
-        relPath,
-        title: "",
-        tags: [],
-        mtime: 0,
-        size: 0,
-        pinned: false,
+        meta: {
+          path: "",
+          relPath,
+          title: "",
+          tags: [],
+          mtime: 0,
+          size: 0,
+          pinned: false,
+        },
+        version: "v2",
       };
     });
-    useEditorStore.getState().openNote("notes/private.md", "secret");
+    useEditorStore.getState().openNote("notes/private.md", "secret", "v1");
     const parent = document.createElement("div");
     const view = new EditorView({
       state: EditorState.create({ doc: "secret" }),

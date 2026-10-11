@@ -23,7 +23,7 @@ describe("openByRelPath", () => {
   });
 
   it("dispatches to notesRead for note paths", async () => {
-    mockedNotesRead.mockResolvedValue("body");
+    mockedNotesRead.mockResolvedValue({ content: "body", version: "v1" });
     await openByRelPath("notes/work/standup.md");
     expect(mockedNotesRead).toHaveBeenCalledWith("notes/work/standup.md");
     expect(useEditorStore.getState().open?.source).toEqual({
@@ -37,6 +37,7 @@ describe("openByRelPath", () => {
       path: "ignored",
       content: "day",
       exists: true,
+    version: "v1",
     });
     await openByRelPath("journal/2026/05/2026-05-09.md");
     expect(mockedJournalOpen).toHaveBeenCalledWith("2026-05-09");
@@ -48,7 +49,7 @@ describe("openByRelPath", () => {
   });
 
   it("treats non-canonical 'journal/...' paths as plain notes", async () => {
-    mockedNotesRead.mockResolvedValue("note body");
+    mockedNotesRead.mockResolvedValue({ content: "note body", version: "v1" });
     await openByRelPath("journal/draft.md");
     expect(mockedNotesRead).toHaveBeenCalledWith("journal/draft.md");
     expect(mockedJournalOpen).not.toHaveBeenCalled();

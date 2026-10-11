@@ -6,9 +6,70 @@
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
+use sha2::{Digest, Sha256};
+
 use crate::domain::{AppError, NoteMeta};
+use crate::services::fs as fsx;
 
 const SNIPPET_LEN: usize = 200;
+
+// ── versions (optimistic concurrency) ─────────────────────────────────────
+
+/// The **version** token of a document: lowercase hex SHA-256 of the
+/// file's bytes on disk. Content-derived, so two machines (or a Drive
+/// mirror) agree on it without any shared state, and a save that writes
+/// the same bytes back yields the same token. See
+/// vault/wiki/concurrency-safety.md ("Optimistic version check").
+pub fn file_version(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    let mut out = String::with_capacity(64);
+    for b in digest {
+        out.push_str(&format!("{b:02x}"));
+    }
+    out
+}
+
+/// Current on-disk version of `abs`; `None` when the file does not exist.
+pub fn current_version(abs: &Path) -> Result<Option<String>, AppError> {
+    match std::fs::read(abs) {
+        Ok(bytes) => Ok(Some(file_version(&bytes))),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(AppError::Io(e.to_string())),
+    }
+}
+
+/// Read a UTF-8 document and the version of the bytes it came from. The
+/// raw `io::Error` is returned so callers can map `NotFound` themselves.
+pub fn read_document(abs: &Path) -> std::io::Result<(String, String)> {
+    let bytes = std::fs::read(abs)?;
+    let version = file_version(&bytes);
+    let content = String::from_utf8(bytes)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+    Ok((content, version))
+}
+
+/// Compare-and-write. With `expected = Some(v)` the write only happens
+/// when the file exists and its current version is `v`; otherwise
+/// nothing is written and `StaleWrite(current)` is returned — `current`
+/// being the on-disk version, or `""` when the file is gone. With
+/// `expected = None` the write is unconditional (new file / legacy
+/// caller). Returns the version of the bytes written. Callers hold the
+/// per-vault lock so the check and the write are atomic with respect to
+/// other app writes.
+pub fn write_versioned(
+    abs: &Path,
+    content: &str,
+    expected: Option<&str>,
+) -> Result<String, AppError> {
+    if let Some(expected) = expected {
+        let current = current_version(abs)?.unwrap_or_default();
+        if current != expected {
+            return Err(AppError::StaleWrite(current));
+        }
+    }
+    fsx::atomic_write(abs, content.as_bytes())?;
+    Ok(file_version(content.as_bytes()))
+}
 
 /// Subset of front matter fields naiteh actually consumes today.
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -1039,6 +1100,54 @@ mod tests {
                 .join("missing")
                 .join("deeper")
         );
+    }
+
+    // ── versions ───────────────────────────────────────────────────────
+
+    #[test]
+    fn file_version_is_lowercase_hex_sha256() {
+        assert_eq!(
+            file_version(b""),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+        assert_eq!(
+            file_version(b"abc"),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
+    }
+
+    #[test]
+    fn write_versioned_match_mismatch_missing_and_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let abs = dir.path().join("n.md");
+        // Missing file + expected version → StaleWrite("") and no file.
+        let err = write_versioned(&abs, "x", Some("deadbeef")).unwrap_err();
+        assert!(
+            matches!(&err, AppError::StaleWrite(v) if v.is_empty()),
+            "{err:?}"
+        );
+        assert!(!abs.exists());
+        // None writes unconditionally.
+        let v1 = write_versioned(&abs, "one", None).unwrap();
+        assert_eq!(v1, file_version(b"one"));
+        assert_eq!(current_version(&abs).unwrap().as_deref(), Some(v1.as_str()));
+        // Matching expected version writes.
+        let v2 = write_versioned(&abs, "two", Some(&v1)).unwrap();
+        assert_eq!(std::fs::read_to_string(&abs).unwrap(), "two");
+        // Stale expected version refuses and reports the current one.
+        let err = write_versioned(&abs, "three", Some(&v1)).unwrap_err();
+        assert!(
+            matches!(&err, AppError::StaleWrite(v) if *v == v2),
+            "{err:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&abs).unwrap(), "two");
+        // read_document agrees with the written version.
+        let (content, version) = read_document(&abs).unwrap();
+        assert_eq!(content, "two");
+        assert_eq!(version, v2);
+        assert!(current_version(&dir.path().join("missing.md"))
+            .unwrap()
+            .is_none());
     }
 
     #[test]

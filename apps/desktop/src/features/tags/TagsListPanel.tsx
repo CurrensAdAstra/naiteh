@@ -5,6 +5,7 @@ import { openByRelPath } from "../../lib/openByRelPath";
 import { formatAppError } from "../../lib/types";
 import type { NoteMeta, TagCount } from "../../lib/types";
 import { useEditorStore } from "../../state/editorStore";
+import { useVaultContentStore } from "../../state/vaultContentStore";
 import styles from "./TagsListPanel.module.css";
 
 type Mode = "all" | "any";
@@ -63,9 +64,17 @@ export function TagsListPanel() {
     }
   }, []);
 
+  // Refetch on mount and whenever vault files change elsewhere (sync,
+  // other panels, changes made outside naiteh): the tag counts and the
+  // notes behind the selected tags are both re-read.
+  const contentVersion = useVaultContentStore((s) => s.version);
   useEffect(() => {
     void refreshTags();
-  }, [refreshTags]);
+    fetchedTagsRef.current.clear();
+    // A fresh Set re-runs the per-tag fetch effect below for the current
+    // selection (no-op when nothing is selected).
+    setSelectedTags((prev) => (prev.size === 0 ? prev : new Set(prev)));
+  }, [refreshTags, contentVersion]);
 
   // Fetch notes for any newly-selected tag; trim caches of de-selected
   // tags. We avoid depending on `perTagNotes` because every prune/insert

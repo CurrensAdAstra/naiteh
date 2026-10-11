@@ -335,6 +335,36 @@ which is why the default capability grants `core:window:allow-destroy`.
 The precise ordering guarantees are facts and live in the wiki
 ([concurrency-safety.md](vault/wiki/concurrency-safety.md)).
 
+#### External file changes
+
+The vault is backed up and possibly shared between machines by a folder
+sync service (Google Drive, see README), so files change on disk while
+the app runs. Two mechanisms cover that:
+
+- **Vault watcher** (`services/watcher.rs`, `notify` crate, own thread,
+  polling fallback). It emits the `vault:changed` event with coalesced,
+  vault-relative changes; the app's own writes are tagged `own: true`
+  via a short-lived registry fed by `services/fs.rs`
+  (`services/own_changes.rs`), and `.naiteh/`, `.git/`, temp and sync
+  junk files are filtered out. `lib/vaultWatch.ts` listens: non-own
+  batches refresh every list and re-check the open document; a window
+  focus re-check (throttled) is the safety net when the watcher misses
+  events; a watcher failure surfaces as "Live updates off" in the status
+  bar (`vault:watch-error`).
+- **Version tokens** (optimistic concurrency). `notes_read` /
+  `journal_open` return a `version` (SHA-256 of the file bytes), the
+  editor keeps it as `savedVersion`, and every autosave sends it as
+  `expectedVersion`. If the disk moved on, the backend refuses with
+  `StaleWrite` instead of overwriting. The editor then shows the
+  external-change banner: *Load disk version*, *Keep mine* (conditional
+  write against the newer version), or *Save mine as copy*
+  (`<stem>.local-<timestamp>.md`). A clean document is simply reloaded;
+  a deleted one is closed (or, if dirty, offered re-save / copy). Held
+  edits are never dropped silently: leaving the document writes them to a
+  `.local-` copy. Shapes and rules are in the wiki
+  ([ipc-api.md](vault/wiki/ipc-api.md) "Events",
+  [concurrency-safety.md](vault/wiki/concurrency-safety.md)).
+
 ### 4.2 Theme
 
 naiteh ships with a **light theme** by default, inspired by **VS Code's
@@ -629,6 +659,9 @@ explicitly assign notes to past or future dates (true Agenda-style
   converge, joining an existing remote from a fresh vault
 - Editor: per-document serialized autosave with retry and flush-before-
   switch / close; latest-request-wins document opening; lazy-loaded editor
+- External file-change detection: vault watcher + `vault:changed` events,
+  version-checked writes (`StaleWrite`), conflict banner with keep / load /
+  save-as-copy, focus re-check (§4.1 "External file changes")
 - Local AI providers (Ollama) — key-free, on-device AI Assist
 - Native application menu with global shortcuts (§4.3)
 - CLI hooks (`<app-config-dir>/hooks/on-note-save|on-journal-save|on-sync`;

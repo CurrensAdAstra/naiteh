@@ -187,7 +187,7 @@ fn import_one_note(
     if let Err(e) = write_note_files(vault_root, &note_rel, &planned, &full) {
         // unique_slug guaranteed the folder didn't exist before this
         // note, so removing it only discards our own partial output.
-        let _ = std::fs::remove_dir_all(&note_dir);
+        let _ = fsx::remove_dir_all(&note_dir);
         return Err(e);
     }
 

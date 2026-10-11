@@ -38,6 +38,9 @@ md-5 = "0.10"
 argon2 = { version = "0.5", features = ["std"] }
 password-hash = { version = "0.5", features = ["getrandom"] }
 getrandom = "0.2"
+# External file-change detection for the active vault (services/watcher.rs).
+# 8.2.0 was published 2025-08-03; the 9.x line is still a release candidate.
+notify = "8.2"
 
 [dev-dependencies]
 tempfile = "3"

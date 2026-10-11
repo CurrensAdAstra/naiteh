@@ -21,6 +21,7 @@ use crate::services::config;
 use crate::services::fs as fsx;
 use crate::services::session::{require_session, ActiveSession};
 use crate::services::vault_path::{self, VaultPathPolicy};
+use crate::services::watcher;
 
 const NAITEH_DIR: &str = ".naiteh";
 
@@ -120,8 +121,9 @@ const DEFAULT_VAULT_NAME: &str = "duramen";
 /// back to `duramen-2`, `duramen-3`, … if the name is taken),
 /// initialize it as a vault, and make it active.
 #[tauri::command]
-pub fn vault_create_default(
+pub fn vault_create_default<R: Runtime>(
     active: tauri::State<'_, ActiveSession>,
+    app: AppHandle<R>,
 ) -> Result<VaultInfo, AppError> {
     require_session(&active)?;
     let config_dir = config::default_app_config_dir()?;
@@ -129,7 +131,10 @@ pub fn vault_create_default(
     let documents = dirs::document_dir()
         .or_else(dirs::home_dir)
         .ok_or_else(|| AppError::NotFound("no Documents directory on this system".into()))?;
-    vault_create_default_impl(&config_dir, &documents, &VaultPathPolicy::system())
+    let info = vault_create_default_impl(&config_dir, &documents, &VaultPathPolicy::system())?;
+    // The new vault is active now: watch it for external changes.
+    watcher::restart(&app, PathBuf::from(&info.root));
+    Ok(info)
 }
 
 fn vault_create_default_impl(
@@ -181,14 +186,20 @@ fn vault_current_impl(config_dir: &Path) -> Result<Option<VaultInfo>, AppError> 
 }
 
 #[tauri::command]
-pub fn vault_set_active(
+pub fn vault_set_active<R: Runtime>(
     active: tauri::State<'_, ActiveSession>,
+    app: AppHandle<R>,
     root: String,
 ) -> Result<VaultInfo, AppError> {
     require_session(&active)?;
     let dir = config::default_app_config_dir()?;
     fsx::ensure_dir(&dir)?;
-    vault_set_active_impl(&dir, &root, &VaultPathPolicy::system())
+    let info = vault_set_active_impl(&dir, &root, &VaultPathPolicy::system())?;
+    // Switch the file watcher to the newly active vault (replaces the
+    // previous one). `vault_init` alone doesn't activate a vault — the
+    // frontend always follows it with `vault_set_active`.
+    watcher::restart(&app, PathBuf::from(&info.root));
+    Ok(info)
 }
 
 /// Make `root` the active vault. It must pass the vault-path policy and

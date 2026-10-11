@@ -85,6 +85,7 @@ function setOpenWithView(viewObj: ReturnType<typeof makeFakeView>["view"]) {
       key: "note:notes/x.md",
       content: "doc body",
       savedContent: "doc body",
+      savedVersion: "v1",
     },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     view: viewObj as any,
@@ -209,6 +210,7 @@ describe("AiPanel", () => {
         key: "note:notes/other.md",
         content: "alpha beta gamma",
         savedContent: "alpha beta gamma",
+        savedVersion: "v1",
       },
     });
     await user.click(apply);
@@ -271,6 +273,7 @@ describe("AiPanel", () => {
         key: "note:notes/x.md",
         content: "full document body",
         savedContent: "full document body",
+        savedVersion: "v1",
       },
       view: null,
     });

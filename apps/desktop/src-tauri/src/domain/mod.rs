@@ -14,13 +14,15 @@ pub mod note;
 pub mod search;
 pub mod sync;
 pub mod vault;
+pub mod watch;
 
 pub use attachment::AttachmentImport;
 pub use auth::{AuditLogEntry, AuthSession, AuthUser, LoginResult, UserRole};
 pub use error::AppError;
 pub use evernote::{EvernoteImportReport, EvernoteImportedNote};
 pub use journal::{DayMeta, JournalOpenResult, JournalSaveResult, TimelineDay, TimelineItem};
-pub use note::NoteMeta;
+pub use note::{NoteDocument, NoteMeta, NoteWriteResult};
 pub use search::{SearchHit, TagCount};
 pub use sync::SyncStatus;
 pub use vault::VaultInfo;
+pub use watch::{ChangeKind, VaultChange, VaultChanged, VaultWatchError};

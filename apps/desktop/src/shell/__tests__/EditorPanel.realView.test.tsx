@@ -72,7 +72,7 @@ describe("EditorPanel with a real CodeMirror view", () => {
   beforeEach(() => {
     resetAutosaveForTests();
     mockedWrite.mockReset();
-    mockedWrite.mockResolvedValue(META);
+    mockedWrite.mockResolvedValue({ meta: META, version: "v2" });
     mockedRead.mockReset();
     mockedAttachmentsImport.mockReset();
     useEditorStore.setState({ open: null, view: null, saveError: null });
@@ -89,7 +89,7 @@ describe("EditorPanel with a real CodeMirror view", () => {
       fileName: "a.png",
       markdown: "![a](attachments/a.png)",
     });
-    act(() => useEditorStore.getState().openNote("notes/x.md", "body"));
+    act(() => useEditorStore.getState().openNote("notes/x.md", "body", "v1"));
     render(<EditorPanel />);
     typeAtEnd("!");
     expect(useEditorStore.getState().open?.content).toBe("body!");
@@ -104,27 +104,27 @@ describe("EditorPanel with a real CodeMirror view", () => {
   });
 
   it("switching notes with a pending debounce writes the edits to the original path", async () => {
-    act(() => useEditorStore.getState().openNote("notes/a.md", "A"));
+    act(() => useEditorStore.getState().openNote("notes/a.md", "A", "v1"));
     render(<EditorPanel />);
     typeAtEnd(" edited");
     // Debounce (800ms) has not fired yet.
     expect(mockedWrite).not.toHaveBeenCalled();
 
-    mockedRead.mockResolvedValue("B body");
+    mockedRead.mockResolvedValue({ content: "B body", version: "v1" });
     await act(async () => {
       await openDocument({ kind: "note", relPath: "notes/b.md" });
     });
 
     expect(mockedWrite).toHaveBeenCalledTimes(1);
-    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "A edited");
+    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "A edited", "v1");
     expect(useEditorStore.getState().open?.key).toBe("note:notes/b.md");
     await waitFor(() => expect(view().state.doc.toString()).toBe("B body"));
   });
 
   it("re-opening the same path reloads the view with disk text", async () => {
-    act(() => useEditorStore.getState().openNote("notes/a.md", "v1"));
+    act(() => useEditorStore.getState().openNote("notes/a.md", "v1", "v1"));
     render(<EditorPanel />);
-    mockedRead.mockResolvedValue("v2 from disk");
+    mockedRead.mockResolvedValue({ content: "v2 from disk", version: "v1" });
     await act(async () => {
       await openDocument({ kind: "note", relPath: "notes/a.md" });
     });
@@ -134,10 +134,10 @@ describe("EditorPanel with a real CodeMirror view", () => {
   });
 
   it("an external reload (after sync) updates the view and the next edit never writes old text", async () => {
-    act(() => useEditorStore.getState().openNote("notes/a.md", "old text"));
+    act(() => useEditorStore.getState().openNote("notes/a.md", "old text", "v1"));
     render(<EditorPanel />);
 
-    mockedRead.mockResolvedValue("pulled text");
+    mockedRead.mockResolvedValue({ content: "pulled text", version: "v1" });
     await act(async () => {
       await reloadOpenDocument();
     });
@@ -151,11 +151,11 @@ describe("EditorPanel with a real CodeMirror view", () => {
       await flushPendingSave();
     });
     expect(mockedWrite).toHaveBeenCalledTimes(1);
-    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "pulled text!");
+    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "pulled text!", "v1");
   });
 
   it("a remount while dirty shows the current (unsaved) content", () => {
-    act(() => useEditorStore.getState().openNote("notes/a.md", "saved"));
+    act(() => useEditorStore.getState().openNote("notes/a.md", "saved", "v1"));
     act(() => useEditorStore.getState().setContent("unsaved edit"));
     render(<EditorPanel />);
     expect(view().state.doc.toString()).toBe("unsaved edit");
@@ -164,7 +164,7 @@ describe("EditorPanel with a real CodeMirror view", () => {
   it("surfaces an autosave failure and keeps the note dirty", async () => {
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     mockedWrite.mockRejectedValue({ kind: "Io", message: "disk full" });
-    act(() => useEditorStore.getState().openNote("notes/a.md", "a"));
+    act(() => useEditorStore.getState().openNote("notes/a.md", "a", "v1"));
     render(<EditorPanel />);
     typeAtEnd("b");
     await act(async () => {

@@ -139,6 +139,7 @@ function openDirtyNote() {
       key: "note:notes/x.md",
       content: "edited",
       savedContent: "x",
+      savedVersion: "v1",
     },
   });
 }
@@ -216,6 +217,7 @@ describe("SettingsModal", () => {
           key: "note:notes/x.md",
           content: "x",
           savedContent: "x",
+          savedVersion: "v1",
         },
       });
 
@@ -235,7 +237,7 @@ describe("SettingsModal", () => {
       mockedListKnown.mockResolvedValue([vault("/v", "v"), vault("/w", "w")]);
       mockedNotesWrite.mockImplementation(async (relPath, content) => {
         order.push(`write:${relPath}:${content}:${useVaultStore.getState().active?.root}`);
-        return noteMeta(relPath);
+        return { meta: noteMeta(relPath), version: "v2" };
       });
       mockedSetActive.mockImplementation(async (root) => {
         order.push(`setActive:${root}`);
@@ -256,7 +258,7 @@ describe("SettingsModal", () => {
       mockedPick.mockResolvedValue(vault("/new", "new", false));
       mockedNotesWrite.mockImplementation(async (relPath) => {
         order.push("write");
-        return noteMeta(relPath);
+        return { meta: noteMeta(relPath), version: "v2" };
       });
       mockedInit.mockImplementation(async (root) => {
         order.push("init");

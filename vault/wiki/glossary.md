@@ -2,7 +2,7 @@
 title: "Glossary"
 tags: [naiteh-wiki, glossary]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-10-10T20:00:00+09:00
+updated: 2026-10-11T12:00:00+09:00
 pinned: false
 ---
 
@@ -35,3 +35,7 @@ pinned: false
 | Web clipping | Converting `text/html` pasted into the editor to Markdown according to the `clipping` settings — see [App Config](app-config.md#clipping) |
 | `AppConfigView` | The IPC shape of app config: the on-disk `AppConfig` with the AI key replaced by `ai.hasApiKey` |
 | Normal form (rel path) | The only accepted spelling of a vault-relative path: `/`-separated, no `.`/`..`/empty segments, no `.git` — see [Vault & Data](vault-and-data.md#vault-relative-paths) |
+| Version | Lowercase hex SHA-256 of a file's bytes on disk (64 chars). Returned by `notes_read` / `journal_open` / `notes_version`, passed back to `notes_write` / `journal_save` as `expectedVersion` — see [Domain Model → Notes](domain-model.md#notes) |
+| Stale write | `AppError::StaleWrite(current)`: a save with an `expectedVersion` found a different version on disk (or no file — `current` is `""`), so nothing was written; the UI re-reads and reconciles |
+| Own change | A filesystem change naiteh itself made (recorded by `services/fs.rs` in `services/own_changes.rs`, 3 s TTL); the vault watcher tags it `own: true` in `vault:changed` so the frontend can tell it from an external edit |
+| Vault watcher | The `notify`-based recursive watcher on the active vault root (`services/watcher.rs`) that emits debounced `vault:changed` batches and `vault:watch-error` — see [IPC API → Events](ipc-api.md#events) |

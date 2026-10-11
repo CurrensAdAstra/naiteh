@@ -1,17 +1,37 @@
 import { invoke } from "./invoke";
 
-import type { NoteMeta } from "../types";
+import type { NoteDocument, NoteMeta, NoteWriteResult } from "../types";
 
 export function notesList(relDir: string | null = null): Promise<NoteMeta[]> {
   return invoke<NoteMeta[]>("notes_list", { relDir });
 }
 
-export function notesRead(relPath: string): Promise<string> {
-  return invoke<string>("notes_read", { relPath });
+/** Text plus the version token of the bytes read (wiki: ipc-commands). */
+export function notesRead(relPath: string): Promise<NoteDocument> {
+  return invoke<NoteDocument>("notes_read", { relPath });
 }
 
-export function notesWrite(relPath: string, content: string): Promise<NoteMeta> {
-  return invoke<NoteMeta>("notes_write", { relPath, content });
+/**
+ * Write `content`. With `expectedVersion` set, the backend refuses the
+ * write (`AppError` kind `StaleWrite`, message = current on-disk version)
+ * when the file's version differs or the file is gone; `null` writes
+ * unconditionally (new files, explicit "keep mine" / copies).
+ */
+export function notesWrite(
+  relPath: string,
+  content: string,
+  expectedVersion: string | null,
+): Promise<NoteWriteResult> {
+  return invoke<NoteWriteResult>("notes_write", {
+    relPath,
+    content,
+    expectedVersion,
+  });
+}
+
+/** Current version token of a note without reading it (NotFound if gone). */
+export function notesVersion(relPath: string): Promise<string> {
+  return invoke<string>("notes_version", { relPath });
 }
 
 export function notesCreate(relDir: string, title: string): Promise<NoteMeta> {

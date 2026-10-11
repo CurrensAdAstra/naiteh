@@ -16,6 +16,11 @@ import { editorAttachmentDrop } from "../lib/editorAttachmentDrop";
 import { editorHtmlPaste } from "../lib/editorHtmlPaste";
 import { editorHighlight } from "../lib/editorHighlight";
 import {
+  keepMine,
+  loadDiskVersion,
+  saveMineAsCopy,
+} from "../lib/externalChange";
+import {
   isPinnedInContent,
   togglePinnedInContent,
 } from "../lib/frontMatter";
@@ -28,6 +33,7 @@ import {
 } from "../state/autosave";
 import {
   currentOpenKey,
+  hasExternalChange,
   insertAtCursor,
   isDirty,
   replaceWholeDocument,
@@ -53,6 +59,7 @@ export function EditorPanel() {
       ? s.saveError.message
       : null,
   );
+  const inConflict = useEditorStore(hasExternalChange);
   const setContent = useEditorStore((s) => s.setContent);
   const setView = useEditorStore((s) => s.setView);
   const editorConfig = useSettingsStore(selectEditorConfig);
@@ -184,7 +191,9 @@ export function EditorPanel() {
     scheduleSave(open.source, open.content);
   }, [open]);
 
-  // Cmd/Ctrl-S = explicit save.
+  // Cmd/Ctrl-S = explicit save. While the document is in the changed-on-
+  // disk conflict state the key is held, so this writes nothing and the
+  // banner stays until the user picks a resolution.
   useEffect(() => {
     function handler(e: KeyboardEvent) {
       if ((e.metaKey || e.ctrlKey) && e.key === "s") {
@@ -230,17 +239,22 @@ export function EditorPanel() {
             <EditModeToggleButton />
             <AiToggleButton />
             <span
-              className={dirty ? styles.statusDirty : styles.statusSaved}
+              className={
+                dirty || inConflict ? styles.statusDirty : styles.statusSaved
+              }
               data-testid="editor-status"
             >
-              {dirty
-                ? saveError !== null
-                  ? "● Save failed"
-                  : "● Unsaved"
-                : "Saved"}
+              {inConflict
+                ? "● Changed on disk"
+                : dirty
+                  ? saveError !== null
+                    ? "● Save failed"
+                    : "● Unsaved"
+                  : "Saved"}
             </span>
           </div>
-          {saveError !== null && dirty && (
+          {inConflict && <ExternalChangeBanner />}
+          {saveError !== null && dirty && !inConflict && (
             <div
               className={styles.inlineError}
               role="alert"
@@ -272,6 +286,93 @@ export function EditorPanel() {
             data-testid="editor-source"
           />
         </>
+      )}
+    </div>
+  );
+}
+
+type ConflictAction = "load" | "keep" | "copy";
+
+/**
+ * Shown while the open document is in the changed-on-disk conflict state
+ * (editorStore.externalChange): the file was modified — or removed —
+ * outside naiteh while it had unsaved edits, so autosave is held. The
+ * three buttons map onto lib/externalChange's resolutions.
+ */
+function ExternalChangeBanner() {
+  const removed = useEditorStore(
+    (s) => hasExternalChange(s) && s.externalChange?.diskVersion === "",
+  );
+  const [busy, setBusy] = useState<ConflictAction | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  async function run(action: ConflictAction, fn: () => Promise<unknown>) {
+    setBusy(action);
+    setError(null);
+    try {
+      await fn();
+    } catch (e) {
+      setError(formatAppError(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div
+      className={styles.conflictBanner}
+      role="alert"
+      data-testid="editor-external-change"
+    >
+      <span className={styles.conflictText}>
+        {removed
+          ? "This note was deleted outside naiteh (for example by Google Drive sync). Your edits exist only in the editor."
+          : "This note changed outside naiteh (for example by Google Drive sync)."}
+      </span>
+      <span className={styles.conflictActions}>
+        <button
+          type="button"
+          className={styles.conflictButton}
+          disabled={busy !== null}
+          onClick={() => void run("load", loadDiskVersion)}
+          title={
+            removed
+              ? "Discard your edits and close the note"
+              : "Discard your edits and show the file as it is on disk"
+          }
+          data-testid="external-change-load"
+        >
+          {removed ? "Discard mine" : "Load disk version"}
+        </button>
+        <button
+          type="button"
+          className={`${styles.conflictButton} ${styles.conflictButtonPrimary}`}
+          disabled={busy !== null}
+          onClick={() => void run("keep", keepMine)}
+          title={
+            removed
+              ? "Write your edits back to the original path"
+              : "Overwrite the file on disk with your edits"
+          }
+          data-testid="external-change-keep"
+        >
+          {removed ? "Re-save mine" : "Keep mine"}
+        </button>
+        <button
+          type="button"
+          className={styles.conflictButton}
+          disabled={busy !== null}
+          onClick={() => void run("copy", saveMineAsCopy)}
+          title="Keep both: your edits go to a .local-<timestamp>.md note next to this one"
+          data-testid="external-change-copy"
+        >
+          Save mine as copy
+        </button>
+      </span>
+      {error !== null && (
+        <span className={styles.conflictError} data-testid="external-change-error">
+          {error}
+        </span>
       )}
     </div>
   );

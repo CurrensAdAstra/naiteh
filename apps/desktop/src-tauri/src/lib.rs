@@ -206,6 +206,17 @@ pub fn run() {
         .manage(services::session::ActiveSession::default())
         // Per-username failed-login lockout. See services::session.
         .manage(services::session::LoginThrottle::default())
+        // External file-change detection for the active vault
+        // (`vault:changed` / `vault:watch-error`). See services::watcher
+        // and vault/wiki/concurrency-safety.md ("External change
+        // detection"). Started below for the configured vault and
+        // restarted by the vault commands whenever the active vault
+        // changes.
+        .manage(services::watcher::VaultWatcher::default())
+        .setup(|app| {
+            services::watcher::restart_for_active_vault(app.handle());
+            Ok(())
+        })
         // Every command except auth_login / auth_resume / auth_logout is
         // gated: the other auth_* commands resolve their bearer token,
         // everything else calls `require_session` first (enforced by
@@ -236,6 +247,7 @@ pub fn run() {
             commands::journal::timeline_pinned,
             commands::notes::notes_list,
             commands::notes::notes_read,
+            commands::notes::notes_version,
             commands::notes::notes_write,
             commands::notes::notes_create,
             commands::notes::notes_delete,

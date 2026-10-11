@@ -20,6 +20,9 @@ pub struct JournalOpenResult {
     pub path: String,
     pub content: String,
     pub exists: bool,
+    /// Version (hex SHA-256) of the bytes read; `""` when `exists` is
+    /// false. Passed back to `journal_save` as `expected_version`.
+    pub version: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -27,6 +30,8 @@ pub struct JournalOpenResult {
 pub struct JournalSaveResult {
     pub path: String,
     pub mtime: i64,
+    /// Version of the bytes just written.
+    pub version: String,
 }
 
 /// One entry per date in a `timeline_range` query, even when the date

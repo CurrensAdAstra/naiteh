@@ -1,12 +1,15 @@
 import { journalSave } from "../lib/api/journal";
 import { notesWrite } from "../lib/api/notes";
-import { formatAppError } from "../lib/types";
+import { localCopyRelPath } from "../lib/localCopy";
+import { formatAppError, isStaleWrite } from "../lib/types";
 import {
   isDirty,
   keyFor,
   useEditorStore,
   type OpenSource,
 } from "./editorStore";
+import { useUIStore } from "./uiStore";
+import { notifyVaultContentChanged } from "./vaultContentStore";
 import { useVaultStore } from "./vaultStore";
 
 /**
@@ -16,12 +19,21 @@ import { useVaultStore } from "./vaultStore";
  * edit happened, so a timer that fires after the user switched notes
  * still writes to the original file. Writes run one at a time; after a
  * write lands only the text that was actually written is marked saved
- * (`markSaved(key, content)`), so keystrokes typed during an in-flight
- * write stay dirty and are saved by the next round.
+ * (`markSaved(key, content, version)`), so keystrokes typed during an
+ * in-flight write stay dirty and are saved by the next round.
  *
- * Anything that is about to move the editor off the current document —
- * opening another note, closing, rename/delete, sync, logout, window
- * close — awaits {@link flushPendingSave} first.
+ * Optimistic concurrency: every write sends the version token of the
+ * text the editor last saw on disk (`open.savedVersion`). When the file
+ * changed outside naiteh meanwhile (Google Drive sync, another editor)
+ * the backend refuses with `StaleWrite` and the document enters the
+ * conflict state (`editorStore.externalChange`); autosave is then *held*
+ * for that key until the user resolves it (lib/externalChange). Held
+ * edits are never dropped: moving off the document (open another note,
+ * close, logout, window close — `flushPendingSave({ leaving: true })`)
+ * writes them to a `.local-<timestamp>.md` copy next to the original.
+ *
+ * Anything that is about to move the editor off the current document
+ * awaits {@link flushPendingSave} first.
  */
 
 export const AUTOSAVE_DELAY_MS = 800;
@@ -34,6 +46,12 @@ interface PendingSave {
   content: string;
   /** Vault the edit belongs to; the write is dropped if it changed. */
   vaultRoot: string | null;
+  /**
+   * Version the editor believed was on disk when the edit was scheduled.
+   * Refreshed from the store at write time while the document is still
+   * open (an earlier write in the chain may have advanced it).
+   */
+  expectedVersion: string | null;
   timer: ReturnType<typeof setTimeout> | null;
 }
 
@@ -42,6 +60,10 @@ export type SaveListener = (source: OpenSource, content: string) => void;
 const pending = new Map<string, PendingSave>();
 const retryDelay = new Map<string, number>();
 const listeners = new Set<SaveListener>();
+/** Keys whose writes are held because the file changed on disk. */
+const held = new Set<string>();
+/** Keys with a write currently awaiting the backend. */
+const inFlight = new Set<string>();
 let chain: Promise<void> = Promise.resolve();
 let suspendCount = 0;
 
@@ -49,12 +71,35 @@ function currentVaultRoot(): string | null {
   return useVaultStore.getState().active?.root ?? null;
 }
 
-async function persist(source: OpenSource, content: string): Promise<void> {
-  if (source.kind === "note") {
-    await notesWrite(source.relPath, content);
-  } else {
-    await journalSave(source.date, content);
+function isOpenKey(key: string): boolean {
+  return useEditorStore.getState().open?.key === key;
+}
+
+/** `""` (file not on disk yet) means "no expectation": write unconditionally. */
+function asExpected(version: string | null): string | null {
+  return version === null || version === "" ? null : version;
+}
+
+function expectedVersionFor(entry: PendingSave): string | null {
+  const open = useEditorStore.getState().open;
+  if (open !== null && open.key === entry.key) {
+    return asExpected(open.savedVersion);
   }
+  return asExpected(entry.expectedVersion);
+}
+
+/** Resolves with the version token of the bytes written. */
+async function persist(
+  source: OpenSource,
+  content: string,
+  expectedVersion: string | null,
+): Promise<string> {
+  if (source.kind === "note") {
+    const result = await notesWrite(source.relPath, content, expectedVersion);
+    return result.version;
+  }
+  const result = await journalSave(source.date, content, expectedVersion);
+  return result.version;
 }
 
 function clearTimer(entry: PendingSave): void {
@@ -68,27 +113,92 @@ function arm(entry: PendingSave, delay: number): void {
   clearTimer(entry);
   entry.timer = setTimeout(() => {
     entry.timer = null;
-    // While suspended (rename/delete in progress) the entry is held, not
-    // written; resumeAutosave() re-arms it.
-    if (suspendCount > 0) return;
+    // While suspended (rename/delete in progress) or held (conflict with
+    // the file on disk) the entry stays pending, not written;
+    // resumeAutosave() / releaseSave() decide what happens to it.
+    if (suspendCount > 0 || held.has(entry.key)) return;
     if (pending.get(entry.key) !== entry) return;
     pending.delete(entry.key);
     void enqueueWrite(entry);
   }, delay);
 }
 
-function enqueueWrite(entry: PendingSave): Promise<void> {
-  const run = chain.then(() => write(entry));
-  chain = run;
+function enqueue(task: () => Promise<void>): Promise<void> {
+  const run = chain.then(task);
+  // A rejected task (saveNow) must not poison the queue for later writes.
+  chain = run.then(
+    () => undefined,
+    () => undefined,
+  );
   return run;
+}
+
+function notifyListeners(source: OpenSource, content: string): void {
+  for (const listener of listeners) {
+    try {
+      listener(source, content);
+    } catch {
+      // Listener failures (audit logging) never affect persistence.
+    }
+  }
+}
+
+/**
+ * Write `content` to `source` right away — serialised with the autosave
+ * queue but bypassing a hold — then mark it saved and notify listeners.
+ * Resolves with the new version token; rejects with the backend error
+ * (including `StaleWrite`). Used by conflict resolution ("Keep mine").
+ */
+export function saveNow(
+  source: OpenSource,
+  content: string,
+  expectedVersion: string | null,
+): Promise<string> {
+  const key = keyFor(source);
+  let version = "";
+  return enqueue(async () => {
+    inFlight.add(key);
+    try {
+      version = await persist(source, content, expectedVersion);
+    } finally {
+      inFlight.delete(key);
+    }
+    retryDelay.delete(key);
+    useEditorStore.getState().markSaved(key, content, version);
+    useEditorStore.getState().setSaveError(key, null);
+    notifyListeners(source, content);
+  }).then(() => version);
+}
+
+function enqueueWrite(entry: PendingSave): Promise<void> {
+  return enqueue(() => write(entry));
+}
+
+/** Put `entry` back in the queue without a timer (held until released). */
+function park(entry: PendingSave): void {
+  if (!pending.has(entry.key)) pending.set(entry.key, { ...entry, timer: null });
 }
 
 async function write(entry: PendingSave): Promise<void> {
   if (entry.vaultRoot !== currentVaultRoot()) return;
-  const store = useEditorStore.getState();
+  if (held.has(entry.key)) {
+    // The document is in conflict. While it is open the edits stay in the
+    // editor (and parked here) for the user to resolve; once it is gone
+    // from the editor the only safe place for them is a copy.
+    if (isOpenKey(entry.key)) park(entry);
+    else await preserveAsCopy(entry);
+    return;
+  }
+  const expected = expectedVersionFor(entry);
+  let version: string;
+  inFlight.add(entry.key);
   try {
-    await persist(entry.source, entry.content);
+    version = await persist(entry.source, entry.content, expected);
   } catch (e) {
+    if (isStaleWrite(e)) {
+      await onStaleWrite(entry, e.message);
+      return;
+    }
     const message = formatAppError(e);
     console.error("autosave failed:", message);
     useEditorStore.getState().setSaveError(entry.key, message);
@@ -101,17 +211,60 @@ async function write(entry: PendingSave): Promise<void> {
       arm(retry, delay);
     }
     return;
+  } finally {
+    inFlight.delete(entry.key);
   }
   retryDelay.delete(entry.key);
-  store.markSaved(entry.key, entry.content);
+  useEditorStore.getState().markSaved(entry.key, entry.content, version);
   useEditorStore.getState().setSaveError(entry.key, null);
-  for (const listener of listeners) {
-    try {
-      listener(entry.source, entry.content);
-    } catch {
-      // Listener failures (audit logging) never affect persistence.
-    }
+  notifyListeners(entry.source, entry.content);
+}
+
+/**
+ * The backend refused the write: the file on disk is no longer the
+ * version the editor saw (`diskVersion`; `""` = gone). Never retry
+ * blindly — the user decides (lib/externalChange). If the document is no
+ * longer open there is nobody to ask, so the edits go to a copy.
+ */
+async function onStaleWrite(
+  entry: PendingSave,
+  diskVersion: string,
+): Promise<void> {
+  if (!isOpenKey(entry.key)) {
+    await preserveAsCopy(entry);
+    return;
   }
+  holdSave(entry.key);
+  park(entry);
+  const editor = useEditorStore.getState();
+  editor.setSaveError(entry.key, null);
+  editor.setExternalChange({ key: entry.key, diskVersion });
+}
+
+function sourceRelPath(source: OpenSource): string {
+  return source.relPath;
+}
+
+/**
+ * Write `entry.content` to a `.local-<timestamp>.md` sibling of its file
+ * (unconditionally — the copy is new) and release the hold. Lists are
+ * told to refetch and the status bar says where the edits went.
+ */
+async function preserveAsCopy(entry: PendingSave): Promise<void> {
+  const copyRelPath = localCopyRelPath(sourceRelPath(entry.source));
+  try {
+    await notesWrite(copyRelPath, entry.content, null);
+  } catch (e) {
+    const message = formatAppError(e);
+    console.error("autosave: couldn't keep a copy of local edits:", message);
+    useEditorStore.getState().setSaveError(entry.key, message);
+    return;
+  }
+  releaseSave(entry.key);
+  const editor = useEditorStore.getState();
+  if (editor.externalChange?.key === entry.key) editor.setExternalChange(null);
+  notifyVaultContentChanged();
+  useUIStore.getState().setNotice(`Unsaved edits kept as ${copyRelPath}`);
 }
 
 /**
@@ -126,24 +279,43 @@ export function scheduleSave(
   const key = keyFor(source);
   const existing = pending.get(key);
   if (existing !== undefined) clearTimer(existing);
+  const open = useEditorStore.getState().open;
   const entry: PendingSave = {
     key,
     source,
     content,
     vaultRoot: currentVaultRoot(),
+    expectedVersion:
+      open !== null && open.key === key
+        ? open.savedVersion
+        : (existing?.expectedVersion ?? null),
     timer: null,
   };
   pending.set(key, entry);
   arm(entry, delay);
 }
 
+export interface FlushOptions {
+  /**
+   * The caller is about to move the editor off the open document (open
+   * another, close, logout, window close). Edits that are *held* because
+   * the file changed on disk can't be written to their own path, so they
+   * are preserved as a `.local-<timestamp>.md` copy instead of being
+   * abandoned. Without this flag (Cmd+S) held edits simply stay pending.
+   */
+  leaving?: boolean;
+}
+
 /**
  * Write every pending save immediately (plus the open document if it is
  * dirty but not yet scheduled) and wait for all writes — including ones
  * already in flight — to settle. Never rejects: failures are recorded in
- * `editorStore.saveError` and retried.
+ * `editorStore.saveError` and retried. Held keys (conflict with the file
+ * on disk) are not written; see {@link FlushOptions.leaving}.
  */
-export async function flushPendingSave(): Promise<void> {
+export async function flushPendingSave(
+  opts: FlushOptions = {},
+): Promise<void> {
   const open = useEditorStore.getState().open;
   if (open !== null && isDirty(open)) {
     const existing = pending.get(open.key);
@@ -154,6 +326,7 @@ export async function flushPendingSave(): Promise<void> {
         source: open.source,
         content: open.content,
         vaultRoot: currentVaultRoot(),
+        expectedVersion: open.savedVersion,
         timer: null,
       });
     }
@@ -162,6 +335,11 @@ export async function flushPendingSave(): Promise<void> {
   pending.clear();
   for (const entry of entries) {
     clearTimer(entry);
+    if (held.has(entry.key)) {
+      if (opts.leaving === true) void enqueue(() => preserveAsCopy(entry));
+      else pending.set(entry.key, entry);
+      continue;
+    }
     void enqueueWrite(entry);
   }
   await chain;
@@ -179,12 +357,52 @@ export function discardPendingSave(key?: string): void {
     pending.delete(entry.key);
     retryDelay.delete(entry.key);
   }
+  // Forgetting a key forgets its hold too (the file is gone or the vault
+  // switched); a later re-open starts clean.
+  if (key === undefined) held.clear();
+  else held.delete(key);
 }
 
 /** True when a save is queued (or the open document is dirty). */
 export function hasPendingSave(): boolean {
   const open = useEditorStore.getState().open;
   return pending.size > 0 || (open !== null && isDirty(open));
+}
+
+/**
+ * Stop writing `key` to its own file until {@link releaseSave}: the file
+ * changed on disk and the user has to choose (editorStore.externalChange).
+ * Pending edits stay queued; explicit flushes skip the key too.
+ */
+export function holdSave(key: string): void {
+  held.add(key);
+  const entry = pending.get(key);
+  if (entry !== undefined) clearTimer(entry);
+}
+
+/**
+ * Lift the hold after the conflict was resolved. Whatever was queued for
+ * the key is dropped: the resolution either wrote the editor's text
+ * itself or replaced it with the disk version, and the editor's own
+ * autosave effect re-schedules anything still dirty.
+ */
+export function releaseSave(key: string): void {
+  held.delete(key);
+  discardPendingSave(key);
+}
+
+/** True while autosave is held for `key` (see {@link holdSave}). */
+export function isSaveHeld(key: string): boolean {
+  return held.has(key);
+}
+
+/**
+ * True while a write for `key` is awaiting the backend. External-change
+ * checks skip such keys: the write itself reports a conflict precisely
+ * (`StaleWrite`), whereas a version read mid-write would race it.
+ */
+export function hasSaveInFlight(key: string): boolean {
+  return inFlight.has(key);
 }
 
 /**
@@ -201,7 +419,9 @@ export function suspendAutosave(): () => void {
     suspendCount -= 1;
     if (suspendCount > 0) return;
     for (const entry of pending.values()) {
-      if (entry.timer === null) arm(entry, AUTOSAVE_DELAY_MS);
+      if (entry.timer === null && !held.has(entry.key)) {
+        arm(entry, AUTOSAVE_DELAY_MS);
+      }
     }
   };
 }
@@ -220,6 +440,8 @@ export function resetAutosaveForTests(): void {
   pending.clear();
   retryDelay.clear();
   listeners.clear();
+  held.clear();
+  inFlight.clear();
   suspendCount = 0;
   chain = Promise.resolve();
 }

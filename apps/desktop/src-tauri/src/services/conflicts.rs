@@ -132,7 +132,7 @@ fn rel_from(vault_root: &Path, abs: &Path) -> Option<String> {
 /// preferred version.
 pub fn resolve_keep_ours(vault_root: &Path, conflict_rel_path: &str) -> Result<(), AppError> {
     let path = guard_conflict(vault_root, conflict_rel_path)?;
-    std::fs::remove_file(&path).map_err(|e| match e.kind() {
+    fsx::remove_file(&path).map_err(|e| match e.kind() {
         std::io::ErrorKind::NotFound => AppError::NotFound(conflict_rel_path.to_string()),
         _ => AppError::Io(e.to_string()),
     })
@@ -161,7 +161,7 @@ pub fn resolve_keep_theirs(vault_root: &Path, conflict_rel_path: &str) -> Result
     fsx::atomic_write(&live_abs, &bytes)?;
     // Best-effort cleanup; if the remove fails the live file is already
     // correct so we still return Ok.
-    let _ = std::fs::remove_file(&conflict_abs);
+    let _ = fsx::remove_file(&conflict_abs);
     Ok(())
 }
 
