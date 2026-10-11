@@ -2,8 +2,10 @@ import { create } from "zustand";
 
 import { appConfigGet } from "../lib/api/settings";
 import {
+  DEFAULT_CLIPPING,
   EDITOR_FONT_DEFAULT,
   type AppConfig,
+  type ClippingConfig,
   type EditorConfig,
 } from "../lib/types";
 
@@ -42,4 +44,9 @@ export const useSettingsStore = create<SettingsState>((set) => ({
  */
 export function selectEditorConfig(state: SettingsState): EditorConfig {
   return state.config?.editor ?? DEFAULT_EDITOR;
+}
+
+/** HTML-paste / clipping options, defaulted while config is loading. */
+export function selectClippingConfig(state: SettingsState): ClippingConfig {
+  return state.config?.clipping ?? DEFAULT_CLIPPING;
 }

@@ -28,6 +28,18 @@ function configWithAi(hasApiKey: boolean): AppConfig {
       model: "gpt-4o-mini",
       baseUrl: "https://api.openai.com/v1",
     },
+    appearance: { palette: "default", uiFont: "", editorFont: "" },
+    clipping: {
+      htmlPaste: "markdown",
+      headingStyle: "atx",
+      bulletMarker: "-",
+      codeBlockStyle: "fenced",
+      emphasis: "_",
+      strong: "**",
+      linkStyle: "inline",
+      images: "keep",
+      tables: "gfm",
+    },
   };
 }
 
@@ -84,7 +96,9 @@ describe("AiPanel", () => {
     mockedImprove.mockReset();
     useEditorStore.setState({ open: null, view: null });
     useSettingsStore.setState({ config: configWithAi(true), loading: false });
-    useUIStore.setState({ aiPanelOpen: true });
+    // Selection-based tests: the source editor (and its selection) is
+    // what the user sees in edit mode.
+    useUIStore.setState({ aiPanelOpen: true, editorMode: "edit" });
   });
 
   it("warns when no API key is configured and disables Run", async () => {
@@ -129,6 +143,27 @@ describe("AiPanel", () => {
     expect(
       within(await screen.findByTestId("ai-result")).getByText("REPLACEMENT"),
     ).toBeInTheDocument();
+  });
+
+  it("uses the whole note in view mode, ignoring the hidden editor's selection", async () => {
+    useUIStore.setState({ editorMode: "view" });
+    const fake = makeFakeView({ doc: "alpha beta gamma", selFrom: 6, selTo: 10 });
+    setOpenWithView(fake.view);
+    mockedImprove.mockResolvedValue("REPLACEMENT");
+
+    const user = userEvent.setup();
+    render(<AiPanel />);
+    fireEvent.change(screen.getByTestId("ai-instruction"), {
+      target: { value: "make uppercase" },
+    });
+    await user.click(screen.getByTestId("ai-run"));
+
+    await waitFor(() => {
+      expect(mockedImprove).toHaveBeenCalledWith(
+        "alpha beta gamma",
+        "make uppercase",
+      );
+    });
   });
 
   it('"Replace in editor" applies the result to the original range', async () => {

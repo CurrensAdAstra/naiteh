@@ -1,6 +1,8 @@
 import type { EditorView } from "@codemirror/view";
 import { create } from "zustand";
 
+import { useUIStore } from "./uiStore";
+
 /**
  * Where the open content lives in the vault. Calendar-mode journal entries
  * are addressed by date; freeform notes by their vault-relative path.
@@ -203,13 +205,15 @@ export function readCurrentDoc(): string | null {
 
 /**
  * Read the current editor selection (or the entire document when nothing
- * is selected). Returns null when no editor view is mounted.
+ * is selected). Returns null when no editor view is mounted. In view mode
+ * the source editor is hidden, so its selection is stale and invisible —
+ * the whole document is used instead.
  */
 export function readCurrentSelection(): CurrentSelection | null {
   const view = useEditorStore.getState().view;
   if (view === null) return null;
   const range = view.state.selection.main;
-  if (range.from === range.to) {
+  if (range.from === range.to || useUIStore.getState().editorMode === "view") {
     const text = view.state.doc.toString();
     return { text, from: 0, to: view.state.doc.length };
   }

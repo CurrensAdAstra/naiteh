@@ -5,7 +5,8 @@ import { LoginScreen } from "./features/auth/LoginScreen";
 import { FirstRunSetup } from "./features/settings/FirstRunSetup";
 import { authResume } from "./lib/api/auth";
 import { vaultCurrent } from "./lib/api/vault";
-import { formatAppError } from "./lib/types";
+import { applyAppearance } from "./lib/applyAppearance";
+import { DEFAULT_APPEARANCE, formatAppError } from "./lib/types";
 import { AppShell } from "./shell/AppShell";
 import { useMenuEvents } from "./shell/useMenuEvents";
 import { useAuthStore } from "./state/authStore";
@@ -30,8 +31,14 @@ export function App() {
   const active = useVaultStore((s) => s.active);
   const setActive = useVaultStore((s) => s.setActive);
   const refreshSettings = useSettingsStore((s) => s.refresh);
+  const appearance = useSettingsStore((s) => s.config?.appearance);
   const adminPath = isAdminPath();
   useMenuEvents();
+
+  // Palette + fonts follow the settings store (Settings > Appearance).
+  useEffect(() => {
+    applyAppearance(appearance ?? DEFAULT_APPEARANCE);
+  }, [appearance]);
 
   useEffect(() => {
     let mounted = true;

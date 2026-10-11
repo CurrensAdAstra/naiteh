@@ -3,6 +3,7 @@ import { notesRead } from "./api/notes";
 import { journalDateFromRelPath, journalRelPathFor } from "./journalPath";
 import { isAppError } from "./types";
 import { useAuthStore } from "../state/authStore";
+import { useUIStore } from "../state/uiStore";
 import { discardPendingSave, flushPendingSave } from "../state/autosave";
 import {
   beginOpen,
@@ -45,16 +46,31 @@ async function readTarget(target: OpenTarget): Promise<string> {
  * Resolves `true` when the document was opened, `false` when a newer
  * request superseded it. Read failures reject.
  *
+ * The editor mode resets to `view` when a different document opens
+ * (pass `{ edit: true }` for a just-created document).
+ *
  * Audit detail is uniform: `note_open` → relPath, `journal_open` → date
  * (matching `note_save` / `journal_save`).
  */
-export async function openDocument(target: OpenTarget): Promise<boolean> {
+export interface OpenOptions {
+  /**
+   * Open straight into the source editor. Used for documents the user
+   * just created; everything else opens in the rendered view.
+   */
+  edit?: boolean;
+}
+
+export async function openDocument(
+  target: OpenTarget,
+  opts: OpenOptions = {},
+): Promise<boolean> {
   const ticket = beginOpen();
   await flushPendingSave();
   if (!isLatestOpen(ticket)) return false;
   const content = await readTarget(target);
   if (!isLatestOpen(ticket)) return false;
   const editor = useEditorStore.getState();
+  const previousKey = editor.open?.key ?? null;
   const logAction = useAuthStore.getState().logAction;
   if (target.kind === "journal") {
     editor.openJournal(target.date, journalRelPathFor(target.date), content);
@@ -62,6 +78,13 @@ export async function openDocument(target: OpenTarget): Promise<boolean> {
   } else {
     editor.openNote(target.relPath, content);
     void logAction("note_open", target.relPath).catch(() => {});
+  }
+  // A different document starts in the rendered view; re-opening the
+  // same one keeps whatever mode the user was in.
+  const ui = useUIStore.getState();
+  if (opts.edit === true) ui.setEditorMode("edit");
+  else if (useEditorStore.getState().open?.key !== previousKey) {
+    ui.setEditorMode("view");
   }
   return true;
 }

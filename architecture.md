@@ -134,6 +134,7 @@ naiteh/
         │   ├── main.tsx
         │   ├── App.tsx                ← resume / login / admin / first-run / shell
         │   ├── shell/                 ← AppShell (lazy-loads EditorPanel),
+        │   │                             MarkdownViewer (view mode),
         │   │                             ActivityBar, StatusBar, CommandPalette,
         │   │                             useMenuEvents, useWorkspaceLifecycle
         │   ├── features/
@@ -155,6 +156,8 @@ naiteh/
         │   │   │                          invoke.ts (central error handling)
         │   │   ├── openDocument.ts     ← the one way to open / close / reload
         │   │   ├── journalPath.ts      ← canonical journal rel-path helpers
+        │   │   ├── htmlToMarkdown.ts   ← dependency-free HTML → Markdown
+        │   │   │                          converter for editor paste
         │   │   └── types.ts            ← TS mirror of the IPC types
         │   ├── state/                 ← global state (Zustand)
         │   │   ├── editorStore.ts      ← open doc, revision, saveError
@@ -163,6 +166,7 @@ naiteh/
         │   │   └── …                   ← auth, settings, sync, ui, vault stores
         │   └── styles/
         │       ├── tokens.css         ← VS Code Light Modern tokens
+        │       ├── palettes.ts        ← built-in palette overrides (Appearance)
         │       └── reset.css
         └── src-tauri/                 ← Rust backend
             ├── Cargo.toml             ← rust-version 1.90
@@ -309,7 +313,14 @@ VS Code-like 3-column shell:
 - **Activity Bar**: fixed width 48px. One icon per `ViewMode`.
 - **List Panel**: resizable width (default 280px, min 200px, max 480px).
 - **Editor Panel**: fills remaining space. Lazy-loaded (`React.lazy`) so
-  CodeMirror and its language data stay out of the startup bundle.
+  CodeMirror, its language data and the Markdown renderer stay out of the
+  startup bundle. It has two modes (`uiStore.editorMode`): **view** (the
+  default) renders the note with `shell/MarkdownViewer`; **edit** shows the
+  CodeMirror source. The CodeMirror view stays mounted (hidden, read-only)
+  in view mode, so pin / tag / task-checkbox changes and AI replacements
+  still flow through the one document and autosave. Opening a different
+  document returns to view; new notes and quick notes open in edit
+  (`openDocument(target, { edit: true })`).
 - **Status Bar**: optional, 22px tall. Shows vault name, sync status,
   word count, and a save-error indicator when autosave is failing.
 
@@ -377,7 +388,15 @@ properties:
 }
 ```
 
-A dark theme may be added later but is **not** part of v1.
+These values are the `default` palette. Settings → Appearance lets the user
+pick one of the other built-in palettes (two of them, `nord` and `midnight`,
+are dark schemes) and custom interface / editor font families. The renderer
+applies the choice by overriding the color tokens, `--font-ui` and
+`--font-editor` on the document root; an empty font keeps the stack above.
+The palette ids live in `styles/palettes.ts`, mirrored by the backend's
+`PALETTES` list. Keys, values and validation rules:
+[app-config.md](vault/wiki/app-config.md#appearance). A full dark theme that
+follows the OS setting is still not part of v1.
 
 ### 4.3 ViewMode
 
@@ -435,14 +454,24 @@ payloads are listed in the wiki's
 | View          | Journal … Sync      | Cmd/Ctrl+1 … 6    | Switch `ViewMode` |
 | View          | Command Palette…    | Cmd/Ctrl+P        | Open the palette |
 | View          | Toggle AI Assist    | Cmd/Ctrl+E        | Toggle the AI panel |
+| View          | Toggle Edit Mode    | Cmd/Ctrl+Shift+E  | Switch the note between rendered view and source editor |
 
 Settings is **not** a `ViewMode`; it is a full-screen modal
 (`features/settings/SettingsModal`) overlaying the shell, opened from
 the app menu (Cmd/Ctrl+,), the Activity Bar gear, the status-bar user
 name, or the palette. It mirrors the Obsidian settings layout: a
-left section nav (Vault, Editor, AI Assist, Import from Evernote,
-Account, plus an Administration group — Accounts / Audit Log — for
-admins) beside a scrolling column of "name + description → control" rows.
+left section nav (Vault, Appearance, Editor, Web Clipping, AI Assist,
+Import from Evernote, Account, plus an Administration group — Accounts /
+Audit Log — for admins) beside a scrolling column of "name + description →
+control" rows. Appearance has palette picker cards and interface / editor
+font presets (with a Custom… entry and a preview); Web Clipping chooses how
+HTML pasted into the editor is handled (convert to Markdown, plain text, or
+raw HTML) and the Markdown conversion options, with a live preview and a
+reset-to-defaults button. The conversion itself is `lib/htmlToMarkdown.ts`
+(DOMParser-based, no dependencies), hooked into CodeMirror's paste handling;
+image pastes still go through attachments. Both sections persist through
+`app_config_set_appearance` / `app_config_set_clipping`
+([app-config.md](vault/wiki/app-config.md#clipping)).
 Each section is its own component under `features/settings/sections/`;
 the modal handles focus trapping / restore (`useDialogFocus`). This
 replaced the cramped list-panel settings that shared the 280 px sidebar.
@@ -572,7 +601,9 @@ explicitly assign notes to past or future dates (true Agenda-style
 
 ### Shipped since v1.0
 
-- Markdown editor keymap + read-only toggle + inline tag editor
+- Markdown editor keymap + inline tag editor
+- Reading view: notes render as Markdown by default; the source editor
+  appears only in edit mode (replaced the earlier read-only toggle)
 - Attachment handling: file picker, clipboard paste, drag-and-drop
   (50 MiB cap), stored under `attachments/`
 - Evernote `.enex` import (notebook → folder, ENML → Markdown) with
@@ -601,6 +632,9 @@ explicitly assign notes to past or future dates (true Agenda-style
   `.exe` / `.cmd` / `.bat` / `.ps1` on Windows) — the first slice of the v2
   "plugin system" candidate, git-hooks model
 - One-click default vault: first run offers `~/Documents/duramen`
+- Appearance settings (built-in color palettes incl. two dark ones, custom
+  UI / editor fonts) and web clipping (configurable HTML → Markdown
+  conversion on paste)
 - Build / CI: portable Makefile mirrored by root `pnpm` scripts, Windows
   dev script, CI on Linux / macOS / Windows with SHA-pinned actions and a
   pinned Rust 1.90.0
@@ -611,7 +645,7 @@ explicitly assign notes to past or future dates (true Agenda-style
   (true Agenda-style plan-ahead notes on the timeline)
 - Better editor UX (preview pane, slash commands)
 - Improved search (indexed — extend `services/index.rs` beyond tags)
-- Dark theme
+- Dark theme that follows the OS setting (dark palettes already ship)
 - Mobile feasibility study (Tauri v2 mobile target)
 
 ### v2.0 (candidates)

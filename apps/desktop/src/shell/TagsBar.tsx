@@ -20,7 +20,8 @@ import styles from "./TagsBar.module.css";
  */
 export function TagsBar() {
   const content = useEditorStore((s) => s.open?.content ?? null);
-  const readOnly = useUIStore((s) => s.editorReadOnly);
+  // Tags are edited in edit mode; view mode shows them read-only.
+  const readOnly = useUIStore((s) => s.editorMode === "view");
   const [draft, setDraft] = useState("");
 
   const tags = useMemo(

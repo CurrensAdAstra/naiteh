@@ -152,6 +152,74 @@ fn available_target(vault_root: &Path, file_name: &str) -> Result<PathBuf, AppEr
     )))
 }
 
+/// Largest image the Markdown viewer will inline. Images travel to the
+/// webview as base64 `data:` URLs (the CSP allows `img-src data:`), so
+/// keep this well under the attachment limit.
+const MAX_VIEWER_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+
+/// How many candidate paths one viewer image request may probe.
+pub const MAX_IMAGE_CANDIDATES: usize = 4;
+
+fn image_mime_for(file_name: &str) -> Option<&'static str> {
+    let ext = Path::new(file_name)
+        .extension()
+        .and_then(|e| e.to_str())?
+        .to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "svg" => "image/svg+xml",
+        "bmp" => "image/bmp",
+        "avif" => "image/avif",
+        _ => return None,
+    })
+}
+
+/// Read an image for the Markdown viewer and return it as a `data:` URL.
+///
+/// `candidates` are vault-relative paths tried in order (the viewer sends
+/// the note-relative reading of a link first, then the vault-relative
+/// one, because naiteh's own attachments are vault-relative while
+/// Evernote imports sit next to their note). Each candidate goes through
+/// [`notes::resolve_in_vault`], so `..`, absolute paths, `.git` and
+/// symlinks out of the vault are refused. Only image extensions are
+/// served. `NotFound` when no candidate is an existing image file.
+pub fn read_image_data_url(vault_root: &Path, candidates: &[String]) -> Result<String, AppError> {
+    use base64::Engine as _;
+
+    if candidates.is_empty() || candidates.len() > MAX_IMAGE_CANDIDATES {
+        return Err(AppError::Validation(format!(
+            "expected 1-{MAX_IMAGE_CANDIDATES} image paths"
+        )));
+    }
+    for rel in candidates {
+        let Some(mime) = image_mime_for(rel) else {
+            continue;
+        };
+        let Ok(abs) = notes::resolve_in_vault(vault_root, rel) else {
+            continue;
+        };
+        let Ok(meta) = std::fs::metadata(&abs) else {
+            continue;
+        };
+        if !meta.is_file() {
+            continue;
+        }
+        if meta.len() > MAX_VIEWER_IMAGE_BYTES {
+            return Err(AppError::Validation(format!(
+                "image is {} bytes; the viewer shows images up to {MAX_VIEWER_IMAGE_BYTES} bytes (20 MiB)",
+                meta.len()
+            )));
+        }
+        let bytes = std::fs::read(&abs)?;
+        let encoded = base64::engine::general_purpose::STANDARD.encode(bytes);
+        return Ok(format!("data:{mime};base64,{encoded}"));
+    }
+    Err(AppError::NotFound(candidates.join(", ")))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,5 +414,72 @@ mod tests {
         let second = import_bytes(vault.path(), b"b", "note.txt", Some("text/plain")).unwrap();
         assert_eq!(first.rel_path, "attachments/note.txt");
         assert_eq!(second.rel_path, "attachments/note-2.txt");
+    }
+
+    // ── read_image_data_url (Markdown viewer) ───────────────────────────
+
+    fn put(root: &Path, rel: &str, bytes: &[u8]) {
+        let p = root.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        fsx::atomic_write(&p, bytes).unwrap();
+    }
+
+    #[test]
+    fn read_image_returns_first_existing_candidate_as_data_url() {
+        let vault = tempdir().unwrap();
+        put(vault.path(), "attachments/a.png", b"PNG");
+        let url = read_image_data_url(
+            vault.path(),
+            &["notes/attachments/a.png".into(), "attachments/a.png".into()],
+        )
+        .unwrap();
+        assert_eq!(url, "data:image/png;base64,UE5H");
+    }
+
+    #[test]
+    fn read_image_prefers_the_earlier_candidate() {
+        let vault = tempdir().unwrap();
+        put(vault.path(), "notes/trip/photo.jpg", b"near");
+        put(vault.path(), "photo.jpg", b"far");
+        let url = read_image_data_url(
+            vault.path(),
+            &["notes/trip/photo.jpg".into(), "photo.jpg".into()],
+        )
+        .unwrap();
+        assert!(url.starts_with("data:image/jpeg;base64,"), "{url}");
+        assert!(url.ends_with("bmVhcg=="), "{url}");
+    }
+
+    #[test]
+    fn read_image_refuses_escapes_and_non_images() {
+        let vault = tempdir().unwrap();
+        put(vault.path(), "notes/secret.md", b"text");
+        put(vault.path(), ".git/x.png", b"git");
+        for bad in [
+            "../outside.png",
+            "notes/secret.md",
+            ".git/x.png",
+            "C:/x.png",
+            "/etc/x.png",
+        ] {
+            let err = read_image_data_url(vault.path(), &[bad.into()]).unwrap_err();
+            assert!(matches!(err, AppError::NotFound(_)), "{bad}: {err:?}");
+        }
+    }
+
+    #[test]
+    fn read_image_validates_candidate_count() {
+        let vault = tempdir().unwrap();
+        assert!(matches!(
+            read_image_data_url(vault.path(), &[]),
+            Err(AppError::Validation(_))
+        ));
+        let many: Vec<String> = (0..=MAX_IMAGE_CANDIDATES)
+            .map(|i| format!("{i}.png"))
+            .collect();
+        assert!(matches!(
+            read_image_data_url(vault.path(), &many),
+            Err(AppError::Validation(_))
+        ));
     }
 }

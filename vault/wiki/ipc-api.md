@@ -2,7 +2,7 @@
 title: "IPC API (Tauri Commands)"
 tags: [naiteh-wiki, ipc, api, commands]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-10-10T18:00:00+09:00
+updated: 2026-10-10T20:00:00+09:00
 pinned: false
 ---
 
@@ -291,9 +291,20 @@ app_config_set_ai(
     model: String,             // required, trimmed
     base_url: Option<String>,  // None / blank = keep current
 ) -> Result<AppConfigView, AppError>
+app_config_set_appearance(
+    palette: String,           // trimmed; one of the palette ids
+    ui_font: String,           // trimmed CSS font-family; "" = built-in stack
+    editor_font: String,       // trimmed CSS font-family; "" = built-in stack
+) -> Result<AppConfigView, AppError>
+app_config_set_clipping(clipping: ClippingConfig) -> Result<AppConfigView, AppError>  // replaces all fields
 ```
 
-Wire arguments are camelCase (`apiKey`, `clearApiKey`, `model`, `baseUrl`).
+Wire arguments are camelCase (`apiKey`, `clearApiKey`, `model`, `baseUrl`,
+`uiFont`, `editorFont`; `clipping` is the camelCase `ClippingConfig` object).
+`app_config_set_appearance` / `app_config_set_clipping` validate every value
+(palette ids, font-family rules, clipping value sets — see
+[App Config](app-config.md#appearance)) and fail with `Validation` without
+saving.
 **Base-URL rule:** must parse as a URL with scheme `https`, or `http` only when
 the host is `localhost`, `127.0.0.1` or `[::1]`; anything else → `Validation`
 (nothing is saved).
@@ -389,9 +400,22 @@ only the local OS user can read it.
 attachments_import() -> Result<AttachmentImport, AppError>  // native picker → copies into attachments/
 attachments_import_bytes(bytes: Vec<u8>, suggested_name: String, mime: Option<String>) -> Result<AttachmentImport, AppError>
 // clipboard paste / drag-drop. Empty suggested_name → synthesized paste-<timestamp>.<ext>
+attachments_read_image(candidates: Vec<String>) -> Result<String, AppError>
+// Markdown viewer: image as a `data:<mime>;base64,…` URL
 ```
 
-Both enforce a 50 MiB ceiling.
+Both imports enforce a 50 MiB ceiling.
+
+**`attachments_read_image`** serves images to the Markdown viewer (the webview's
+CSP allows `img-src data:`, and the asset protocol is not enabled, so local
+images always pass through the session gate). `candidates` is 1–4 vault-relative
+paths tried in order — the viewer sends the note-relative reading of a link
+first, then the vault-relative one, because naiteh's own attachments are
+vault-relative while Evernote imports sit next to their note. Each candidate goes
+through the vault path checks (normal form, no `..` / `.git`, no symlink out of
+the vault); only `png`, `jpg`/`jpeg`, `gif`, `webp`, `svg`, `bmp`, `avif` files are
+served, up to 20 MiB. Wrong candidate count → `Validation`; no candidate is an
+existing image → `NotFound`. Read-only: takes no vault lock.
 
 ## Workspace (machine-local last-opened)
 
@@ -468,6 +492,7 @@ to store actions (not direct IPC):
 | `menu:view` (payload: ViewMode) | Switch panel (Cmd+1..6) |
 | `menu:command-palette` | Open the palette (Cmd+P) |
 | `menu:toggle-ai` | Toggle AI Assist panel (Cmd+E) |
+| `menu:toggle-edit` | Switch the open note between view and edit mode (Cmd+Shift+E) |
 | `menu:settings` | Open the settings modal (Cmd+,) |
 | `menu:new-note` | Notes panel new-note prompt (Cmd+N) |
 | `menu:new-folder` | Notes panel new-folder prompt (Cmd+Shift+N) |

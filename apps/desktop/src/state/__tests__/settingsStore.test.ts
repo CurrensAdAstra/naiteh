@@ -26,6 +26,18 @@ function config(): AppConfig {
       model: "gpt-4o-mini",
       baseUrl: "https://api.openai.com/v1",
     },
+    appearance: { palette: "default", uiFont: "", editorFont: "" },
+    clipping: {
+      htmlPaste: "markdown",
+      headingStyle: "atx",
+      bulletMarker: "-",
+      codeBlockStyle: "fenced",
+      emphasis: "_",
+      strong: "**",
+      linkStyle: "inline",
+      images: "keep",
+      tables: "gfm",
+    },
   };
 }
 

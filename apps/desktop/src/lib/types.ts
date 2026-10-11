@@ -173,7 +173,62 @@ export interface AppConfig {
   calendar: CalendarConfig;
   journal: JournalConfig;
   ai: AiConfig;
+  appearance: AppearanceConfig;
+  clipping: ClippingConfig;
 }
+
+/** Palette ids — keep in sync with `PALETTES` in services/config.rs. */
+export const PALETTE_IDS = [
+  "default",
+  "ocean",
+  "forest",
+  "sunset",
+  "lavender",
+  "rose",
+  "nord",
+  "midnight",
+] as const;
+export type PaletteId = (typeof PALETTE_IDS)[number];
+
+/** Empty font strings mean "use the built-in default stack". */
+export interface AppearanceConfig {
+  palette: string;
+  uiFont: string;
+  editorFont: string;
+}
+
+export const FONT_FAMILY_MAX_LEN = 200;
+
+/** How pasted / clipped HTML becomes Markdown (wiki app-config.md, Clipping). */
+export interface ClippingConfig {
+  htmlPaste: "markdown" | "plain" | "html";
+  headingStyle: "atx" | "setext";
+  bulletMarker: "-" | "*" | "+";
+  codeBlockStyle: "fenced" | "indented";
+  emphasis: "_" | "*";
+  strong: "**" | "__";
+  linkStyle: "inline" | "reference";
+  images: "keep" | "drop";
+  tables: "gfm" | "html" | "text";
+}
+
+export const DEFAULT_APPEARANCE: AppearanceConfig = {
+  palette: "default",
+  uiFont: "",
+  editorFont: "",
+};
+
+export const DEFAULT_CLIPPING: ClippingConfig = {
+  htmlPaste: "markdown",
+  headingStyle: "atx",
+  bulletMarker: "-",
+  codeBlockStyle: "fenced",
+  emphasis: "_",
+  strong: "**",
+  linkStyle: "inline",
+  images: "keep",
+  tables: "gfm",
+};
 
 export const EDITOR_FONT_MIN = 8;
 export const EDITOR_FONT_MAX = 32;

@@ -1,14 +1,14 @@
 import {
+  BookOpen,
   Calendar,
   Folder,
-  Lock,
   Notebook,
+  Pencil,
   RefreshCw,
   Search,
   Settings,
   Sparkles,
   Tag,
-  Unlock,
   type LucideIcon,
 } from "lucide-react";
 import {
@@ -61,8 +61,8 @@ export function CommandPalette() {
   const setViewMode = useUIStore((s) => s.setViewMode);
   const setSettingsOpen = useUIStore((s) => s.setSettingsOpen);
   const toggleAiPanel = useUIStore((s) => s.toggleAiPanel);
-  const editorReadOnly = useUIStore((s) => s.editorReadOnly);
-  const toggleEditorReadOnly = useUIStore((s) => s.toggleEditorReadOnly);
+  const editorMode = useUIStore((s) => s.editorMode);
+  const toggleEditorMode = useUIStore((s) => s.toggleEditorMode);
   const inputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
@@ -94,19 +94,22 @@ export function CommandPalette() {
         run: toggleAiPanel,
       },
       {
-        id: "toggle-readonly",
-        label: editorReadOnly ? "Disable Read-only" : "Enable Read-only",
-        detail: "Change editor write mode",
-        Icon: editorReadOnly ? Unlock : Lock,
-        run: toggleEditorReadOnly,
+        id: "toggle-edit-mode",
+        label: editorMode === "view" ? "Edit Note" : "View Note",
+        detail:
+          editorMode === "view"
+            ? "Show the Markdown source editor"
+            : "Show the rendered note",
+        Icon: editorMode === "view" ? Pencil : BookOpen,
+        run: toggleEditorMode,
       },
     ],
     [
-      editorReadOnly,
+      editorMode,
       setSettingsOpen,
       setViewMode,
       toggleAiPanel,
-      toggleEditorReadOnly,
+      toggleEditorMode,
     ],
   );
 

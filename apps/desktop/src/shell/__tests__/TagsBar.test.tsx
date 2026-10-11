@@ -20,7 +20,7 @@ function setOpen(content: string) {
 describe("TagsBar", () => {
   beforeEach(() => {
     useEditorStore.setState({ open: null, view: null });
-    useUIStore.setState({ editorReadOnly: false });
+    useUIStore.setState({ editorMode: "edit" });
   });
 
   it("renders nothing when no note is open", () => {
@@ -85,9 +85,9 @@ describe("TagsBar", () => {
     );
   });
 
-  it("disables the input + remove buttons in read-only mode", async () => {
+  it("disables the input + remove buttons in view mode", async () => {
     setOpen("---\ntags: [a]\n---\nbody");
-    useUIStore.setState({ editorReadOnly: true });
+    useUIStore.setState({ editorMode: "view" });
     render(<TagsBar />);
     expect(screen.getByTestId("tags-bar-input")).toBeDisabled();
     expect(screen.getByTestId("tag-remove-a")).toBeDisabled();

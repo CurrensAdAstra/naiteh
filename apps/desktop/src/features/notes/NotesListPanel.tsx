@@ -19,7 +19,7 @@ import {
   notesRename,
   notesRenameDir,
 } from "../../lib/api/notes";
-import { openDocument } from "../../lib/openDocument";
+import { openDocument, type OpenOptions } from "../../lib/openDocument";
 import { formatAppError } from "../../lib/types";
 import type { NoteMeta } from "../../lib/types";
 import { useAuthStore } from "../../state/authStore";
@@ -103,9 +103,9 @@ export function NotesListPanel() {
     seenVersionRef.current = notifyVaultContentChanged();
   }, []);
 
-  const handleOpen = useCallback(async (note: NoteMeta) => {
+  const handleOpen = useCallback(async (note: NoteMeta, opts?: OpenOptions) => {
     try {
-      await openDocument({ kind: "note", relPath: note.relPath });
+      await openDocument({ kind: "note", relPath: note.relPath }, opts);
     } catch (e) {
       setError(formatAppError(e));
     }
@@ -120,7 +120,8 @@ export function NotesListPanel() {
       void logAction("note_create", meta.relPath).catch(() => {});
       announceChange();
       await refresh();
-      await handleOpen(meta);
+      // A brand-new note opens in the editor, ready to type.
+      await handleOpen(meta, { edit: true });
     } catch (e) {
       setError(formatAppError(e));
     } finally {

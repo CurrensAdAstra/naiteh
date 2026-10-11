@@ -12,6 +12,8 @@ vi.mock("codemirror", () => {
   class MockEditorView {
     destroy = vi.fn();
     dispatch = vi.fn();
+    requestMeasure = vi.fn();
+    focus = vi.fn();
     static lineWrapping = { extension: null };
     static updateListener = { of: () => null };
   }
@@ -89,7 +91,7 @@ describe("EditorPanel", () => {
       markdown: "![screen shot](attachments/screen-shot.png)",
     });
     useEditorStore.setState({ open: null, view: null });
-    useUIStore.setState({ editorReadOnly: false });
+    useUIStore.setState({ editorMode: "edit" });
   });
 
   it("shows the empty state when no note is open", () => {
@@ -147,20 +149,55 @@ describe("EditorPanel", () => {
     );
   });
 
-  it("Read-only toggle flips uiStore + updates the status label", async () => {
-    useEditorStore.setState({ open: noteOpen("notes/x.md", "body", "body") });
-    useUIStore.setState({ editorReadOnly: false });
+  it("Edit toggle switches between the rendered view and the source editor", () => {
+    useEditorStore.setState({
+      open: noteOpen("notes/x.md", "# Title\n\nbody", "# Title\n\nbody"),
+    });
+    useUIStore.setState({ editorMode: "view" });
     render(<EditorPanel />);
-    const button = screen.getByTestId("editor-readonly-toggle");
+    const button = screen.getByTestId("editor-mode-toggle");
     expect(button).toHaveAttribute("aria-pressed", "false");
-    expect(screen.getByTestId("editor-status")).toHaveTextContent(/saved/i);
+    expect(button).toHaveTextContent("Edit");
+    expect(screen.getByTestId("markdown-viewer")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Title" })).toBeInTheDocument();
+    expect(screen.getByTestId("editor-source")).not.toBeVisible();
 
     act(() => {
       button.click();
     });
-    expect(useUIStore.getState().editorReadOnly).toBe(true);
+    expect(useUIStore.getState().editorMode).toBe("edit");
     expect(button).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getByTestId("editor-status")).toHaveTextContent(/read-only/i);
+    expect(button).toHaveTextContent("Done");
+    expect(screen.queryByTestId("markdown-viewer")).not.toBeInTheDocument();
+    expect(screen.getByTestId("editor-source")).toBeVisible();
+    // Save status is shown in both modes.
+    expect(screen.getByTestId("editor-status")).toHaveTextContent(/saved/i);
+  });
+
+  it("empty note in view mode offers to start writing", () => {
+    useEditorStore.setState({ open: noteOpen("notes/x.md", "", "") });
+    useUIStore.setState({ editorMode: "view" });
+    render(<EditorPanel />);
+    act(() => {
+      screen.getByRole("button", { name: /start writing/i }).click();
+    });
+    expect(useUIStore.getState().editorMode).toBe("edit");
+  });
+
+  it("toggling a task in view mode edits the document and schedules a save", async () => {
+    useEditorStore.setState({
+      open: noteOpen("notes/x.md", "- [ ] buy milk\n", "- [ ] buy milk\n"),
+    });
+    useUIStore.setState({ editorMode: "view" });
+    render(<EditorPanel />);
+    act(() => {
+      screen.getByRole("checkbox", { name: /mark task as done/i }).click();
+    });
+    expect(useEditorStore.getState().open?.content).toBe("- [x] buy milk\n");
+    await waitFor(
+      () => expect(mockedWrite).toHaveBeenCalledWith("notes/x.md", "- [x] buy milk\n"),
+      { timeout: 2000 },
+    );
   });
 
   it("imports an attachment and inserts its markdown", async () => {
@@ -195,9 +232,9 @@ describe("EditorPanel", () => {
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
-  it("disables attachment insertion while read-only", () => {
+  it("disables attachment insertion in view mode", () => {
     useEditorStore.setState({ open: noteOpen("notes/x.md", "body", "body") });
-    useUIStore.setState({ editorReadOnly: true });
+    useUIStore.setState({ editorMode: "view" });
     render(<EditorPanel />);
 
     expect(screen.getByTestId("editor-attach-button")).toBeDisabled();

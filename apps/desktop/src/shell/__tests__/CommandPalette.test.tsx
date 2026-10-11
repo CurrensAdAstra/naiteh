@@ -10,7 +10,7 @@ describe("CommandPalette", () => {
       viewMode: "journal",
       aiPanelOpen: false,
       commandPaletteOpen: true,
-      editorReadOnly: false,
+      editorMode: "edit",
       settingsOpen: false,
     });
   });

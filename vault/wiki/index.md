@@ -2,7 +2,7 @@
 title: "naiteh LLM Wiki — Index"
 tags: [naiteh-wiki, index]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-10-10T18:00:00+09:00
+updated: 2026-10-10T20:00:00+09:00
 pinned: true
 ---
 
@@ -30,7 +30,7 @@ The wiki is eight pages: this index plus the seven below.
 | [Vault & Data](vault-and-data.md) | Vault layout on disk, where a vault may live, rel-path normal form, slug rules, front-matter schema |
 | [Domain Model](domain-model.md) | IPC-boundary entity types (journal, notes, timeline, sync, auth, config view, …) |
 | [IPC API](ipc-api.md) | Every Tauri command, session gate, threading, `AppError` taxonomy, sync pipeline, Evernote import, menu events |
-| [App Config](app-config.md) | App-level + per-vault config schema and paths, IPC view vs disk, CLI hooks |
+| [App Config](app-config.md) | App-level + per-vault config schema and paths (incl. appearance and HTML-paste clipping options), IPC view vs disk, CLI hooks |
 | [Concurrency & Safety](concurrency-safety.md) | Locking, tag-index generations, autosave ordering, atomic writes, path containment, privacy boundary |
 | [Glossary](glossary.md) | Term definitions |
 

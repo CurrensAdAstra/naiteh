@@ -26,3 +26,13 @@ export function attachmentsImportBytes(
     mime,
   });
 }
+
+/**
+ * Read a vault image for the Markdown viewer as a `data:` URL. The
+ * backend tries `candidates` (vault-relative paths) in order and refuses
+ * anything outside the vault or not an image. See
+ * `lib/markdownLinks.imageSource` for how candidates are built.
+ */
+export function attachmentsReadImage(candidates: string[]): Promise<string> {
+  return invoke<string>("attachments_read_image", { candidates });
+}

@@ -50,6 +50,21 @@ function joinBlock(lines: readonly string[], body: string, eol: string): string 
   return `---${eol}${inner}---${eol}${body}`;
 }
 
+/**
+ * The document body without its leading front-matter block, plus where
+ * that body starts in `content` (0 when there is no block). The viewer
+ * renders `body` and adds `offset` to map source positions back.
+ */
+export function splitFrontMatterBody(content: string): {
+  body: string;
+  offset: number;
+} {
+  const { body, hasBlock } = split(content);
+  return hasBlock
+    ? { body, offset: content.length - body.length }
+    : { body: content, offset: 0 };
+}
+
 /** Whether the content's front matter has `pinned: true`. */
 export function isPinnedInContent(content: string): boolean {
   const { header, hasBlock } = split(content);

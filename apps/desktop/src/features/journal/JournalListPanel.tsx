@@ -10,7 +10,11 @@ import {
 
 import { activityRecent, quickCreate, quickList } from "../../lib/api/journal";
 import { journalRelPathFor } from "../../lib/journalPath";
-import { openDocument, type OpenTarget } from "../../lib/openDocument";
+import {
+  openDocument,
+  type OpenOptions,
+  type OpenTarget,
+} from "../../lib/openDocument";
 import { formatAppError } from "../../lib/types";
 import type { NoteMeta, TimelineItem } from "../../lib/types";
 import { useAuthStore } from "../../state/authStore";
@@ -88,9 +92,9 @@ export function JournalListPanel() {
     void refresh();
   }, [refresh, contentVersion]);
 
-  const handleOpen = useCallback(async (target: OpenTarget) => {
+  const handleOpen = useCallback(async (target: OpenTarget, opts?: OpenOptions) => {
     try {
-      await openDocument(target);
+      await openDocument(target, opts);
     } catch (e) {
       setError(formatAppError(e));
     }
@@ -104,7 +108,8 @@ export function JournalListPanel() {
       // Bumping the content version refreshes this panel (effect above)
       // and every other list showing notes.
       notifyVaultContentChanged();
-      await handleOpen({ kind: "note", relPath: meta.relPath });
+      // A new quick note opens in the editor, ready to type.
+      await handleOpen({ kind: "note", relPath: meta.relPath }, { edit: true });
     } catch (e) {
       setError(formatAppError(e));
     } finally {

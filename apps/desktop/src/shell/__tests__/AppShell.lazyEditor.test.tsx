@@ -4,6 +4,10 @@ import { describe, expect, it, vi } from "vitest";
 import { useVaultStore } from "../../state/vaultStore";
 import { AppShell } from "../AppShell";
 
+// The editor chunk (CodeMirror + the Markdown renderer) is lazy-loaded;
+// under a busy full-suite run its first import can exceed the 1s default.
+const LAZY_EDITOR_WAIT = { timeout: 5000 };
+
 // Kept in its own file: React.lazy caches the resolved module for the
 // lifetime of the module graph, so the fallback is only observable on the
 // very first render of AppShell in a fresh (per-file) graph.
@@ -49,7 +53,7 @@ describe("AppShell lazy editor", () => {
     expect(placeholder).toHaveAttribute("role", "status");
     expect(screen.queryByTestId("editor-panel")).not.toBeInTheDocument();
 
-    expect(await screen.findByTestId("editor-panel")).toBeInTheDocument();
+    expect(await screen.findByTestId("editor-panel", {}, LAZY_EDITOR_WAIT)).toBeInTheDocument();
     expect(screen.queryByTestId("editor-panel-loading")).not.toBeInTheDocument();
     await waitFor(() => {
       expect(screen.getByTestId("status-sync")).toHaveTextContent(

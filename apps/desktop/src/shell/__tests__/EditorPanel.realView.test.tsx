@@ -76,7 +76,7 @@ describe("EditorPanel with a real CodeMirror view", () => {
     mockedRead.mockReset();
     mockedAttachmentsImport.mockReset();
     useEditorStore.setState({ open: null, view: null, saveError: null });
-    useUIStore.setState({ editorReadOnly: false });
+    useUIStore.setState({ editorMode: "edit" });
   });
 
   afterEach(() => {

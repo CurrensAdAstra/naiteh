@@ -22,6 +22,21 @@ describe("Tauri default capability", () => {
       "core:window:allow-destroy",
       "dialog:default",
       "dialog:allow-open",
+      {
+        identifier: "opener:allow-open-url",
+        allow: [
+          { url: "https://*" },
+          { url: "http://*" },
+          { url: "mailto:*" },
+        ],
+      },
     ]);
+  });
+
+  it("lets the Markdown viewer open only web and mail links externally", () => {
+    // Not `opener:default` (adds tel: and reveal-in-folder), and no
+    // open-path: notes can't make the OS open files or other schemes.
+    expect(permissions).not.toContain("opener:default");
+    expect(JSON.stringify(permissions)).not.toMatch(/open-path|reveal/);
   });
 });

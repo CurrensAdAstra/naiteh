@@ -1,4 +1,10 @@
-import type { AppConfig } from "../types";
+import {
+  DEFAULT_APPEARANCE,
+  DEFAULT_CLIPPING,
+  type AppConfig,
+  type AppearanceConfig,
+  type ClippingConfig,
+} from "../types";
 import { hasTauriRuntime, invoke } from "./invoke";
 
 function defaultWebConfig(): AppConfig {
@@ -21,6 +27,8 @@ function defaultWebConfig(): AppConfig {
       model: "gpt-4o-mini",
       baseUrl: "https://api.openai.com/v1",
     },
+    appearance: { ...DEFAULT_APPEARANCE },
+    clipping: { ...DEFAULT_CLIPPING },
   };
 }
 
@@ -79,4 +87,28 @@ export function appConfigSetAi(update: AiSettingsUpdate): Promise<AppConfig> {
     model: update.model,
     baseUrl: update.baseUrl,
   });
+}
+
+/** Update palette + font families (empty font = built-in default). */
+export function appConfigSetAppearance(
+  appearance: AppearanceConfig,
+): Promise<AppConfig> {
+  if (!hasTauriRuntime()) {
+    return Promise.resolve({ ...defaultWebConfig(), appearance });
+  }
+  return invoke<AppConfig>("app_config_set_appearance", {
+    palette: appearance.palette,
+    uiFont: appearance.uiFont,
+    editorFont: appearance.editorFont,
+  });
+}
+
+/** Replace the HTML → Markdown clipping options. */
+export function appConfigSetClipping(
+  clipping: ClippingConfig,
+): Promise<AppConfig> {
+  if (!hasTauriRuntime()) {
+    return Promise.resolve({ ...defaultWebConfig(), clipping });
+  }
+  return invoke<AppConfig>("app_config_set_clipping", { clipping });
 }

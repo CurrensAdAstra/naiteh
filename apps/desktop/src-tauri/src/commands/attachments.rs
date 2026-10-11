@@ -63,3 +63,18 @@ pub async fn attachments_import_bytes(
     })
     .await
 }
+
+/// Read a vault image for the Markdown viewer as a `data:` URL.
+///
+/// `candidates` are vault-relative paths tried in order (see
+/// `attachments::read_image_data_url`). Read-only, so no vault lock;
+/// gated like every other vault command.
+#[tauri::command]
+pub async fn attachments_read_image(
+    active: tauri::State<'_, ActiveSession>,
+    candidates: Vec<String>,
+) -> Result<String, AppError> {
+    require_session(&active)?;
+    let vault_root = config::current_vault_root()?;
+    fsx::run_blocking(move || attachments::read_image_data_url(&vault_root, &candidates)).await
+}

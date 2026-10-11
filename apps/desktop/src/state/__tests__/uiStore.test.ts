@@ -19,7 +19,7 @@ describe("uiStore", () => {
       journalSplitRatio: JOURNAL_SPLIT_DEFAULT,
       aiPanelOpen: false,
       commandPaletteOpen: false,
-      editorReadOnly: false,
+      editorMode: "edit",
     });
   });
 

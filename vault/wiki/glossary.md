@@ -2,7 +2,7 @@
 title: "Glossary"
 tags: [naiteh-wiki, glossary]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-10-10T18:00:00+09:00
+updated: 2026-10-10T20:00:00+09:00
 pinned: false
 ---
 
@@ -30,5 +30,8 @@ pinned: false
 | Conflict sidecar | `<file>.conflict-<timestamp>.<ext>` holding the remote ("theirs") version of a file that collided during sync |
 | Pending merge | A pull stopped on conflicts, recorded in `.naiteh/sync-state.json` (`SyncStatus.mergePending`); finished as a merge commit once every sidecar is resolved |
 | Hook | User-installed executable in `<app-config-dir>/hooks/` run after a note save, journal save, or sync |
+| Palette | One of the built-in color schemes (`appearance.palette`, e.g. `ocean`, `nord`) applied as CSS color tokens — see [App Config](app-config.md#appearance) |
+| View mode / Edit mode | How the editor panel shows the open note (`uiStore.editorMode`). **View** (default) renders the Markdown read-only — links, images, task checkboxes work; **Edit** shows the CodeMirror source. Opening a different note returns to view; new notes open in edit |
+| Web clipping | Converting `text/html` pasted into the editor to Markdown according to the `clipping` settings — see [App Config](app-config.md#clipping) |
 | `AppConfigView` | The IPC shape of app config: the on-disk `AppConfig` with the AI key replaced by `ai.hasApiKey` |
 | Normal form (rel path) | The only accepted spelling of a vault-relative path: `/`-separated, no `.`/`..`/empty segments, no `.git` — see [Vault & Data](vault-and-data.md#vault-relative-paths) |

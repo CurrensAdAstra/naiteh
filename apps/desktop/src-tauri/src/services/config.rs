@@ -27,6 +27,104 @@ pub struct AppConfig {
     pub calendar: CalendarConfig,
     pub journal: JournalConfig,
     pub ai: AiConfig,
+    pub appearance: AppearanceConfig,
+    pub clipping: ClippingConfig,
+}
+
+/// Color palette + font families. An empty font string means "use the
+/// built-in default stack" (wiki app-config.md, Appearance).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct AppearanceConfig {
+    pub palette: String,
+    pub ui_font: String,
+    pub editor_font: String,
+}
+
+/// Palette ids the renderer ships CSS for. Keep in sync with
+/// `apps/desktop/src/styles/palettes.ts`.
+pub const PALETTES: &[&str] = &[
+    "default", "ocean", "forest", "sunset", "lavender", "rose", "nord", "midnight",
+];
+
+/// Longest accepted font-family string.
+pub const FONT_FAMILY_MAX_LEN: usize = 200;
+
+/// How pasted / clipped HTML is turned into Markdown (wiki app-config.md,
+/// Clipping). Every field is a closed set of string values, see
+/// [`ClippingConfig::validate`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct ClippingConfig {
+    /// `markdown` (convert) | `plain` (text only) | `html` (insert raw HTML).
+    pub html_paste: String,
+    /// `atx` (`# H`) | `setext` (underlined, h1/h2 only).
+    pub heading_style: String,
+    /// `-` | `*` | `+`.
+    pub bullet_marker: String,
+    /// `fenced` | `indented`.
+    pub code_block_style: String,
+    /// `_` | `*`.
+    pub emphasis: String,
+    /// `**` | `__`.
+    pub strong: String,
+    /// `inline` (`[t](url)`) | `reference` (`[t][1]` + link list at the end).
+    pub link_style: String,
+    /// `keep` (`![alt](src)`) | `drop`.
+    pub images: String,
+    /// `gfm` (pipe tables) | `html` (keep `<table>`) | `text` (cells as lines).
+    pub tables: String,
+}
+
+impl ClippingConfig {
+    pub fn validate(&self) -> Result<(), AppError> {
+        fn one_of(field: &str, value: &str, allowed: &[&str]) -> Result<(), AppError> {
+            if allowed.contains(&value) {
+                Ok(())
+            } else {
+                Err(AppError::Validation(format!(
+                    "clipping.{field} must be one of {allowed:?}, not {value:?}"
+                )))
+            }
+        }
+        one_of(
+            "htmlPaste",
+            &self.html_paste,
+            &["markdown", "plain", "html"],
+        )?;
+        one_of("headingStyle", &self.heading_style, &["atx", "setext"])?;
+        one_of("bulletMarker", &self.bullet_marker, &["-", "*", "+"])?;
+        one_of(
+            "codeBlockStyle",
+            &self.code_block_style,
+            &["fenced", "indented"],
+        )?;
+        one_of("emphasis", &self.emphasis, &["_", "*"])?;
+        one_of("strong", &self.strong, &["**", "__"])?;
+        one_of("linkStyle", &self.link_style, &["inline", "reference"])?;
+        one_of("images", &self.images, &["keep", "drop"])?;
+        one_of("tables", &self.tables, &["gfm", "html", "text"])?;
+        Ok(())
+    }
+}
+
+/// A font-family value must be short and free of characters that could
+/// break out of a CSS declaration.
+pub fn validate_font_family(raw: &str) -> Result<(), AppError> {
+    if raw.chars().count() > FONT_FAMILY_MAX_LEN {
+        return Err(AppError::Validation(format!(
+            "font family is longer than {FONT_FAMILY_MAX_LEN} characters"
+        )));
+    }
+    if raw
+        .chars()
+        .any(|c| matches!(c, ';' | '{' | '}' | '<' | '>' | '\\') || c.is_control())
+    {
+        return Err(AppError::Validation(
+            "font family contains a forbidden character".into(),
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -70,6 +168,8 @@ pub struct AppConfigView {
     pub calendar: CalendarConfig,
     pub journal: JournalConfig,
     pub ai: AiConfigView,
+    pub appearance: AppearanceConfig,
+    pub clipping: ClippingConfig,
 }
 
 /// Wire shape of the AI settings: `{ hasApiKey, model, baseUrl }`.
@@ -101,6 +201,8 @@ impl From<&AppConfig> for AppConfigView {
             calendar: cfg.calendar.clone(),
             journal: cfg.journal.clone(),
             ai: AiConfigView::from(&cfg.ai),
+            appearance: cfg.appearance.clone(),
+            clipping: cfg.clipping.clone(),
         }
     }
 }
@@ -154,6 +256,34 @@ impl Default for AppConfig {
             calendar: CalendarConfig::default(),
             journal: JournalConfig::default(),
             ai: AiConfig::default(),
+            appearance: AppearanceConfig::default(),
+            clipping: ClippingConfig::default(),
+        }
+    }
+}
+
+impl Default for AppearanceConfig {
+    fn default() -> Self {
+        Self {
+            palette: "default".to_string(),
+            ui_font: String::new(),
+            editor_font: String::new(),
+        }
+    }
+}
+
+impl Default for ClippingConfig {
+    fn default() -> Self {
+        Self {
+            html_paste: "markdown".to_string(),
+            heading_style: "atx".to_string(),
+            bullet_marker: "-".to_string(),
+            code_block_style: "fenced".to_string(),
+            emphasis: "_".to_string(),
+            strong: "**".to_string(),
+            link_style: "inline".to_string(),
+            images: "keep".to_string(),
+            tables: "gfm".to_string(),
         }
     }
 }
@@ -292,6 +422,15 @@ mod tests {
                 model: "gpt-4o-mini".into(),
                 base_url: "https://api.openai.com/v1".into(),
             },
+            appearance: AppearanceConfig {
+                palette: "ocean".into(),
+                ui_font: "Inter, sans-serif".into(),
+                editor_font: "\"JetBrains Mono\", monospace".into(),
+            },
+            clipping: ClippingConfig {
+                link_style: "reference".into(),
+                ..ClippingConfig::default()
+            },
         };
         save(dir.path(), &cfg).unwrap();
         let back = load(dir.path()).unwrap();
@@ -365,6 +504,35 @@ mod tests {
                 "{bad:?} should be rejected"
             );
         }
+    }
+
+    #[test]
+    fn old_config_without_new_sections_loads_defaults() {
+        let dir = tempdir().unwrap();
+        std::fs::write(config_path(dir.path()), br#"{"theme":"light"}"#).unwrap();
+        let cfg = load(dir.path()).unwrap();
+        assert_eq!(cfg.appearance, AppearanceConfig::default());
+        assert_eq!(cfg.clipping, ClippingConfig::default());
+    }
+
+    #[test]
+    fn clipping_validation() {
+        assert!(ClippingConfig::default().validate().is_ok());
+        let bad = ClippingConfig {
+            bullet_marker: "#".into(),
+            ..ClippingConfig::default()
+        };
+        assert!(matches!(bad.validate(), Err(AppError::Validation(_))));
+    }
+
+    #[test]
+    fn font_family_validation() {
+        assert!(validate_font_family("").is_ok());
+        assert!(validate_font_family("\"Noto Sans KR\", sans-serif").is_ok());
+        for bad in ["a; color: red", "x}", "<b>", "a\\b"] {
+            assert!(validate_font_family(bad).is_err(), "{bad:?}");
+        }
+        assert!(validate_font_family(&"a".repeat(FONT_FAMILY_MAX_LEN + 1)).is_err());
     }
 
     #[test]

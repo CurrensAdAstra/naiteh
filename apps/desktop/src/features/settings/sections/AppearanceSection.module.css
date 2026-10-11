@@ -1,0 +1,150 @@
+/* Settings > Appearance: palette picker cards + font rows. */
+
+.paletteGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
+  width: 100%;
+}
+
+.paletteCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-app);
+  color: var(--color-text-primary);
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.paletteCard:hover {
+  border-color: var(--color-border-strong);
+  background: var(--color-hover);
+}
+
+.paletteCard:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.paletteCardActive,
+.paletteCardActive:hover {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 1px var(--color-accent);
+}
+
+/* Miniature window: side panel + text lines + accent pill. */
+.palettePreview {
+  display: flex;
+  height: 64px;
+  overflow: hidden;
+  border-radius: 5px;
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 10%);
+}
+
+.previewSide {
+  width: 32%;
+}
+
+.previewBody {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 8px;
+}
+
+.previewLine {
+  height: 4px;
+  width: 85%;
+  border-radius: 2px;
+  opacity: 0.75;
+}
+
+.previewLineShort {
+  width: 55%;
+}
+
+.previewAccent {
+  height: 10px;
+  width: 40%;
+  margin-top: auto;
+  border-radius: 5px;
+}
+
+.paletteLabel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.swatches {
+  display: inline-flex;
+}
+
+.swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1.5px var(--color-bg-app), inset 0 0 0 1px rgb(0 0 0 / 15%);
+}
+
+.swatch + .swatch {
+  margin-left: -3px;
+}
+
+/* ── font rows ────────────────────────────────────────────── */
+
+.fontControl {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  max-width: 320px;
+}
+
+.select {
+  width: 220px;
+  padding: 6px 8px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 6px;
+  background: var(--color-bg-app);
+  color: var(--color-text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-ui);
+}
+
+.select:focus {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -1px;
+}
+
+.customInput {
+  width: 220px;
+}
+
+.customInput[aria-invalid="true"] {
+  border-color: var(--color-danger);
+}
+
+.fieldError {
+  max-width: 220px;
+  font-size: 12px;
+  color: var(--color-danger);
+  text-align: right;
+}
+
+.preview {
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  color: var(--color-text-secondary);
+}

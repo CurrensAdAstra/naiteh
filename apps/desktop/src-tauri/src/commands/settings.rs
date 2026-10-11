@@ -4,7 +4,7 @@
 //!
 //! Vault switching has its own commands (vault_set_active / vault_init) so
 //! this module intentionally only touches editor / theme / calendar /
-//! journal / AI preferences — not active_vault or known_vaults.
+//! journal / AI / appearance / clipping preferences — not active_vault or known_vaults.
 //!
 //! Every command returns [`AppConfigView`], never the raw [`AppConfig`]:
 //! the AI API key stays on disk and is reported only as `hasApiKey`.
@@ -12,7 +12,9 @@
 use std::path::Path;
 
 use crate::domain::AppError;
-use crate::services::config::{self, AppConfigView, EditorConfig};
+use crate::services::config::{
+    self, AppConfigView, AppearanceConfig, ClippingConfig, EditorConfig,
+};
 use crate::services::fs as fsx;
 use crate::services::session::{require_session, ActiveSession};
 
@@ -104,6 +106,68 @@ fn app_config_set_ai_impl(
     }
     cfg.ai.model = trimmed_model;
     cfg.ai.base_url = new_base_url;
+    config::save(config_dir, &cfg)?;
+    Ok(AppConfigView::from(&cfg))
+}
+
+/// Update palette + font families. Fonts are trimmed; empty means the
+/// built-in default stack.
+#[tauri::command]
+pub fn app_config_set_appearance(
+    active: tauri::State<'_, ActiveSession>,
+    palette: String,
+    ui_font: String,
+    editor_font: String,
+) -> Result<AppConfigView, AppError> {
+    require_session(&active)?;
+    let dir = config::default_app_config_dir()?;
+    fsx::ensure_dir(&dir)?;
+    app_config_set_appearance_impl(&dir, palette, ui_font, editor_font)
+}
+
+fn app_config_set_appearance_impl(
+    config_dir: &Path,
+    palette: String,
+    ui_font: String,
+    editor_font: String,
+) -> Result<AppConfigView, AppError> {
+    let palette = palette.trim().to_string();
+    if !config::PALETTES.contains(&palette.as_str()) {
+        return Err(AppError::Validation(format!("unknown palette {palette:?}")));
+    }
+    let ui_font = ui_font.trim().to_string();
+    let editor_font = editor_font.trim().to_string();
+    config::validate_font_family(&ui_font)?;
+    config::validate_font_family(&editor_font)?;
+    let mut cfg = config::load(config_dir)?;
+    cfg.appearance = AppearanceConfig {
+        palette,
+        ui_font,
+        editor_font,
+    };
+    config::save(config_dir, &cfg)?;
+    Ok(AppConfigView::from(&cfg))
+}
+
+/// Replace the HTML → Markdown clipping options (all fields at once).
+#[tauri::command]
+pub fn app_config_set_clipping(
+    active: tauri::State<'_, ActiveSession>,
+    clipping: ClippingConfig,
+) -> Result<AppConfigView, AppError> {
+    require_session(&active)?;
+    let dir = config::default_app_config_dir()?;
+    fsx::ensure_dir(&dir)?;
+    app_config_set_clipping_impl(&dir, clipping)
+}
+
+fn app_config_set_clipping_impl(
+    config_dir: &Path,
+    clipping: ClippingConfig,
+) -> Result<AppConfigView, AppError> {
+    clipping.validate()?;
+    let mut cfg = config::load(config_dir)?;
+    cfg.clipping = clipping;
     config::save(config_dir, &cfg)?;
     Ok(AppConfigView::from(&cfg))
 }
@@ -275,5 +339,60 @@ mod tests {
         assert_eq!(cfg.active_vault.as_deref(), Some("/v"));
         assert_eq!(cfg.known_vaults, vec!["/v".to_string(), "/w".to_string()]);
         assert_eq!(cfg.editor.font_size, 18);
+    }
+
+    #[test]
+    fn set_appearance_persists_trimmed_values() {
+        let dir = tempdir().unwrap();
+        let view = app_config_set_appearance_impl(
+            dir.path(),
+            " forest ".into(),
+            "  Inter, sans-serif ".into(),
+            String::new(),
+        )
+        .unwrap();
+        assert_eq!(view.appearance.palette, "forest");
+        assert_eq!(view.appearance.ui_font, "Inter, sans-serif");
+        assert_eq!(
+            config::load(dir.path()).unwrap().appearance,
+            view.appearance
+        );
+    }
+
+    #[test]
+    fn set_appearance_rejects_unknown_palette_or_bad_font() {
+        let dir = tempdir().unwrap();
+        assert!(
+            app_config_set_appearance_impl(dir.path(), "neon".into(), "".into(), "".into())
+                .is_err()
+        );
+        assert!(app_config_set_appearance_impl(
+            dir.path(),
+            "default".into(),
+            "x; color: red".into(),
+            "".into()
+        )
+        .is_err());
+        assert_eq!(
+            config::load(dir.path()).unwrap().appearance,
+            AppearanceConfig::default()
+        );
+    }
+
+    #[test]
+    fn set_clipping_validates_and_persists() {
+        let dir = tempdir().unwrap();
+        let next = ClippingConfig {
+            html_paste: "plain".into(),
+            ..ClippingConfig::default()
+        };
+        let view = app_config_set_clipping_impl(dir.path(), next.clone()).unwrap();
+        assert_eq!(view.clipping, next);
+        let bad = ClippingConfig {
+            tables: "csv".into(),
+            ..ClippingConfig::default()
+        };
+        assert!(app_config_set_clipping_impl(dir.path(), bad).is_err());
+        assert_eq!(config::load(dir.path()).unwrap().clipping, next);
     }
 }

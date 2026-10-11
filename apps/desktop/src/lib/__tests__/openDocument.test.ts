@@ -19,6 +19,7 @@ import {
 } from "../openDocument";
 import { resetAutosaveForTests, scheduleSave } from "../../state/autosave";
 import { isDirty, useEditorStore } from "../../state/editorStore";
+import { useUIStore } from "../../state/uiStore";
 
 const mockedRead = vi.mocked(notesRead);
 const mockedWrite = vi.mocked(notesWrite);
@@ -50,6 +51,28 @@ describe("openDocument", () => {
     mockedWrite.mockResolvedValue(META);
     mockedJournalOpen.mockReset();
     useEditorStore.setState({ open: null, view: null, saveError: null });
+  });
+
+  it("opens a different document in view mode", async () => {
+    useUIStore.setState({ editorMode: "edit" });
+    mockedRead.mockResolvedValue("body");
+    await openDocument({ kind: "note", relPath: "notes/a.md" });
+    expect(useUIStore.getState().editorMode).toBe("view");
+  });
+
+  it("keeps the mode when re-opening the same document", async () => {
+    mockedRead.mockResolvedValue("body");
+    await openDocument({ kind: "note", relPath: "notes/a.md" });
+    useUIStore.setState({ editorMode: "edit" });
+    await openDocument({ kind: "note", relPath: "notes/a.md" });
+    expect(useUIStore.getState().editorMode).toBe("edit");
+  });
+
+  it("opens straight into edit mode when asked (new notes)", async () => {
+    useUIStore.setState({ editorMode: "view" });
+    mockedRead.mockResolvedValue("");
+    await openDocument({ kind: "note", relPath: "notes/new.md" }, { edit: true });
+    expect(useUIStore.getState().editorMode).toBe("edit");
   });
 
   it("classifies canonical journal paths", () => {

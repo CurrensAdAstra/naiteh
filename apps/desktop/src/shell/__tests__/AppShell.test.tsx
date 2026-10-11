@@ -12,6 +12,10 @@ import { useVaultStore } from "../../state/vaultStore";
 import { AppShell } from "../AppShell";
 import appShellSource from "../AppShell.tsx?raw";
 
+// The editor chunk (CodeMirror + the Markdown renderer) is lazy-loaded;
+// under a busy full-suite run its first import can exceed the 1s default.
+const LAZY_EDITOR_WAIT = { timeout: 5000 };
+
 // Stub the PanelRouter so list panels with their own data fetching don't
 // pollute this test. The contract we care about is "the right testid is
 // present per mode", which the stub honors.
@@ -73,14 +77,14 @@ describe("AppShell", () => {
 
     expect(screen.getByRole("navigation", { name: /activity bar/i })).toBeInTheDocument();
     expect(screen.getByTestId("list-panel")).toBeInTheDocument();
-    expect(await screen.findByTestId("editor-panel")).toBeInTheDocument();
+    expect(await screen.findByTestId("editor-panel", {}, LAZY_EDITOR_WAIT)).toBeInTheDocument();
     expect(screen.getByTestId("status-bar")).toBeInTheDocument();
   });
 
   it("preserves the Editor Panel DOM node across ViewMode changes", async () => {
     render(<AppShell />);
     await waitForShellRefresh();
-    const editorBefore = await screen.findByTestId("editor-panel");
+    const editorBefore = await screen.findByTestId("editor-panel", {}, LAZY_EDITOR_WAIT);
 
     const sequence: ViewMode[] = ["notes", "calendar", "tags", "sync"];
     for (const mode of sequence) {

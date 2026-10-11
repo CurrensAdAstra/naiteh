@@ -1,7 +1,7 @@
 import { markdown } from "@codemirror/lang-markdown";
 import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import { EditorView, basicSetup } from "codemirror";
-import { Lock, Paperclip, Sparkles, Star, Unlock } from "lucide-react";
+import { BookOpen, Paperclip, Pencil, Sparkles, Star } from "lucide-react";
 import {
   useEffect,
   useMemo,
@@ -13,6 +13,8 @@ import {
 import { attachmentsImport } from "../lib/api/attachments";
 import { resolveFenceLanguage } from "../lib/codeBlockLanguages";
 import { editorAttachmentDrop } from "../lib/editorAttachmentDrop";
+import { editorHtmlPaste } from "../lib/editorHtmlPaste";
+import { editorHighlight } from "../lib/editorHighlight";
 import {
   isPinnedInContent,
   togglePinnedInContent,
@@ -35,6 +37,7 @@ import {
 import { useAuthStore } from "../state/authStore";
 import { selectEditorConfig, useSettingsStore } from "../state/settingsStore";
 import { useUIStore } from "../state/uiStore";
+import { MarkdownViewer } from "./MarkdownViewer";
 import { TagsBar } from "./TagsBar";
 import styles from "./EditorPanel.module.css";
 
@@ -53,7 +56,9 @@ export function EditorPanel() {
   const setContent = useEditorStore((s) => s.setContent);
   const setView = useEditorStore((s) => s.setView);
   const editorConfig = useSettingsStore(selectEditorConfig);
-  const editorReadOnly = useUIStore((s) => s.editorReadOnly);
+  const editorMode = useUIStore((s) => s.editorMode);
+  const setEditorMode = useUIStore((s) => s.setEditorMode);
+  const viewing = editorMode === "view";
   const logAction = useAuthStore((s) => s.logAction);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -94,13 +99,19 @@ export function EditorPanel() {
       useSettingsStore.getState().config?.editor.lineWrapping ?? true
         ? EditorView.lineWrapping
         : [];
-    const initialReadOnly: Extension = useUIStore.getState().editorReadOnly
-      ? EditorState.readOnly.of(true)
-      : [];
+    // The source editor stays mounted (hidden) in view mode so pin/tag/
+    // task edits and AI replacements keep flowing through one document;
+    // read-only there so a stray key can't type into it.
+    const initialReadOnly: Extension =
+      useUIStore.getState().editorMode === "view"
+        ? EditorState.readOnly.of(true)
+        : [];
     const state = EditorState.create({
       doc: initial,
       extensions: [
         basicSetup,
+        // Token-driven colors so palettes (incl. dark) recolor syntax.
+        editorHighlight(),
         // Fenced code blocks get per-language highlighting; grammars
         // lazy-load on first use (see lib/codeBlockLanguages).
         markdown({ codeLanguages: resolveFenceLanguage }),
@@ -108,6 +119,8 @@ export function EditorPanel() {
         wrapCompartment.of(initialWrap),
         readOnlyCompartment.of(initialReadOnly),
         editorAttachmentDrop({ onError: setAttachmentError }),
+        // After the image handler so image pastes keep priority.
+        editorHtmlPaste(),
         EditorView.updateListener.of((update) => {
           // Only mirror into the store while this view still belongs to
           // the open document (guards the brief window before a rebuild).
@@ -144,17 +157,22 @@ export function EditorPanel() {
     });
   }, [editorConfig.lineWrapping]);
 
-  // Live-apply the read-only toggle.
+  // Live-apply the view/edit mode. Entering edit mode re-measures the
+  // (previously hidden) editor and focuses it.
   useEffect(() => {
     const view = viewRef.current;
     const compartment = readOnlyCompartmentRef.current;
     if (view === null || compartment === null) return;
     view.dispatch({
       effects: compartment.reconfigure(
-        editorReadOnly ? EditorState.readOnly.of(true) : [],
+        viewing ? EditorState.readOnly.of(true) : [],
       ),
     });
-  }, [editorReadOnly]);
+    if (!viewing) {
+      view.requestMeasure();
+      view.focus();
+    }
+  }, [viewing, editorKey, revision]);
 
   // Debounced autosave when the editor content drifts from disk. The
   // pending save lives in state/autosave (not in this effect), so it is
@@ -206,22 +224,20 @@ export function EditorPanel() {
             </span>
             <PinToggleButton />
             <AttachmentButton
-              readOnly={editorReadOnly}
+              readOnly={viewing}
               onError={setAttachmentError}
             />
-            <ReadOnlyToggleButton />
+            <EditModeToggleButton />
             <AiToggleButton />
             <span
               className={dirty ? styles.statusDirty : styles.statusSaved}
               data-testid="editor-status"
             >
-              {editorReadOnly
-                ? "Read-only"
-                : dirty
-                  ? saveError !== null
-                    ? "● Save failed"
-                    : "● Unsaved"
-                  : "Saved"}
+              {dirty
+                ? saveError !== null
+                  ? "● Save failed"
+                  : "● Unsaved"
+                : "Saved"}
             </span>
           </div>
           {saveError !== null && dirty && (
@@ -240,10 +256,20 @@ export function EditorPanel() {
             </div>
           )}
           <TagsBar />
+          {viewing && (
+            <MarkdownViewer
+              content={open.content}
+              docRelPath={open.source.relPath}
+              onChange={applyDocument}
+              onStartEditing={() => setEditorMode("edit")}
+            />
+          )}
           <div
             ref={containerRef}
             className={styles.editor}
             style={editorStyle}
+            hidden={viewing}
+            data-testid="editor-source"
           />
         </>
       )}
@@ -340,24 +366,41 @@ function PinToggleButton() {
   );
 }
 
-function ReadOnlyToggleButton() {
-  const readOnly = useUIStore((s) => s.editorReadOnly);
-  const toggle = useUIStore((s) => s.toggleEditorReadOnly);
+/**
+ * Replace the whole open document (viewer task toggles). Goes through the
+ * mounted editor so its doc, the store and autosave stay in step.
+ */
+function applyDocument(next: string) {
+  if (!replaceWholeDocument(next)) {
+    useEditorStore.setState((state) =>
+      state.open === null ? state : { open: { ...state.open, content: next } },
+    );
+  }
+}
+
+function EditModeToggleButton() {
+  const editing = useUIStore((s) => s.editorMode === "edit");
+  const toggle = useUIStore((s) => s.toggleEditorMode);
   return (
     <button
       type="button"
-      className={`${styles.lockToggle} ${readOnly ? styles.lockToggleOn : ""}`}
-      aria-pressed={readOnly}
-      aria-label={readOnly ? "Disable read-only mode" : "Enable read-only mode"}
-      title={readOnly ? "Disable read-only" : "Make read-only"}
+      className={`${styles.modeToggle} ${editing ? styles.modeToggleOn : ""}`}
+      aria-pressed={editing}
+      aria-label={editing ? "Done editing" : "Edit note"}
+      title={
+        editing
+          ? "Show the rendered note (Ctrl+Shift+E)"
+          : "Edit the Markdown source (Ctrl+Shift+E)"
+      }
       onClick={toggle}
-      data-testid="editor-readonly-toggle"
+      data-testid="editor-mode-toggle"
     >
-      {readOnly ? (
-        <Lock size={14} aria-hidden="true" />
+      {editing ? (
+        <BookOpen size={14} aria-hidden="true" />
       ) : (
-        <Unlock size={14} aria-hidden="true" />
+        <Pencil size={14} aria-hidden="true" />
       )}
+      <span>{editing ? "Done" : "Edit"}</span>
     </button>
   );
 }

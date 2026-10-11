@@ -10,6 +10,7 @@ const MENU_NEW_NOTE: &str = "new_note";
 const MENU_NEW_FOLDER: &str = "new_folder";
 const MENU_COMMAND_PALETTE: &str = "command_palette";
 const MENU_TOGGLE_AI: &str = "toggle_ai";
+const MENU_TOGGLE_EDIT: &str = "toggle_edit";
 const MENU_SETTINGS: &str = "settings";
 const VIEW_ID_PREFIX: &str = "view:";
 
@@ -27,7 +28,8 @@ const VIEW_ITEMS: &[(&str, &str, &str)] = &[
 /// Native application menu. Standard App / Edit submenus (so the editor's
 /// undo/cut/copy/paste/select-all work from the menu bar with their usual
 /// shortcuts), a File menu (new note/folder + Evernote import), and a
-/// View menu that switches panels and toggles the palette / AI panel.
+/// View menu that switches panels and toggles the palette, the AI panel
+/// and the note view/edit mode.
 /// Custom items carry accelerators and emit `menu:*` events the frontend
 /// routes to store actions.
 fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
@@ -93,7 +95,7 @@ fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         ],
     )?;
 
-    // View menu: the six panels, then palette + AI toggle.
+    // View menu: the six panels, then palette, AI and edit-mode toggles.
     let view_items: Vec<MenuItem<R>> = VIEW_ITEMS
         .iter()
         .map(|(id, label, accel)| {
@@ -120,6 +122,13 @@ fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         true,
         Some("CmdOrCtrl+E"),
     )?;
+    let toggle_edit = MenuItem::with_id(
+        handle,
+        MENU_TOGGLE_EDIT,
+        "Toggle Edit Mode",
+        true,
+        Some("CmdOrCtrl+Shift+E"),
+    )?;
     let separator = PredefinedMenuItem::separator(handle)?;
     let mut view_refs: Vec<&dyn tauri::menu::IsMenuItem<R>> = view_items
         .iter()
@@ -128,6 +137,7 @@ fn build_menu<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     view_refs.push(&separator);
     view_refs.push(&command_palette);
     view_refs.push(&toggle_ai);
+    view_refs.push(&toggle_edit);
     let view_menu = Submenu::with_items(handle, "View", true, &view_refs)?;
 
     Menu::with_items(handle, &[&app_menu, &file_menu, &edit_menu, &view_menu])
@@ -154,6 +164,7 @@ fn route_menu_id(id: &str) -> MenuRoute {
         MENU_NEW_FOLDER => MenuRoute::Unit("menu:new-folder"),
         MENU_COMMAND_PALETTE => MenuRoute::Unit("menu:command-palette"),
         MENU_TOGGLE_AI => MenuRoute::Unit("menu:toggle-ai"),
+        MENU_TOGGLE_EDIT => MenuRoute::Unit("menu:toggle-edit"),
         MENU_SETTINGS => MenuRoute::Unit("menu:settings"),
         MENU_IMPORT_EVERNOTE => MenuRoute::Unit("menu:import-evernote"),
         _ => MenuRoute::None,
@@ -176,6 +187,7 @@ fn emit_menu_event<R: Runtime>(app: &AppHandle<R>, id: &str) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .menu(build_menu)
         .on_menu_event(|app, event| {
             emit_menu_event(app, event.id().as_ref());
@@ -248,10 +260,13 @@ pub fn run() {
             commands::settings::app_config_get,
             commands::settings::app_config_set_editor,
             commands::settings::app_config_set_ai,
+            commands::settings::app_config_set_appearance,
+            commands::settings::app_config_set_clipping,
             commands::ai::ai_improve,
             commands::ai::ai_list_models,
             commands::attachments::attachments_import,
             commands::attachments::attachments_import_bytes,
+            commands::attachments::attachments_read_image,
             commands::evernote::evernote_import,
             commands::workspace::workspace_get,
             commands::workspace::workspace_set_last_opened,
@@ -290,6 +305,7 @@ mod tests {
             (MENU_NEW_FOLDER, "menu:new-folder"),
             (MENU_COMMAND_PALETTE, "menu:command-palette"),
             (MENU_TOGGLE_AI, "menu:toggle-ai"),
+            (MENU_TOGGLE_EDIT, "menu:toggle-edit"),
             (MENU_IMPORT_EVERNOTE, "menu:import-evernote"),
         ];
         for (id, channel) in cases {

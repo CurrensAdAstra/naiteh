@@ -2,7 +2,7 @@
 title: "App Config"
 tags: [naiteh-wiki, config, settings]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-10-10T18:00:00+09:00
+updated: 2026-10-10T20:00:00+09:00
 pinned: false
 ---
 
@@ -40,18 +40,79 @@ App-level config (not per-vault) lives in the OS app-config directory:
     "apiKey": null,
     "model": "gpt-4o-mini",
     "baseUrl": "https://api.openai.com/v1"
+  },
+  "appearance": {
+    "palette": "default",
+    "uiFont": "",
+    "editorFont": ""
+  },
+  "clipping": {
+    "htmlPaste": "markdown",
+    "headingStyle": "atx",
+    "bulletMarker": "-",
+    "codeBlockStyle": "fenced",
+    "emphasis": "_",
+    "strong": "**",
+    "linkStyle": "inline",
+    "images": "keep",
+    "tables": "gfm"
   }
 }
 ```
 
+Every section is `serde(default)`: a `config.json` written before a section
+existed (e.g. without `appearance` / `clipping`) loads with that section's
+defaults.
+
 Per-vault settings live separately in `<vault>/.naiteh/config.json`.
+
+### Appearance
+
+Set through `app_config_set_appearance` (see [IPC API](ipc-api.md#ai-assist));
+the renderer applies it as CSS custom properties on the document root
+(palette color tokens, `--font-ui`, `--font-editor`).
+
+| Key | Values | Default |
+|-----|--------|---------|
+| `palette` | `default`, `ocean`, `forest`, `sunset`, `lavender`, `rose`, `nord`, `midnight` (`nord` and `midnight` are dark schemes) | `default` |
+| `uiFont` | CSS `font-family` string for the interface; `""` = built-in stack from `styles/tokens.css` | `""` |
+| `editorFont` | CSS `font-family` string for the editor; `""` = built-in stack | `""` |
+
+Validation (on save; failure → `Validation`, nothing saved): `palette` is
+trimmed and must be one of the ids above. Fonts are trimmed, at most 200
+characters, and may not contain `;` `{` `}` `<` `>` `\` or control characters.
+
+### Clipping
+
+How `text/html` clipboard content pasted into the editor is turned into
+Markdown. Set as a whole through `app_config_set_clipping`; every field is a
+closed set of string values (anything else → `Validation`, nothing saved).
+
+| Key | Values | Default |
+|-----|--------|---------|
+| `htmlPaste` | `markdown` (convert) · `plain` (text only) · `html` (insert the HTML) | `markdown` |
+| `headingStyle` | `atx` (`# H`) · `setext` (underlined; h1/h2 only) | `atx` |
+| `bulletMarker` | `-` · `*` · `+` | `-` |
+| `codeBlockStyle` | `fenced` · `indented` | `fenced` |
+| `emphasis` | `_` · `*` | `_` |
+| `strong` | `**` · `__` | `**` |
+| `linkStyle` | `inline` (`[t](url)`) · `reference` (`[t][1]` + link list at the end) | `inline` |
+| `images` | `keep` (`![alt](src)`) · `drop` | `keep` |
+| `tables` | `gfm` (pipe tables) · `html` (keep `<table>`) · `text` (cells as lines) | `gfm` |
+
+Paste behaviour: an image on the clipboard keeps priority and still goes
+through attachments; pasting inside a fenced code block inserts plain text;
+`html` mode still strips scripts, event-handler attributes and `javascript:`
+URLs.
 
 ## IPC view vs disk
 
 The schema above is the **on-disk** format (`AppConfig`, unchanged — `ai.apiKey`
 is stored in `config.json` as before). It never crosses the IPC boundary as-is:
-`app_config_get`, `app_config_set_editor` and `app_config_set_ai` return an
-**`AppConfigView`** — the same fields, except `ai` is replaced by a key-less view:
+`app_config_get`, `app_config_set_editor`, `app_config_set_ai`,
+`app_config_set_appearance` and `app_config_set_clipping` return an
+**`AppConfigView`** — the same fields (`appearance` and `clipping` as-is),
+except `ai` is replaced by a key-less view:
 
 ```json
 "ai": {

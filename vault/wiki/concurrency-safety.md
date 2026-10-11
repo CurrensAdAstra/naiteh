@@ -19,7 +19,7 @@ pinned: false
   `blocking_lock`, held only while that note's files are written) rather than
   for the whole run, so autosave keeps working during a long import. Read-only commands
   (`notes_read` / `notes_list`, `journal_open`, `tags_*`, `search_text`,
-  `sync_status`, `sync_list_conflicts`) do not lock; atomic-write semantics mean
+  `attachments_read_image`, `sync_status`, `sync_list_conflicts`) do not lock; atomic-write semantics mean
   they may observe the previous version, never a torn write. Machine-local
   `.naiteh/` state that never syncs — e.g. `workspace_set_last_opened` writing
   `workspace.json` — is written without the lock by design.

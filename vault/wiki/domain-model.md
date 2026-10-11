@@ -2,7 +2,7 @@
 title: "Domain Model"
 tags: [naiteh-wiki, domain, types, ipc]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-10-10T18:00:00+09:00
+updated: 2026-10-10T20:00:00+09:00
 pinned: false
 ---
 
@@ -127,8 +127,9 @@ renderer's point of view.
 ## Config types
 
 `AppConfig` and its nested `EditorConfig` (`fontSize`, `lineWrapping`),
-`CalendarConfig` (`subView`), and `JournalConfig` (`splitRatio`) live in
-`services/config.rs` (not `domain/`). Over IPC the `app_config_*` commands
+`CalendarConfig` (`subView`), `JournalConfig` (`splitRatio`),
+`AppearanceConfig` (`palette`, `uiFont`, `editorFont`) and `ClippingConfig`
+(HTML-paste conversion options) live in `services/config.rs` (not `domain/`). Over IPC the `app_config_*` commands
 return `AppConfigView` — `AppConfig` with `ai` replaced by `AiConfigView` above —
 mirrored in `types.ts`, where the frontend's `AppConfig` / `AiConfig`
 interfaces **are** these view shapes (`ai.hasApiKey`, no `apiKey`). The full schema, defaults, and on-disk paths are in

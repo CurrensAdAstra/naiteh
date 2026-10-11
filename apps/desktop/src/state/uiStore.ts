@@ -29,6 +29,13 @@ const clamp = (n: number, min: number, max: number): number =>
  */
 export type PendingAction = "evernoteImport" | "newNote" | "newFolder";
 
+/**
+ * How the open document is shown. `view` (the default) renders the
+ * Markdown; `edit` shows the source editor. Opening a different document
+ * returns to `view` unless the opener asks for `edit` (new notes).
+ */
+export type EditorMode = "view" | "edit";
+
 interface UIState {
   viewMode: ViewMode;
   listPanelWidth: number;
@@ -37,7 +44,7 @@ interface UIState {
   commandPaletteOpen: boolean;
   /** The Obsidian-style settings modal overlays the whole shell. */
   settingsOpen: boolean;
-  editorReadOnly: boolean;
+  editorMode: EditorMode;
   pendingAction: PendingAction | null;
   setViewMode: (mode: ViewMode) => void;
   setListPanelWidth: (px: number) => void;
@@ -47,8 +54,8 @@ interface UIState {
   setCommandPaletteOpen: (open: boolean) => void;
   toggleCommandPalette: () => void;
   setSettingsOpen: (open: boolean) => void;
-  setEditorReadOnly: (readOnly: boolean) => void;
-  toggleEditorReadOnly: () => void;
+  setEditorMode: (mode: EditorMode) => void;
+  toggleEditorMode: () => void;
   /** Open the settings modal and queue the Evernote import flow there. */
   requestEvernoteImport: () => void;
   /** Navigate to Notes and queue a new-note / new-folder prompt there. */
@@ -64,7 +71,7 @@ export const useUIStore = create<UIState>((set) => ({
   aiPanelOpen: false,
   commandPaletteOpen: false,
   settingsOpen: false,
-  editorReadOnly: false,
+  editorMode: "view",
   pendingAction: null,
   setViewMode: (mode) => set({ viewMode: mode }),
   setListPanelWidth: (px) =>
@@ -79,9 +86,9 @@ export const useUIStore = create<UIState>((set) => ({
   toggleCommandPalette: () =>
     set((s) => ({ commandPaletteOpen: !s.commandPaletteOpen })),
   setSettingsOpen: (open) => set({ settingsOpen: open }),
-  setEditorReadOnly: (readOnly) => set({ editorReadOnly: readOnly }),
-  toggleEditorReadOnly: () =>
-    set((s) => ({ editorReadOnly: !s.editorReadOnly })),
+  setEditorMode: (mode) => set({ editorMode: mode }),
+  toggleEditorMode: () =>
+    set((s) => ({ editorMode: s.editorMode === "view" ? "edit" : "view" })),
   requestEvernoteImport: () =>
     set({ settingsOpen: true, pendingAction: "evernoteImport" }),
   requestNewNote: () =>

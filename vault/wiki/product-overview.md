@@ -2,7 +2,7 @@
 title: "Product Overview"
 tags: [naiteh-wiki, product, stack]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-10-10T18:00:00+09:00
+updated: 2026-10-10T20:00:00+09:00
 pinned: false
 ---
 
@@ -35,12 +35,22 @@ pinned: false
    token, never a plain username, to the auth IPCs. Repeated wrong passwords
    lock a username for 5 minutes. The AI API key is write-only from the UI —
    the renderer only learns whether one is set.
+8. **Appearance & web clipping** — built-in color palettes plus custom
+   interface / editor fonts, and configurable conversion of HTML pasted from
+   the web into Markdown (see [App Config](app-config.md#appearance)).
+9. **Reading view** — notes open rendered (GitHub-flavored Markdown: tables,
+   task lists, footnotes; raw HTML sanitized); the Markdown source appears only
+   in edit mode (toolbar **Edit** / Cmd+Shift+E). In the reading view, links to
+   other notes open them, web links open in the system browser, vault images
+   are shown (remote images are not fetched), and task checkboxes can be
+   ticked. New notes open straight in edit mode.
 
 ## Non-goals (v1)
 
-- WYSIWYG editing (source-mode Markdown only)
+- WYSIWYG editing (editing is source-mode Markdown; the reading view is
+  rendered but read-only apart from task checkboxes)
 - Backlinks / wiki-links / graph view (deferred to v2.0)
-- Plugins / theming system
+- Plugins / user-authored themes (only the built-in palettes ship)
 - Real-time collaboration
 - Mobile app (revisited after v1.5)
 - Calendar event integration (system Calendar / Reminders)
@@ -57,6 +67,7 @@ pinned: false
 | Backend language | **Rust**                                                   |
 | Frontend         | **React 18 + TypeScript + Vite**                           |
 | Styling          | **CSS Modules**                                            |
+| Reading view     | **react-markdown** + `remark-gfm`, raw HTML via `rehype-raw` then `rehype-sanitize` (GitHub schema); external links via `tauri-plugin-opener` (http/https/mailto only) |
 | Editor           | **CodeMirror 6** — fenced code blocks get per-language syntax highlighting (100+ grammars via `@codemirror/language-data`, lazy-loaded; exact name/alias match with extension fallback, e.g. ```py) |
 | Git integration  | **`git2` crate** (libgit2 bindings)                        |
 | AI HTTP client   | **`reqwest` 0.13** with rustls (aws-lc-rs provider, OS certificate store via `rustls-platform-verifier`) — used only by AI Assist |

@@ -31,6 +31,8 @@ function isViewMode(value: unknown): value is ViewMode {
  *     per view mode: journal, notes, calendar, search, tags, sync)
  *   - `menu:command-palette` → open the palette (Cmd+P)
  *   - `menu:toggle-ai` → toggle the AI panel (Cmd+E)
+ *   - `menu:toggle-edit` → switch the open note between the rendered
+ *     view and the source editor (Shift+Cmd+E)
  *   - `menu:settings` → open the settings modal (Cmd+,)
  *   - `menu:new-note` / `menu:new-folder` → Notes panel prompts (Cmd+N /
  *     Shift+Cmd+N)
@@ -45,6 +47,7 @@ export function useMenuEvents(): void {
       }),
       listen("menu:command-palette", () => ui().setCommandPaletteOpen(true)),
       listen("menu:toggle-ai", () => ui().toggleAiPanel()),
+      listen("menu:toggle-edit", () => ui().toggleEditorMode()),
       listen("menu:settings", () => ui().setSettingsOpen(true)),
       listen("menu:new-note", () => ui().requestNewNote()),
       listen("menu:new-folder", () => ui().requestNewFolder()),

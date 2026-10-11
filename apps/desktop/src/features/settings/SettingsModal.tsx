@@ -7,8 +7,10 @@ import { useUIStore } from "../../state/uiStore";
 import { AccountSection } from "./sections/AccountSection";
 import { AccountsSection } from "./sections/AccountsSection";
 import { AiSection } from "./sections/AiSection";
+import { AppearanceSection } from "./sections/AppearanceSection";
 import { AuditSection } from "./sections/AuditSection";
 import { EditorSection } from "./sections/EditorSection";
+import { ClippingSection } from "./sections/ClippingSection";
 import { ImportSection } from "./sections/ImportSection";
 import { VaultSection } from "./sections/VaultSection";
 import { useDialogFocus } from "./useDialogFocus";
@@ -16,7 +18,9 @@ import styles from "./SettingsModal.module.css";
 
 type SectionId =
   | "general"
+  | "appearance"
   | "editor"
+  | "clipping"
   | "ai"
   | "import"
   | "account"
@@ -31,7 +35,9 @@ interface NavEntry {
 
 const NAV: readonly NavEntry[] = [
   { id: "general", label: "Vault", group: "options" },
+  { id: "appearance", label: "Appearance", group: "options" },
   { id: "editor", label: "Editor", group: "options" },
+  { id: "clipping", label: "Web Clipping", group: "options" },
   { id: "ai", label: "AI Assist", group: "options" },
   { id: "import", label: "Import from Evernote", group: "options" },
   { id: "account", label: "Account", group: "options" },
@@ -70,7 +76,9 @@ export function SettingsModal() {
 
   const sections: Record<SectionId, ReactNode> = {
     general: <VaultSection />,
+    appearance: <AppearanceSection />,
     editor: <EditorSection />,
+    clipping: <ClippingSection />,
     ai: <AiSection />,
     import: <ImportSection />,
     account: <AccountSection />,
