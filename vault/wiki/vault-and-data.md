@@ -41,6 +41,30 @@ root itself is validated when it is chosen (`vault_init`, `vault_set_active`,
   `~/Library`. "Containing" catches e.g. `C:\Users` or `~/AppData`.
 - Ordinary subfolders such as `~/Documents/duramen` are fine.
 
+## Backup
+
+The vault folder is the complete note data (notes, journal, attachments,
+Evernote imports, `.naiteh/`), so any folder-level backup or sync copies all of
+it. **Decision (2026-10-11): the primary backup is Google Drive for desktop**,
+with the vault folder added under *My Computer* → *Sync with Google Drive*
+(or the vault placed inside *My Drive*; `G:\My Drive\…` is a valid vault
+location). The app needs no special support for this; **Settings → Backup**
+explains these steps in the app (with the active vault path and a copy
+button), and the Sync panel links there.
+
+- **Not in the vault, so not backed up:** app config, accounts, the remembered
+  session, the AI key, hooks (the app-config dir — see
+  [App Config](app-config.md)).
+- **Built-in Sync is optional** (Git under the hood; see the sync commands in
+  [IPC API](ipc-api.md)). Limits that matter with GitHub: files over 100 MB are
+  rejected by GitHub (and nothing in naiteh stops one being committed, after
+  which every push fails); Git LFS is not supported; attachments stay in Git
+  history after deletion.
+- **One sync method per vault** when several machines share it: Drive syncing
+  a vault that also has Git Sync on would sync `.git/` between machines too.
+- Drive resolves simultaneous edits by keeping both copies as separate files;
+  naiteh does not detect or merge those copies.
+
 ## Vault layout
 
 ```

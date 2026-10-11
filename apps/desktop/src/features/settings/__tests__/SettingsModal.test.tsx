@@ -648,6 +648,28 @@ describe("SettingsModal", () => {
     });
   });
 
+  describe("backup", () => {
+    it("lists Backup right after Vault in the navigation", () => {
+      render(<SettingsModal />);
+      const labels = screen
+        .getAllByRole("button")
+        .filter((b) => b.getAttribute("data-testid")?.startsWith("settings-nav-"))
+        .map((b) => b.textContent);
+      expect(labels.slice(0, 2)).toEqual(["Vault", "Backup"]);
+    });
+
+    it("opens on the Backup section when the Sync panel asks for it", () => {
+      useUIStore.setState({ pendingAction: "showBackup" });
+      render(<SettingsModal />);
+      expect(screen.getByTestId("settings-nav-backup")).toHaveAttribute(
+        "aria-current",
+        "page",
+      );
+      expect(screen.getByTestId("settings-backup")).toBeVisible();
+      expect(useUIStore.getState().pendingAction).toBeNull();
+    });
+  });
+
   describe("account (any user)", () => {
     beforeEach(() => {
       useAuthStore.setState({

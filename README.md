@@ -3,8 +3,9 @@
 naiteh is a local-first desktop app for Markdown notes and a daily journal.
 Every note is a plain `.md` file on your own disk. It has a journal mode for
 quick capture with a summary of recent work, a notes mode with a folder tree,
-an Agenda-style calendar timeline, tags, and full-text search. Sync/Backup
-uses Git under the hood, though the UI calls it "Sync". An opt-in AI Assist
+an Agenda-style calendar timeline, tags, and full-text search. The vault is
+an ordinary folder, so the recommended backup is a folder-sync service such
+as Google Drive; an optional built-in "Sync" uses Git under the hood. An opt-in AI Assist
 panel can revise selected text through an OpenAI-compatible API, and it sends
 nothing unless you click it. The app is built with Tauri v2 (Rust backend)
 and React 18 + TypeScript, and runs on Windows, macOS, and Linux.
@@ -71,6 +72,33 @@ The app opens on a local login screen. On first run it seeds a single
 **`admin`** account whose password is the same as the username. **Change
 that default password right after your first login** (Settings → account).
 The admin can then create more accounts in Settings.
+
+## Backing up your vault
+
+The vault is a plain folder (default `Documents/duramen`), so **Google Drive
+for desktop is the recommended, primary backup**. It handles large Evernote
+attachments and keeps deleted files and earlier versions for a while. The
+same steps, with your vault path and a copy button, are in the app under
+**Settings → Backup**.
+
+1. Install Google Drive for desktop (Windows:
+   `winget install Google.GoogleDrive`) and sign in.
+2. Drive settings → **My Computer** → **Add folder** → pick the vault folder
+   → **Sync with Google Drive**.
+3. That's it: every note save, attachment and Evernote import is uploaded.
+
+Keep in mind:
+
+- Settings, accounts and the AI key live outside the vault (`%APPDATA%\naiteh`
+  on Windows) and are not part of this backup.
+- Use **one** sync method per vault. If you also turn on the in-app Sync (Git)
+  for a vault that Drive syncs between several PCs, Drive and Git will fight
+  over the `.git` folder. Backup from a single PC is fine either way.
+- Don't edit the same note on two PCs at once; Drive keeps both versions as
+  separate files and naiteh won't merge them.
+- The in-app Sync (Git) is optional. If you use it with GitHub, use a
+  **private** repository, and note that GitHub rejects files over 100 MB, so a
+  large Evernote attachment can block every later sync.
 
 ## Checks
 

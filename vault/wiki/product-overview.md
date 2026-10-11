@@ -16,8 +16,11 @@ pinned: false
    with a timeline of notes grouped by day.
 3. **Local-first Markdown notes** — all data lives as plain `.md` files on the
    user's disk.
-4. **Sync / Backup** — backed by Git under the hood; the UI never says "Git",
-   only "Sync" or "Backup".
+4. **Sync / Backup** — the vault is a plain folder, and the primary backup is
+   a folder-sync service (Google Drive for desktop, see
+   [Vault & Data](vault-and-data.md#backup)). The optional built-in Sync is
+   backed by Git under the hood; the UI never says "Git", only "Sync" or
+   "Backup".
 5. **Tagging** — cross-cutting organization in addition to folders.
 6. **AI Assist (opt-in)** — a side panel where the user can revise the currently
    selected text using a third-party Chat Completions API (default OpenAI). The

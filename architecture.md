@@ -460,10 +460,13 @@ Settings is **not** a `ViewMode`; it is a full-screen modal
 (`features/settings/SettingsModal`) overlaying the shell, opened from
 the app menu (Cmd/Ctrl+,), the Activity Bar gear, the status-bar user
 name, or the palette. It mirrors the Obsidian settings layout: a
-left section nav (Vault, Appearance, Editor, Web Clipping, AI Assist,
+left section nav (Vault, Backup, Appearance, Editor, Web Clipping, AI Assist,
 Import from Evernote, Account, plus an Administration group — Accounts /
 Audit Log — for admins) beside a scrolling column of "name + description →
-control" rows. Appearance has palette picker cards and interface / editor
+control" rows. Backup is explanatory: it walks through backing the vault up
+with Google Drive for desktop (showing the vault path with a copy button),
+says what the backup does not include, and lists the optional in-app Sync's
+limits; the Sync panel links back to it (`uiStore.requestBackupSettings`). Appearance has palette picker cards and interface / editor
 font presets (with a Custom… entry and a preview); Web Clipping chooses how
 HTML pasted into the editor is handled (convert to Markdown, plain text, or
 raw HTML) and the Markdown conversion options, with a live preview and a

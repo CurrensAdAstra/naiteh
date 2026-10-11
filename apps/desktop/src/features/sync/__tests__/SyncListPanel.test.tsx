@@ -1,8 +1,9 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ConflictPair, SyncStatus } from "../../../lib/types";
+import { useUIStore } from "../../../state/uiStore";
 import { SyncListPanel } from "../SyncListPanel";
 
 vi.mock("../../../lib/api/sync", () => ({
@@ -176,6 +177,30 @@ describe("SyncListPanel", () => {
     );
     await waitFor(() => expect(useEditorStore.getState().open).toBeNull());
     expect(mockedNotesWrite).not.toHaveBeenCalled();
+  });
+
+  it("points to Google Drive as the recommended backup", async () => {
+    mockedStatus.mockRejectedValue({
+      kind: "NotFound",
+      message: "no repository at /v",
+    });
+    useUIStore.setState({ settingsOpen: false, pendingAction: null });
+    render(<SyncListPanel />);
+    expect(screen.getByTestId("sync-backup-hint")).toHaveTextContent(
+      /optional.*Google Drive/i,
+    );
+    fireEvent.click(screen.getByTestId("sync-backup-settings-link"));
+    expect(useUIStore.getState().settingsOpen).toBe(true);
+    expect(useUIStore.getState().pendingAction).toBe("showBackup");
+    await screen.findByTestId("sync-init-button");
+  });
+
+  it("warns about private repositories and GitHub's 100 MB limit next to the destination", async () => {
+    mockedStatus.mockResolvedValue(status());
+    render(<SyncListPanel />);
+    expect(await screen.findByTestId("sync-remote-caveat")).toHaveTextContent(
+      /private.*100 MB/is,
+    );
   });
 
   it("offers an Initialize button when sync_status reports no repository", async () => {

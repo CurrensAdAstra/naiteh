@@ -9,6 +9,7 @@ import { AccountsSection } from "./sections/AccountsSection";
 import { AiSection } from "./sections/AiSection";
 import { AppearanceSection } from "./sections/AppearanceSection";
 import { AuditSection } from "./sections/AuditSection";
+import { BackupSection } from "./sections/BackupSection";
 import { EditorSection } from "./sections/EditorSection";
 import { ClippingSection } from "./sections/ClippingSection";
 import { ImportSection } from "./sections/ImportSection";
@@ -18,6 +19,7 @@ import styles from "./SettingsModal.module.css";
 
 type SectionId =
   | "general"
+  | "backup"
   | "appearance"
   | "editor"
   | "clipping"
@@ -35,6 +37,7 @@ interface NavEntry {
 
 const NAV: readonly NavEntry[] = [
   { id: "general", label: "Vault", group: "options" },
+  { id: "backup", label: "Backup", group: "options" },
   { id: "appearance", label: "Appearance", group: "options" },
   { id: "editor", label: "Editor", group: "options" },
   { id: "clipping", label: "Web Clipping", group: "options" },
@@ -67,15 +70,23 @@ export function SettingsModal() {
 
   // File ▸ Import queues the Evernote import; show its section (the
   // section itself consumes the action and opens the picker).
+  // The Sync panel's "Backup settings" link lands on the Backup section;
+  // nothing else consumes that action, so clear it here.
   const pendingAction = useUIStore((s) => s.pendingAction);
+  const clearPendingAction = useUIStore((s) => s.clearPendingAction);
   useEffect(() => {
     if (pendingAction === "evernoteImport") setActiveSection("import");
-  }, [pendingAction]);
+    if (pendingAction === "showBackup") {
+      setActiveSection("backup");
+      clearPendingAction();
+    }
+  }, [pendingAction, clearPendingAction]);
 
   const visibleNav = NAV.filter((n) => n.group !== "administration" || isAdmin);
 
   const sections: Record<SectionId, ReactNode> = {
     general: <VaultSection />,
+    backup: <BackupSection />,
     appearance: <AppearanceSection />,
     editor: <EditorSection />,
     clipping: <ClippingSection />,

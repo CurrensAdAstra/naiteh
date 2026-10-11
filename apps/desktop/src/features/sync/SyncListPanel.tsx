@@ -18,6 +18,7 @@ import { discardPendingSave, flushPendingSave } from "../../state/autosave";
 import { useEditorStore } from "../../state/editorStore";
 import { useSyncStore } from "../../state/syncStore";
 import { notifyVaultContentChanged } from "../../state/vaultContentStore";
+import { useUIStore } from "../../state/uiStore";
 import styles from "./SyncListPanel.module.css";
 
 interface ViewState {
@@ -37,6 +38,7 @@ function isNotInitialized(err: unknown): err is AppError {
 }
 
 export function SyncListPanel() {
+  const requestBackupSettings = useUIStore((st) => st.requestBackupSettings);
   const [view, setView] = useState<ViewState>({ status: null, loaded: false });
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<
@@ -228,6 +230,19 @@ export function SyncListPanel() {
             {conflictError}
           </p>
         )}
+
+        <p className={styles.backupHint} data-testid="sync-backup-hint">
+          Sync is optional. To back up your vault, Google Drive is
+          recommended.{" "}
+          <button
+            type="button"
+            className={styles.linkButton}
+            onClick={requestBackupSettings}
+            data-testid="sync-backup-settings-link"
+          >
+            Backup settings
+          </button>
+        </p>
 
         {!view.loaded && <p className={styles.busy}>Loading…</p>}
 
@@ -434,6 +449,11 @@ export function SyncListPanel() {
                   {busy === "remote" ? "Saving…" : "Save destination"}
                 </button>
               </div>
+              <p className={styles.helpText} data-testid="sync-remote-caveat">
+                Use a <strong>private</strong> repository. GitHub rejects
+                files over 100 MB, so one large attachment stops every later
+                sync.
+              </p>
               <p className={styles.helpText}>
                 Diverged remote edits are saved as <code>.conflict-…</code>
                 sidecars and surface in the Conflicts section above —
