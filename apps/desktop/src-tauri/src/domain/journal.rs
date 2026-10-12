@@ -56,6 +56,8 @@ pub enum TimelineItem {
         mtime: i64,
         title: String,
         snippet: String,
+        #[serde(flatten)]
+        placement: Placement,
     },
     #[serde(rename_all = "camelCase")]
     Note {
@@ -64,7 +66,40 @@ pub enum TimelineItem {
         mtime: i64,
         snippet: String,
         pinned: bool,
+        #[serde(flatten)]
+        placement: Placement,
     },
+}
+
+/// What kind of document a timeline item is, for the day timeline's
+/// marker icon. Wire values: `"note"`, `"clip"`, `"journal"`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DocKind {
+    #[default]
+    Note,
+    /// A web clipping: front matter has `source_url`, `clip_type`, or
+    /// `imported_from: web-clipper`.
+    Clip,
+    Journal,
+}
+
+/// Where a timeline item sits on the day timeline (see
+/// vault/wiki/ipc-api.md, "timeline_range"). Flattened into both
+/// `TimelineItem` variants. Local-only: never sent to any calendar.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Placement {
+    /// Front-matter `created` with a time of day, as RFC 3339 in the
+    /// local offset. `None` when absent, unparseable, or date-only.
+    pub created_at: Option<String>,
+    /// Time the item is drawn at (RFC 3339, local offset): `created_at`
+    /// if present, else the file mtime. `None` when `created` is
+    /// date-only — the item then has a day but no time (all-day chip).
+    pub placed_at: Option<String>,
+    pub doc_kind: DocKind,
+    /// Host of the front-matter `source_url` (clips), e.g. `example.com`.
+    pub source_host: Option<String>,
 }
 
 impl TimelineItem {

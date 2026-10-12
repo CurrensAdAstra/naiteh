@@ -3,6 +3,7 @@ import { act } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  DAY_TIMELINE_DEFAULT,
   JOURNAL_SPLIT_DEFAULT,
   LIST_PANEL_DEFAULT,
   useUIStore,
@@ -22,6 +23,17 @@ const LAZY_EDITOR_WAIT = { timeout: 5000 };
 vi.mock("../PanelRouter", () => ({
   PanelRouter: ({ mode }: { mode: string }) => (
     <div data-testid={`list-panel-${mode}`}>{mode}</div>
+  ),
+}));
+
+// The timeline fetches its own data; its contents have their own tests.
+vi.mock("../../features/calendar/DayTimeline", () => ({
+  DayTimeline: ({ onHide }: { onHide?: () => void }) => (
+    <div data-testid="day-timeline">
+      <button data-testid="day-timeline-hide-stub" onClick={onHide}>
+        hide
+      </button>
+    </div>
   ),
 }));
 
@@ -56,6 +68,8 @@ function resetStores() {
     viewMode: "journal",
     listPanelWidth: LIST_PANEL_DEFAULT,
     journalSplitRatio: JOURNAL_SPLIT_DEFAULT,
+    dayTimelineWidth: DAY_TIMELINE_DEFAULT,
+    dayTimelineHidden: false,
   });
   useVaultStore.setState({
     active: { root: "/tmp/vault", name: "vault", initialized: true },
@@ -114,25 +128,49 @@ describe("AppShell", () => {
     expect(screen.getByTestId("status-bar")).toHaveTextContent("vault");
   });
 
-  it("calendar mode gives the list panel a 70% proportional track and hides the resizer", async () => {
+  it("only calendar mode shows the day timeline pane next to the editor", async () => {
     render(<AppShell />);
     await waitForShellRefresh();
-
-    // Non-calendar view: fixed px width + draggable resizer.
     const shell = screen.getByTestId("app-shell");
+    const editor = await screen.findByTestId("editor-panel", {}, LAZY_EDITOR_WAIT);
+
+    const others: ViewMode[] = ["journal", "notes", "search", "tags", "sync"];
+    for (const mode of others) {
+      act(() => useUIStore.getState().setViewMode(mode));
+      expect(screen.queryByTestId("day-timeline-pane"), mode).toBeNull();
+      expect(screen.queryByTestId("day-timeline-resizer"), mode).toBeNull();
+      expect(shell.style.getPropertyValue("--list-panel-width")).toBe(
+        `${LIST_PANEL_DEFAULT}px`,
+      );
+      expect(screen.getByTestId("list-panel-resizer")).toBeInTheDocument();
+    }
+
+    act(() => useUIStore.getState().setViewMode("calendar"));
+    const pane = screen.getByTestId("day-timeline-pane");
+    expect(pane).toHaveStyle({ width: `${DAY_TIMELINE_DEFAULT}px` });
+    expect(screen.getByTestId("day-timeline-resizer")).toBeInTheDocument();
+    // Left to right inside the editor cell: timeline, then the editor.
+    expect(
+      pane.compareDocumentPosition(editor) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // The list panel keeps its drag-sized width and resizer.
     expect(shell.style.getPropertyValue("--list-panel-width")).toBe(
       `${LIST_PANEL_DEFAULT}px`,
     );
     expect(screen.getByTestId("list-panel-resizer")).toBeInTheDocument();
 
-    act(() => {
-      useUIStore.getState().setViewMode("calendar");
-    });
+    act(() => useUIStore.getState().setViewMode("notes"));
+    expect(screen.queryByTestId("day-timeline-pane")).toBeNull();
+    expect(screen.getByTestId("editor-panel")).toBe(editor);
+  });
 
-    const track = shell.style.getPropertyValue("--list-panel-width");
-    expect(track).toContain("* 0.7");
-    expect(track).not.toContain("--ai-panel-width");
-    // The drag handle is gone — the width is proportional, not drag-sized.
-    expect(screen.queryByTestId("list-panel-resizer")).not.toBeInTheDocument();
+  it("hiding the timeline leaves a toggle that brings it back", async () => {
+    useUIStore.setState({ viewMode: "calendar" });
+    render(<AppShell />);
+    await waitForShellRefresh();
+    act(() => screen.getByTestId("day-timeline-hide-stub").click());
+    expect(screen.queryByTestId("day-timeline-pane")).toBeNull();
+    act(() => screen.getByTestId("day-timeline-show").click());
+    expect(screen.getByTestId("day-timeline-pane")).toBeInTheDocument();
   });
 });

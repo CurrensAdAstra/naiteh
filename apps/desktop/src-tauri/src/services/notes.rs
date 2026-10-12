@@ -77,6 +77,17 @@ pub struct FrontMatter {
     pub title: Option<String>,
     pub tags: Vec<String>,
     pub pinned: bool,
+    /// `event_id` — the calendar event a meeting note belongs to (see
+    /// vault/wiki/domain-model.md, "Calendar subscriptions").
+    pub event_id: Option<String>,
+    /// Raw `created` value (unparsed; see `services::index::parse_created`).
+    pub created: Option<String>,
+    /// `source_url` — set by web clippings (and Evernote imports).
+    pub source_url: Option<String>,
+    /// `clip_type` is present (any value).
+    pub clip_type: bool,
+    /// `imported_from` (e.g. `web-clipper`, `evernote`).
+    pub imported_from: Option<String>,
 }
 
 /// A front-matter block split out of a document.
@@ -138,6 +149,24 @@ fn parse_header(header: &str) -> FrontMatter {
             "title" => out.title = Some(parse_scalar(value)),
             "tags" => out.tags = parse_array(value),
             "pinned" => out.pinned = value.eq_ignore_ascii_case("true"),
+            "event_id" => {
+                let id = parse_scalar(value);
+                if !id.is_empty() {
+                    out.event_id = Some(id);
+                }
+            }
+            "created" | "source_url" | "imported_from" => {
+                let v = parse_scalar(value);
+                if !v.is_empty() {
+                    let slot = match key {
+                        "created" => &mut out.created,
+                        "source_url" => &mut out.source_url,
+                        _ => &mut out.imported_from,
+                    };
+                    *slot = Some(v);
+                }
+            }
+            "clip_type" => out.clip_type = !parse_scalar(value).is_empty(),
             _ => {}
         }
     }

@@ -1,36 +1,64 @@
-import { Star } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import {
+  calendarEvents,
+  calendarList,
+  calendarRefresh,
+} from "../../lib/api/calendar";
 import { timelinePinned, timelineRange } from "../../lib/api/journal";
 import { openDocument, type OpenTarget } from "../../lib/openDocument";
 import { formatAppError } from "../../lib/types";
-import type { TimelineDay, TimelineItem } from "../../lib/types";
+import type {
+  CalendarEvent,
+  CalendarSource,
+  TimelineDay,
+  TimelineItem,
+} from "../../lib/types";
+import { useCalendarStore } from "../../state/calendarStore";
 import { useEditorStore } from "../../state/editorStore";
 import { useVaultContentStore } from "../../state/vaultContentStore";
+import { AgendaView } from "./AgendaView";
 import { CalendarGrid } from "./CalendarGrid";
+import { CalendarSources } from "./CalendarSources";
 import {
+  buildGridCells,
   endOfMonth,
-  formatDayHeader,
   formatLocalDate,
+  parseLocalDate,
   startOfMonth,
   todayLocal,
 } from "./dateUtils";
+import { addDays, datesWithEvents } from "./eventUtils";
 import styles from "./CalendarListPanel.module.css";
 
 export function CalendarListPanel() {
   const today = todayLocal();
   const [gridMonth, setGridMonth] = useState<Date>(() => new Date());
+  // The selected day drives the day timeline pane next to the editor.
+  const selectedDate = useCalendarStore((s) => s.selectedDate);
+  const setSelectedDate = useCalendarStore((s) => s.setSelectedDate);
+  const bumpCalendars = useCalendarStore((s) => s.bumpCalendars);
+
   const [days, setDays] = useState<TimelineDay[]>([]);
   const [pinned, setPinned] = useState<TimelineItem[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [calendars, setCalendars] = useState<CalendarSource[]>([]);
+  const [events, setEvents] = useState<CalendarEvent[]>([]);
+  const [eventsError, setEventsError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
   const openKey = useEditorStore((s) => s.open?.key ?? null);
 
-  // Resolve the timeline range from the displayed grid month: always covers
-  // the visible grid AND extends through today so the timeline below always
-  // includes recent days even when the user navigates back.
-  const range = useMemo(() => {
+  // Visible grid: 42 days starting on the Sunday on/before the 1st.
+  const grid = useMemo(() => {
+    const cells = buildGridCells(gridMonth);
+    const first = cells[0]?.date ?? formatLocalDate(startOfMonth(gridMonth));
+    const last = cells[cells.length - 1]?.date ?? first;
+    return { from: first, toExclusive: addDays(last, 1), last };
+  }, [gridMonth]);
+
+  // Agenda range (unchanged): the displayed month, extended through today.
+  const agendaRange = useMemo(() => {
     const todayDate = new Date();
     const monthStart = startOfMonth(gridMonth);
     const monthEnd = endOfMonth(gridMonth);
@@ -39,10 +67,20 @@ export function CalendarListPanel() {
     return { from: formatLocalDate(from), to: formatLocalDate(to) };
   }, [gridMonth]);
 
-  const refresh = useCallback(async () => {
+  // One timeline fetch covers both the Agenda range and the whole grid
+  // (dots on adjacent-month days).
+  const fetchRange = useMemo(
+    () => ({
+      from: agendaRange.from < grid.from ? agendaRange.from : grid.from,
+      to: agendaRange.to > grid.last ? agendaRange.to : grid.last,
+    }),
+    [agendaRange, grid],
+  );
+
+  const refreshTimeline = useCallback(async () => {
     try {
       const [rangeData, pins] = await Promise.all([
-        timelineRange(range.from, range.to),
+        timelineRange(fetchRange.from, fetchRange.to),
         timelinePinned(),
       ]);
       setDays(rangeData);
@@ -51,22 +89,61 @@ export function CalendarListPanel() {
     } catch (e) {
       setError(formatAppError(e));
     }
-  }, [range.from, range.to]);
+  }, [fetchRange.from, fetchRange.to]);
+
+  const loadCalendars = useCallback(async () => {
+    try {
+      setCalendars(await calendarList());
+    } catch (e) {
+      setEventsError(formatAppError(e));
+    }
+  }, []);
+
+  const loadEvents = useCallback(async () => {
+    try {
+      setEvents(await calendarEvents(grid.from, grid.toExclusive));
+      setEventsError(null);
+    } catch (e) {
+      setEventsError(formatAppError(e));
+    }
+  }, [grid.from, grid.toExclusive]);
 
   // Refetch on mount, month change, and whenever vault files change
   // elsewhere (sync, note create/rename/delete).
   const contentVersion = useVaultContentStore((s) => s.version);
   useEffect(() => {
-    void refresh();
-  }, [refresh, contentVersion]);
+    void refreshTimeline();
+  }, [refreshTimeline, contentVersion]);
+  useEffect(() => {
+    void loadCalendars();
+  }, [loadCalendars]);
+  useEffect(() => {
+    void loadEvents();
+  }, [loadEvents, contentVersion]);
+
+  // Hide events of calendars the user unchecked (the backend may already).
+  const visibleEvents = useMemo(() => {
+    const disabled = new Set(
+      calendars.filter((c) => !c.enabled).map((c) => c.id),
+    );
+    return events.filter((ev) => !disabled.has(ev.calendarId));
+  }, [events, calendars]);
 
   const datesWithContent = useMemo(() => {
-    const set = new Set<string>();
+    const set = datesWithEvents(visibleEvents, grid.from, grid.toExclusive);
     for (const day of days) {
       if (day.items.length > 0) set.add(day.date);
     }
     return set;
-  }, [days]);
+  }, [days, visibleEvents, grid]);
+
+  const agendaDays = useMemo(
+    () =>
+      days.filter(
+        (d) => d.date >= agendaRange.from && d.date <= agendaRange.to,
+      ),
+    [days, agendaRange],
+  );
 
   const open = useCallback(async (target: OpenTarget) => {
     try {
@@ -78,7 +155,7 @@ export function CalendarListPanel() {
 
   const handleOpenItem = useCallback(
     (item: TimelineItem) =>
-      open(
+      void open(
         item.kind === "JournalEntry"
           ? { kind: "journal", date: item.date }
           : { kind: "note", relPath: item.relPath },
@@ -86,20 +163,57 @@ export function CalendarListPanel() {
     [open],
   );
 
-  const handleOpenEmptyDay = useCallback(
-    (date: string) => open({ kind: "journal", date }),
+  const handleOpenJournal = useCallback(
+    (date: string) => void open({ kind: "journal", date }),
     [open],
   );
 
-  const handleSelectDate = useCallback((date: string) => {
-    setSelectedDate(date);
-    const node = bodyRef.current?.querySelector<HTMLElement>(
-      `[data-testid="calendar-day-${date}"]`,
+  // Keep the month grid on the selected day's month, whoever picked it
+  // (the grid itself, or the timeline's ‹ › / Today buttons).
+  useEffect(() => {
+    const d = parseLocalDate(selectedDate);
+    if (d === null) return;
+    setGridMonth((cur) =>
+      d.getMonth() === cur.getMonth() && d.getFullYear() === cur.getFullYear()
+        ? cur
+        : startOfMonth(d),
     );
-    if (node !== null && node !== undefined) {
-      node.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [selectedDate]);
+
+  const handleSelectDate = useCallback(
+    (date: string) => {
+      setSelectedDate(date);
+      // The Agenda scrolls the day into view.
+      bodyRef.current
+        ?.querySelector<HTMLElement>(`[data-testid="calendar-day-${date}"]`)
+        ?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+    },
+    [setSelectedDate],
+  );
+
+  const handleToday = useCallback(() => {
+    setGridMonth(new Date());
+    setSelectedDate(todayLocal());
+  }, [setSelectedDate]);
+
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await calendarRefresh();
+      setEventsError(null);
+    } catch (e) {
+      setEventsError(formatAppError(e));
+    } finally {
+      setRefreshing(false);
     }
-  }, []);
+    await Promise.all([loadCalendars(), loadEvents()]);
+    bumpCalendars();
+  }, [loadCalendars, loadEvents, bumpCalendars]);
+
+  const handleSourcesChanged = useCallback(() => {
+    void Promise.all([loadCalendars(), loadEvents()]);
+    bumpCalendars();
+  }, [loadCalendars, loadEvents, bumpCalendars]);
 
   return (
     <div className={styles.panel} data-testid="list-panel-calendar">
@@ -112,146 +226,51 @@ export function CalendarListPanel() {
         activeDate={selectedDate}
         datesWithContent={datesWithContent}
         onChangeMonth={(next) => setGridMonth(next)}
-        onSelectDate={(date) => void handleSelectDate(date)}
+        onSelectDate={handleSelectDate}
+        onToday={handleToday}
       />
+      {/* The selected day's events and notes live in the day timeline
+          pane next to the editor; the list keeps the note Agenda. */}
+      <div className={styles.tabs} role="tablist" aria-label="Calendar view">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={true}
+          className={`${styles.tab} ${styles.tabActive}`}
+          data-testid="calendar-tab-agenda"
+        >
+          Agenda
+        </button>
+      </div>
       <div
         className={styles.body}
         data-testid="calendar-body"
+        role="tabpanel"
         ref={bodyRef}
       >
         {error !== null && <p className={styles.error}>{error}</p>}
-        {error === null && pinned.length > 0 && (
-          <section
-            className={styles.pinnedSection}
-            aria-label="On the Agenda"
-            data-testid="calendar-pinned"
-          >
-            <div className={styles.pinnedHeader}>
-              <Star size={14} aria-hidden="true" />
-              On the Agenda
-            </div>
-            <ul className={styles.pinnedList}>
-              {pinned.map((item) => (
-                <ItemRow
-                  key={timelineItemKey(item)}
-                  item={item}
-                  active={openKey === timelineItemKey(item)}
-                  onOpen={() => void handleOpenItem(item)}
-                />
-              ))}
-            </ul>
-          </section>
+        {eventsError !== null && (
+          <p className={styles.error} data-testid="calendar-events-error">
+            {eventsError}
+          </p>
         )}
-        {error === null &&
-          days.map((day) => (
-            <DaySection
-              key={day.date}
-              day={day}
-              today={today}
-              activeKey={openKey}
-              onOpenItem={(item) => void handleOpenItem(item)}
-              onOpenEmptyDay={(d) => void handleOpenEmptyDay(d)}
-            />
-          ))}
+        {error === null && (
+          <AgendaView
+            days={agendaDays}
+            pinned={pinned}
+            today={today}
+            activeKey={openKey}
+            onOpenItem={handleOpenItem}
+            onOpenEmptyDay={handleOpenJournal}
+          />
+        )}
       </div>
+      <CalendarSources
+        calendars={calendars}
+        refreshing={refreshing}
+        onChanged={handleSourcesChanged}
+        onRefresh={() => void handleRefresh()}
+      />
     </div>
   );
-}
-
-interface DaySectionProps {
-  day: TimelineDay;
-  today: string;
-  activeKey: string | null;
-  onOpenItem: (item: TimelineItem) => void;
-  onOpenEmptyDay: (date: string) => void;
-}
-
-function DaySection({
-  day,
-  today,
-  activeKey,
-  onOpenItem,
-  onOpenEmptyDay,
-}: DaySectionProps) {
-  const headerLabel = formatDayHeader(day.date, today);
-  const isToday = day.date === today;
-  const isEmpty = day.items.length === 0;
-  return (
-    <section
-      aria-label={headerLabel}
-      data-testid={`calendar-day-${day.date}`}
-    >
-      <div
-        className={`${styles.dayHeader} ${isToday ? styles.dayHeaderToday : ""}`}
-      >
-        {headerLabel}
-      </div>
-      {isEmpty ? (
-        <button
-          type="button"
-          className={styles.placeholderRow}
-          onClick={() => onOpenEmptyDay(day.date)}
-          data-testid={`calendar-empty-${day.date}`}
-        >
-          ??start a journal entry
-        </button>
-      ) : (
-        <ul className={styles.dayItems}>
-          {day.items.map((item) => (
-            <ItemRow
-              key={timelineItemKey(item)}
-              item={item}
-              active={activeKey === timelineItemKey(item)}
-              onOpen={() => onOpenItem(item)}
-            />
-          ))}
-        </ul>
-      )}
-    </section>
-  );
-}
-
-interface ItemRowProps {
-  item: TimelineItem;
-  active: boolean;
-  onOpen: () => void;
-}
-
-function ItemRow({ item, active, onOpen }: ItemRowProps) {
-  const isJournal = item.kind === "JournalEntry";
-  return (
-    <li>
-      <button
-        type="button"
-        className={`${styles.item} ${active ? styles.itemActive : ""}`}
-        onClick={onOpen}
-        data-testid={`calendar-item-${timelineItemKey(item)}`}
-      >
-        <span className={styles.itemHeader}>
-          <span
-            className={styles.kindBadge}
-            title={isJournal ? "Journal" : "Note"}
-          >
-            {isJournal ? "J" : "N"}
-          </span>
-          <span className={styles.itemTitle}>{item.title}</span>
-          {item.kind === "Note" && item.pinned && (
-            <span className={styles.pinned} aria-label="pinned" title="pinned">
-              ??
-            </span>
-          )}
-        </span>
-        {item.snippet !== "" && (
-          <span className={styles.itemSnippet}>{item.snippet}</span>
-        )}
-      </button>
-    </li>
-  );
-}
-
-/** Doubles as the editorStore `open.key` of the item when it's open. */
-function timelineItemKey(item: TimelineItem): string {
-  return item.kind === "JournalEntry"
-    ? `journal:${item.date}`
-    : `note:${item.relPath}`;
 }

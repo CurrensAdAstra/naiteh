@@ -3,6 +3,7 @@
 pub mod ai;
 pub mod attachments;
 pub mod auth;
+pub mod calendar;
 pub mod evernote;
 pub mod journal;
 pub mod notes;

@@ -2,7 +2,7 @@
 title: "Glossary"
 tags: [naiteh-wiki, glossary]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-10-11T18:00:00+09:00
+updated: 2026-10-12T12:00:00+09:00
 pinned: false
 ---
 
@@ -18,6 +18,8 @@ pinned: false
 | Sync | User-facing name for Git-backed backup/synchronization |
 | ViewMode | Which feature the List Panel is showing |
 | Timeline | Calendar mode's date-grouped list of notes/entries |
+| Clip | A web clipping: a note whose front matter has `source_url`, `clip_type`, or `imported_from: web-clipper`. Shown with a link icon and its source host on the day timeline (`docKind: "clip"`); never added to a calendar. See [Domain Model](domain-model.md#activity--timeline) |
+| Day timeline | Calendar mode's hour grid for one day: subscribed calendar events plus local markers for the day's notes, clips and journal entry, placed at their `created` time (else mtime). Toggle "Show notes & clips" |
 | On the Agenda | The pinned area at the top of the calendar timeline |
 | AI chat | naiteh's opt-in AI feature: chat inside a note, ported from the chatgpt-md Obsidian plugin (MIT). View ▸ Chat (Cmd+J) sends the note's conversation to the model and appends the reply. See [Domain Model](domain-model.md#chat-note) |
 | Chat note | A Markdown note holding a conversation in chatgpt-md format: messages separated by `<hr class="__chatgpt_plugin">`, each starting with a role header; settings in front matter (`model`, `temperature`, `system_commands`, `agent`, …) |
@@ -37,6 +39,8 @@ pinned: false
 | Palette | One of the built-in color schemes (`appearance.palette`, e.g. `ocean`, `nord`) applied as CSS color tokens — see [App Config](app-config.md#appearance) |
 | View mode / Edit mode | How the editor panel shows the open note (`uiStore.editorMode`). **View** (default) renders the Markdown read-only — links, images, task checkboxes work; **Edit** shows the CodeMirror source. Opening a different note returns to view; new notes open in edit |
 | Web clipping | Converting `text/html` pasted into the editor to Markdown according to the `clipping` settings — see [App Config](app-config.md#clipping) |
+| Calendar subscription | A read-only iCal feed (Google secret address, iCloud public `webcal://` link, any `.ics` URL) shown in the calendar panel; stored in `calendars.json` in the app-config dir. See [IPC API](ipc-api.md#calendar-subscriptions) |
+| Meeting note | A note under `notes/meetings/` whose front matter `event_id` links it to a calendar event (calendar panel: Add note) |
 | `AppConfigView` | The IPC shape of app config: the on-disk `AppConfig` with the AI key replaced by `ai.hasApiKey` |
 | Normal form (rel path) | The only accepted spelling of a vault-relative path: `/`-separated, no `.`/`..`/empty segments, no `.git` — see [Vault & Data](vault-and-data.md#vault-relative-paths) |
 | Version | Lowercase hex SHA-256 of a file's bytes on disk (64 chars). Returned by `notes_read` / `journal_open` / `notes_version`, passed back to `notes_write` / `journal_save` as `expectedVersion` — see [Domain Model → Notes](domain-model.md#notes) |

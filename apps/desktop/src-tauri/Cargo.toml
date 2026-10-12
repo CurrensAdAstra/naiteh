@@ -41,6 +41,9 @@ getrandom = "0.2"
 # External file-change detection for the active vault (services/watcher.rs).
 # 8.2.0 was published 2025-08-03; the 9.x line is still a release candidate.
 notify = "8.2"
+# IANA time zones for calendar subscriptions (services/calendar.rs).
+# 0.10.4 was published 2025-07-11 (MSRV 1.65).
+chrono-tz = "0.10.4"
 
 [dev-dependencies]
 tempfile = "3"

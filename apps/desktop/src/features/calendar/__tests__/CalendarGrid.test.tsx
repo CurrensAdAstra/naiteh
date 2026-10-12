@@ -38,7 +38,7 @@ describe("CalendarGrid", () => {
   });
 
   it("renders dot indicators only for dates with content", () => {
-    const { container } = render(
+    render(
       <CalendarGrid
         month={new Date(2026, 4, 1)}
         today="2026-05-09"
@@ -50,15 +50,13 @@ describe("CalendarGrid", () => {
     );
     const cellWithDot = screen.getByTestId("calendar-grid-cell-2026-05-02");
     const cellWithoutDot = screen.getByTestId("calendar-grid-cell-2026-05-03");
-    // Dot is a span child with the .dot class.
-    expect(cellWithDot.querySelector("span[aria-hidden='true']")).not.toBeNull();
     expect(
-      cellWithoutDot.querySelector("span[aria-hidden='true']"),
+      cellWithDot.querySelector("[data-testid=\"calendar-grid-dot\"]"),
+    ).not.toBeNull();
+    expect(
+      cellWithoutDot.querySelector("[data-testid=\"calendar-grid-dot\"]"),
     ).toBeNull();
-    // Sanity check that we picked actual dot-bearing markup.
-    expect(container.querySelectorAll("span[aria-hidden='true']").length).toBe(
-      2,
-    );
+    expect(screen.getAllByTestId("calendar-grid-dot")).toHaveLength(2);
   });
 
   it("clicking a date fires onSelectDate with YYYY-MM-DD", async () => {
@@ -96,5 +94,56 @@ describe("CalendarGrid", () => {
     expect(onChangeMonth.mock.calls[0]?.[0].getMonth()).toBe(3); // April
     await user.click(screen.getByTestId("calendar-grid-next"));
     expect(onChangeMonth.mock.calls[1]?.[0].getMonth()).toBe(5); // June
+  });
+
+  it("uses two-letter weekday headers and mutes adjacent-month days", () => {
+    render(
+      <CalendarGrid
+        month={new Date(2026, 4, 1)}
+        today="2026-05-09"
+        activeDate="2026-05-15"
+        datesWithContent={new Set()}
+        onChangeMonth={vi.fn()}
+        onSelectDate={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("Su")).toBeInTheDocument();
+    expect(screen.getByText("Sa")).toBeInTheDocument();
+    // May 2026 starts on a Friday: Apr 26 is the first (muted) cell.
+    const first = screen.getAllByRole("gridcell")[0]!;
+    expect(first).toHaveAttribute("data-testid", "calendar-grid-cell-2026-04-26");
+    expect(first.className).toMatch(/outOfMonth/);
+    expect(
+      screen.getByTestId("calendar-grid-cell-2026-05-15"),
+    ).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("renders a Today button only when onToday is given", async () => {
+    const onToday = vi.fn();
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <CalendarGrid
+        month={new Date(2026, 4, 1)}
+        today="2026-05-09"
+        activeDate={null}
+        datesWithContent={new Set()}
+        onChangeMonth={vi.fn()}
+        onSelectDate={vi.fn()}
+      />,
+    );
+    expect(screen.queryByTestId("calendar-grid-today")).toBeNull();
+    rerender(
+      <CalendarGrid
+        month={new Date(2026, 4, 1)}
+        today="2026-05-09"
+        activeDate={null}
+        datesWithContent={new Set()}
+        onChangeMonth={vi.fn()}
+        onSelectDate={vi.fn()}
+        onToday={onToday}
+      />,
+    );
+    await user.click(screen.getByTestId("calendar-grid-today"));
+    expect(onToday).toHaveBeenCalledTimes(1);
   });
 });

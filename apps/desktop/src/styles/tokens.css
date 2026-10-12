@@ -37,6 +37,16 @@
   --color-warning:          #b26a00;
   --color-success:          #1f883d;
 
+  /* Calendar colors (event bars, calendar checkboxes) */
+  --color-cal-orange:       #c2570c;
+  --color-cal-gray:         #6b7280;
+  --color-cal-green:        #1e8a3e;
+  --color-cal-blue:         #2563eb;
+  --color-cal-purple:       #7c3aed;
+  --color-cal-red:          #c62828;
+  --color-cal-teal:         #0f8a87;
+  --color-cal-pink:         #c2185b;
+
   /* Typography */
   --font-ui:    -apple-system, BlinkMacSystemFont, "Segoe UI",
                 "Noto Sans KR", sans-serif;

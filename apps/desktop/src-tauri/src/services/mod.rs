@@ -3,6 +3,7 @@
 
 pub mod attachments;
 pub mod auth;
+pub mod calendar;
 pub mod chat_doc;
 pub mod config;
 pub mod conflicts;

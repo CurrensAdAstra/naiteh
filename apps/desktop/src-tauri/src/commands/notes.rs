@@ -21,7 +21,7 @@ use crate::services::vault_lock::VaultLocks;
 
 /// Fire `on-note-save` for a note that was just written / created /
 /// renamed / re-pinned. Fire-and-forget; never fails the command.
-fn fire_note_saved(vault_root: &Path, rel_path: &str) {
+pub(crate) fn fire_note_saved(vault_root: &Path, rel_path: &str) {
     if let Ok(config_dir) = config::default_app_config_dir() {
         hooks::fire(
             &config_dir,
@@ -187,7 +187,7 @@ fn notes_create_impl(vault_root: &Path, rel_dir: &str, title: &str) -> Result<No
     notes::read_note_meta(vault_root, &target)
 }
 
-fn unique_path(dir: &Path, stem: &str) -> PathBuf {
+pub(crate) fn unique_path(dir: &Path, stem: &str) -> PathBuf {
     let mut candidate = dir.join(format!("{stem}.md"));
     let mut suffix: u32 = 1;
     while candidate.exists() {

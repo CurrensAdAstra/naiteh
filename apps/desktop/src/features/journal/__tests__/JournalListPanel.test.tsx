@@ -59,6 +59,10 @@ const journalEntryFixture: TimelineItem = {
   mtime: Math.floor(Date.now() / 1000) - 30,
   title: "Day entry",
   snippet: "Today I worked on…",
+  createdAt: null,
+  placedAt: null,
+  docKind: "journal",
+  sourceHost: null,
 };
 
 const noteItemFixture: TimelineItem = {
@@ -68,6 +72,10 @@ const noteItemFixture: TimelineItem = {
   mtime: Math.floor(Date.now() / 1000) - 90,
   snippet: "Pinned note body",
   pinned: true,
+  createdAt: null,
+  placedAt: null,
+  docKind: "note",
+  sourceHost: null,
 };
 
 describe("JournalListPanel", () => {

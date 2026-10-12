@@ -15,10 +15,13 @@ interface CalendarGridProps {
   datesWithContent: ReadonlySet<string>;
   onChangeMonth: (next: Date) => void;
   onSelectDate: (date: string) => void;
+  /** When given, a "Today" button jumps back to today. */
+  onToday?: () => void;
 }
 
-const WEEKDAYS = ["S", "M", "T", "W", "T", "F", "S"] as const;
+const WEEKDAYS = ["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"] as const;
 
+/** Compact month picker for the calendar list panel (200–480px wide). */
 export function CalendarGrid({
   month,
   today,
@@ -26,6 +29,7 @@ export function CalendarGrid({
   datesWithContent,
   onChangeMonth,
   onSelectDate,
+  onToday,
 }: CalendarGridProps) {
   const cells = useMemo(() => buildGridCells(month), [month]);
   const label = monthLabel(month);
@@ -33,6 +37,19 @@ export function CalendarGrid({
   return (
     <div className={styles.grid} data-testid="calendar-grid">
       <div className={styles.header}>
+        <div className={styles.label} data-testid="calendar-grid-label">
+          {label}
+        </div>
+        {onToday !== undefined && (
+          <button
+            type="button"
+            className={styles.todayButton}
+            onClick={onToday}
+            data-testid="calendar-grid-today"
+          >
+            Today
+          </button>
+        )}
         <button
           type="button"
           className={styles.navButton}
@@ -42,9 +59,6 @@ export function CalendarGrid({
         >
           <ChevronLeft size={14} aria-hidden="true" />
         </button>
-        <div className={styles.label} data-testid="calendar-grid-label">
-          {label}
-        </div>
         <button
           type="button"
           className={styles.navButton}
@@ -56,8 +70,8 @@ export function CalendarGrid({
         </button>
       </div>
       <div className={styles.weekdays} aria-hidden="true">
-        {WEEKDAYS.map((d, i) => (
-          <span key={i} className={styles.weekday}>
+        {WEEKDAYS.map((d) => (
+          <span key={d} className={styles.weekday}>
             {d}
           </span>
         ))}
@@ -82,12 +96,19 @@ export function CalendarGrid({
               role="gridcell"
               className={cls}
               aria-current={isToday ? "date" : undefined}
+              aria-selected={isActive}
               aria-label={cell.date}
               onClick={() => onSelectDate(cell.date)}
               data-testid={`calendar-grid-cell-${cell.date}`}
             >
-              <span>{Number(cell.date.slice(8, 10))}</span>
-              {hasContent && <span className={styles.dot} aria-hidden="true" />}
+              <span className={styles.dayNumber}>
+                {Number(cell.date.slice(8, 10))}
+              </span>
+              <span
+                className={`${styles.dot} ${hasContent ? "" : styles.dotHidden}`}
+                aria-hidden="true"
+                data-testid={hasContent ? "calendar-grid-dot" : undefined}
+              />
             </button>
           );
         })}

@@ -312,6 +312,13 @@ pub fn run() {
             commands::evernote::evernote_import,
             commands::workspace::workspace_get,
             commands::workspace::workspace_set_last_opened,
+            commands::calendar::calendar_list,
+            commands::calendar::calendar_add,
+            commands::calendar::calendar_update,
+            commands::calendar::calendar_remove,
+            commands::calendar::calendar_events,
+            commands::calendar::calendar_refresh,
+            commands::calendar::calendar_event_note,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -397,6 +404,7 @@ mod tests {
             "ai" => include_str!("commands/ai.rs"),
             "attachments" => include_str!("commands/attachments.rs"),
             "auth" => include_str!("commands/auth.rs"),
+            "calendar" => include_str!("commands/calendar.rs"),
             "evernote" => include_str!("commands/evernote.rs"),
             "journal" => include_str!("commands/journal.rs"),
             "notes" => include_str!("commands/notes.rs"),

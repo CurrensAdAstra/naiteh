@@ -526,6 +526,33 @@ for link insertion, Cmd/Ctrl+S for save) — the palette deliberately
 lives on Cmd/Ctrl+P so it doesn't collide with the editor's link
 shortcut.
 
+#### Calendar mode layout
+
+Calendar mode reads left to right **month | day timeline | note**; every
+other mode keeps the usual list panel | editor layout. The list panel
+holds a mini month grid (selected day = accent pill, today outlined, dots
+for days with events or notes, Today button), the **Agenda** tab (the note
+timeline) and **My calendars** (toggle, rename, colour, remove, add,
+refresh). The selected day lives in `state/calendarStore.ts` and drives the
+**day timeline** pane (`features/calendar/DayTimeline*`), which sits inside
+the editor cell before the editor: 380 px by default (280–560, own
+resizer; shrinks first and collapses to a toggle when the window is narrow).
+It shows an all-day strip (all-day events, the day's notes as chips), an
+hour grid with a live current-time line, and events as calendar-coloured
+blocks laid out side by side when they overlap; each block has *Add note* /
+*Open note* (creates or opens a meeting note linked by front-matter
+`event_id`; it opens in the editor on the right). Subscriptions are
+read-only iCal feeds (Google "secret address", iCloud public calendar)
+wrapped by `lib/api/calendar.ts`; colours come from the `--color-cal-*`
+tokens defined in every palette. The day's notes, journal entries and web
+clips also appear on the hour grid as neutral, outlined markers at their
+placement time (front-matter `created`, else file mtime; a note belongs to
+the day of `created`, else its mtime) — date-only items stay as all-day
+chips — toggled by "Show notes & clips". These markers are local only:
+the calendar integration is read-only (GET), and notes never reach any
+`calendar_*` command. Facts: [ipc-api.md](vault/wiki/ipc-api.md)
+"Calendar subscriptions" and the timeline item fields. `calendar.subView` in app config is no longer used.
+
 ### 4.4 Per-mode list panel
 
 | ViewMode  | List Panel content                                                  |
@@ -673,6 +700,8 @@ explicitly assign notes to past or future dates (true Agenda-style
   version-checked writes (`StaleWrite`), conflict banner with keep / load /
   save-as-copy, focus re-check (§4.1 "External file changes")
 - Local AI providers (Ollama) — key-free, on-device AI Assist
+- Calendar subscriptions (read-only Google / iCloud / iCal feeds) in
+  Calendar mode: month | day timeline | note, Add note per event, My calendars
 - AI chat in notes (port of chatgpt-md, MIT): chat-note format, Cmd/Ctrl+J
   streaming into the note, new chat / select model / infer title / clear /
   stop, agents, linked-note context, seven providers; replaced the AI

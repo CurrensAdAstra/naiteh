@@ -39,4 +39,42 @@ describe("AppShell layout", () => {
       expect(rule(cell), cell).toMatch(/overflow:\s*hidden/);
     }
   });
+
+  it("the editor host fills the cell and clips in every mode", () => {
+    expect(rule(".editorHost")).toMatch(/height:\s*100%/);
+    expect(rule(".editorHost")).toMatch(/min-width:\s*0/);
+    expect(rule(".editorHost")).toMatch(/min-height:\s*0/);
+    expect(rule(".editorHost")).toMatch(/overflow:\s*hidden/);
+  });
+
+  it("calendar mode splits the editor cell into timeline | editor", () => {
+    expect(rule(".editorSplit")).toMatch(/display:\s*flex/);
+    // Only the calendar split gives the editor a floor; the timeline
+    // pane shrinks / collapses first.
+    expect(shellCss).toMatch(/\.editorSplit\s*>\s*\.editorHost\s*\{[^}]*min-width:\s*320px/);
+    expect(shellCss).toMatch(/\.editorSplit\s*>\s*\.editorHost\s*\{[^}]*flex:\s*1 1 0/);
+    // The base grid is untouched: 4 columns, list width from the resizer.
+    expect(rule(".shell")).toMatch(/var\(--list-panel-width, 280px\)/);
+  });
+
+  it("the timeline pane never scrolls the shell", () => {
+    const paneCss = readFileSync(
+      join(process.cwd(), "src", "features", "calendar", "DayTimelinePane.module.css"),
+      "utf8",
+    );
+    const timelineCss = readFileSync(
+      join(process.cwd(), "src", "features", "calendar", "DayTimeline.module.css"),
+      "utf8",
+    );
+    const r = (sheet: string, sel: string) =>
+      new RegExp(`(^|\\n)\\${sel}\\s*\\{([^}]*)\\}`).exec(sheet)?.[2] ?? "";
+    expect(r(paneCss, ".pane")).toMatch(/overflow:\s*hidden/);
+    expect(r(paneCss, ".pane")).toMatch(/min-height:\s*0/);
+    expect(r(paneCss, ".pane")).toMatch(/flex:\s*0 0 auto/);
+    expect(r(timelineCss, ".pane")).toMatch(/overflow:\s*hidden/);
+    expect(r(timelineCss, ".pane")).toMatch(/min-width:\s*0/);
+    expect(r(timelineCss, ".scroll")).toMatch(/min-height:\s*0/);
+    expect(r(timelineCss, ".scroll")).toMatch(/overflow-x:\s*hidden/);
+    expect(r(timelineCss, ".scroll")).toMatch(/overflow-y:\s*auto/);
+  });
 });

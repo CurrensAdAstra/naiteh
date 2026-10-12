@@ -2,7 +2,7 @@
 title: "Product Overview"
 tags: [naiteh-wiki, product, stack]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-10-11T18:00:00+09:00
+updated: 2026-10-12T12:00:00+09:00
 pinned: false
 ---
 
@@ -13,7 +13,10 @@ pinned: false
 1. **Quick capture + activity overview** — a journal mode that combines fast
    scratchpad writing with a summary of recent work.
 2. **Date-focused browsing** — a calendar mode inspired by Agenda (agenda.com),
-   with a timeline of notes grouped by day.
+   with a timeline of notes grouped by day. Its day timeline also shows the
+   notes you wrote and your web clippings as markers at their time (front-matter
+   `created`, else last modified). These markers are local only: notes and
+   clips are never added to your calendars, whose subscriptions stay read-only.
 3. **Local-first Markdown notes** — all data lives as plain `.md` files on the
    user's disk.
 4. **Sync / Backup** — the vault is a plain folder, and the primary backup is
@@ -66,7 +69,10 @@ pinned: false
 - Plugins / user-authored themes (only the built-in palettes ship)
 - Real-time collaboration
 - Mobile app (revisited after v1.5)
-- Calendar event integration (system Calendar / Reminders)
+- Two-way calendar integration. Calendar **subscriptions** are read-only iCal
+  feeds (Google "secret address", iCloud public calendar, any `.ics` URL) with
+  "Add note" per event; OAuth (Google/Microsoft event editing), native macOS
+  EventKit / Reminders, and CalDAV are not implemented
 - Implicit AI calls — auto-completion, ghost text, background revision,
   embedding-based search, etc. v1 AI chat is strictly user-initiated.
 - Model hosting or a separate chat app/window. Conversations live in

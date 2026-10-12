@@ -2,7 +2,7 @@
 title: "IPC API (Tauri Commands)"
 tags: [naiteh-wiki, ipc, api, commands]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-10-11T18:00:00+09:00
+updated: 2026-10-12T12:00:00+09:00
 pinned: false
 ---
 
@@ -136,6 +136,27 @@ timeline_pinned() -> Result<Vec<TimelineItem>, AppError>  // "On the Agenda"
 
 All three read the in-memory index snapshot (`services/index.rs` →
 `services/timeline.rs`) rather than re-scanning per call.
+
+Every `TimelineItem` (both kinds) also carries the flattened
+[`Placement`](domain-model.md#activity--timeline) fields:
+
+```ts
+createdAt: string | null   // front-matter `created` with a time, RFC 3339 local offset
+placedAt: string | null    // createdAt, else file mtime (local); null when `created` is date-only
+docKind: "note" | "clip" | "journal"
+sourceHost: string | null  // host of a clip's `source_url`
+```
+
+(`kind` stays the variant tag `"JournalEntry"` / `"Note"`, so the
+note/clip/journal distinction is `docKind`.)
+
+**Day assignment in `timeline_range`:** a journal entry lands on the date of
+its filename. A note lands on the local date of its front-matter `created`
+(timestamp or date-only) when that parses, else on its file mtime's local
+date. The day timeline draws an item at `placedAt` when that instant falls on
+the shown day; otherwise (date-only `created`, or a journal entry edited on a
+later day) it shows as an all-day chip. These markers are local only: no
+`calendar_*` command ever receives or returns vault notes or clips.
 
 ## Notes
 
@@ -540,6 +561,61 @@ workspace_set_last_opened(last_opened: Option<LastOpened>) -> Result<WorkspaceSt
 
 Persisted to gitignored `.naiteh/workspace.json` so each machine reopens its last
 file in that vault.
+
+## Calendar subscriptions
+
+Read-only iCal feeds shown in the calendar panel: a Google Calendar "Secret
+address in iCal format", an iCloud "Public Calendar" (`webcal://`) link, or any
+public `.ics` URL. All commands are async and session-gated; fetches run on the
+async runtime, never under the vault lock. Shapes are in
+[Domain Model](domain-model.md#calendar-subscriptions); storage in
+[App Config](app-config.md#calendar-subscriptions).
+
+```rust
+calendar_list() -> Result<Vec<CalendarSource>, AppError>
+calendar_add(name: String, url: String, kind: String, color: String) -> Result<CalendarSource, AppError>
+calendar_update(id: String, name: Option<String>, color: Option<String>, enabled: Option<bool>) -> Result<CalendarSource, AppError>
+calendar_remove(id: String) -> Result<(), AppError>
+calendar_events(start: String, end: String) -> Result<Vec<CalendarEvent>, AppError>
+calendar_refresh() -> Result<Vec<CalendarSource>, AppError>
+calendar_event_note(calendar_id: String, event_id: String, title: String, start: String, all_day: bool) -> Result<NoteMeta, AppError>
+```
+
+- **`calendar_add`**: `url` must be `https://` or `webcal://` (rewritten to
+  `https://`), carry no credentials, and name a public host (no localhost,
+  `.local`/`.internal`/`.lan`/`.home.arpa`, single-label names, or loopback /
+  private / link-local / CGNAT IPs; redirects must stay https + public). `kind`
+  is `google` | `apple` | `ics`; `ics` is upgraded to `google` for
+  `calendar.google.com` and `apple` for `*.icloud.com`. `color` is one of
+  `orange gray green blue purple red teal pink`; `name` 1-100 chars. The feed
+  is fetched once: `Validation("Not an iCal calendar")` if the body isn't a
+  VCALENDAR, `Network` if the request fails or the server returns non-2xx.
+  The full URL is never returned to the renderer (only `urlHost`) and never
+  appears in error messages.
+- **`calendar_update`**: patch name / color / enabled; `NotFound` for an
+  unknown id. **`calendar_remove`** also deletes the cached feed.
+- **`calendar_events`**: `start`/`end` are local `YYYY-MM-DD` dates, `end`
+  exclusive, span 1-62 days (`Validation` otherwise). Covers enabled sources;
+  a source whose cache is older than 10 minutes (or missing) is refetched
+  first. A failed fetch sets the source's `lastError` and the old cache is
+  used (a failed attempt also backs off for 10 minutes). Recurrences are
+  expanded in range: RRULE (`DAILY`/`WEEKLY`/`MONTHLY`/`YEARLY` with
+  `INTERVAL`, `COUNT`, `UNTIL`, `BYDAY` incl. ordinals, `BYMONTHDAY`,
+  `BYMONTH`), `RDATE`, `EXDATE`, and `RECURRENCE-ID` overrides. Other rule
+  parts (`BYSETPOS`, `BYWEEKNO`, `BYYEARDAY`, sub-daily `FREQ`) degrade to the
+  first occurrence. `TZID` resolves through the IANA tz database; `Z` is UTC;
+  floating times and unknown TZIDs (e.g. Windows zone names) are local time.
+  Sorted by start. `noteRelPath` comes from the in-memory note index
+  (front-matter `event_id`).
+- **`calendar_refresh`**: force-refetch every enabled source; returns the
+  updated list (per-source failures land in `lastError`, not as an error).
+- **`calendar_event_note`**: returns the note whose front matter has
+  `event_id: <eventId>`, else creates one under the vault lock in
+  `notes/meetings/` named `slug("<YYYY-MM-DD> <title>").md` (unique `-N`
+  suffix), with front matter `title`, `date`, `event_id`, `calendar` (source
+  name; strings quoted) and `time: "HH:MM"` for timed events (taken from
+  `start`'s own offset), and body `# <title>`. `NotFound` for an unknown
+  `calendarId`.
 
 ## Evernote import
 

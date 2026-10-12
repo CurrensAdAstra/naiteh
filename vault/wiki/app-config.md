@@ -2,7 +2,7 @@
 title: "App Config"
 tags: [naiteh-wiki, config, settings]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-10-11T18:00:00+09:00
+updated: 2026-10-12T12:00:00+09:00
 pinned: false
 ---
 
@@ -31,7 +31,7 @@ App-level config (not per-vault) lives in the OS app-config directory:
     "lineWrapping": true
   },
   "calendar": {
-    "subView": "timeline"
+    "subView": "timeline"        // legacy; no longer read (Calendar mode is month | day timeline | note)
   },
   "journal": {
     "splitRatio": 0.5
@@ -198,12 +198,33 @@ audit-log.jsonl          # one AuditLogEntry JSON object per line
 audit-log.1.jsonl        # previous audit log, rotated here when the active one hits 5 MiB
 remembered-session.json  # "keep me signed in" token + 30-day expiry (login checkbox, on by default; see IPC auth_resume)
 hooks/                   # user-installed CLI hooks (see below)
+calendars.json           # calendar subscriptions incl. their secret URLs (see below)
+calendar-cache/<id>.ics  # last successfully fetched body of each subscription
 ```
 
 Login attempts, session resumes, account changes and password changes are logged
 by the backend; user work events are logged through `auth_log_action`, which
 accepts only an allowlist of action names (see [IPC API](ipc-api.md#auth--audit)).
 See [Domain Model](domain-model.md) for `AuditLogEntry`.
+
+## Calendar subscriptions
+
+`calendars.json` lives in the app-config dir, **not** in the vault, so the
+secret feed URLs are never synced or backed up with notes:
+
+```json
+{ "sources": [ {
+  "id": "3f9a0c1d2e4b5a6c", "name": "Work", "kind": "google", "color": "blue",
+  "enabled": true, "url": "https://calendar.google.com/calendar/ical/.../basic.ics",
+  "lastSyncedAt": 1791000000, "lastError": null, "lastAttemptAt": 1791000000
+} ] }
+```
+
+`lastSyncedAt` is the fetched-at time of `calendar-cache/<id>.ics` (unix
+seconds); `lastAttemptAt` (backend-only) is the last try, success or not. A
+cache younger than 10 minutes is reused by `calendar_events`. Only the
+`CalendarSource` view (with `urlHost`, no `url`) crosses IPC. See
+[IPC API](ipc-api.md#calendar-subscriptions).
 
 ## CLI hooks
 

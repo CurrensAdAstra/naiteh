@@ -527,6 +527,7 @@ mod tests {
             mtime: 1,
             snippet: "".into(),
             pinned: false,
+            placement: Default::default(),
         };
         let json = serde_json::to_string(&item).unwrap();
         assert!(json.contains("\"kind\":\"Note\""));

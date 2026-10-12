@@ -33,7 +33,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 
-use crate::domain::{AppError, NoteMeta};
+use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone};
+
+use crate::domain::{AppError, DocKind, NoteMeta};
 use crate::services::notes;
 
 /// How many times `get_or_build` rescans when invalidations keep racing
@@ -67,6 +69,80 @@ pub struct TagSnapshot {
 pub struct IndexedDoc {
     pub meta: NoteMeta,
     pub snippet: String,
+    /// Front-matter `event_id` (calendar meeting notes), if any.
+    pub event_id: Option<String>,
+    /// Parsed front-matter `created`, if it parses.
+    pub created: Option<Created>,
+    /// `Note` or `Clip` (journal classification is by path, in
+    /// `services::timeline`).
+    pub doc_kind: DocKind,
+    /// Host of front-matter `source_url`, if any.
+    pub source_host: Option<String>,
+}
+
+/// A parsed front-matter `created` value.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Created {
+    /// A full timestamp (RFC 3339, or a naive local date-time).
+    At(DateTime<Local>),
+    /// Date only: the document has a day but no time of day.
+    Date(NaiveDate),
+}
+
+/// Parse a front-matter `created` value. Accepts RFC 3339
+/// (`2026-05-09T14:30:00+02:00`, `…Z`), a naive local
+/// `YYYY-MM-DD HH:MM[:SS]` (space or `T`), or a bare `YYYY-MM-DD`.
+pub fn parse_created(raw: &str) -> Option<Created> {
+    let s = raw.trim();
+    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+        return Some(Created::At(dt.with_timezone(&Local)));
+    }
+    for fmt in [
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%dT%H:%M",
+    ] {
+        if let Ok(naive) = NaiveDateTime::parse_from_str(s, fmt) {
+            // A DST gap has no such local time: fall through to None.
+            return Local
+                .from_local_datetime(&naive)
+                .earliest()
+                .map(Created::At);
+        }
+    }
+    if s.len() == 10 {
+        if let Ok(d) = NaiveDate::parse_from_str(s, "%Y-%m-%d") {
+            return Some(Created::Date(d));
+        }
+    }
+    None
+}
+
+/// A web clipping: front matter has `source_url`, `clip_type`, or
+/// `imported_from: web-clipper`.
+pub fn is_clip(fm: &notes::FrontMatter) -> bool {
+    fm.source_url.is_some()
+        || fm.clip_type
+        || fm
+            .imported_from
+            .as_deref()
+            .is_some_and(|v| v.eq_ignore_ascii_case("web-clipper"))
+}
+
+/// The host part of a URL (`https://user@Example.com:8080/x` →
+/// `example.com`); `None` when there is none.
+pub fn url_host(url: &str) -> Option<String> {
+    let rest = url.trim().split_once("://").map_or(url.trim(), |(_, r)| r);
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let host_port = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let host = if host_port.starts_with('[') {
+        host_port.split_once(']').map(|(h, _)| &h[1..])?
+    } else {
+        host_port.split(':').next()?
+    };
+    let host = host.trim().to_ascii_lowercase();
+    (!host.is_empty()).then_some(host)
 }
 
 impl TagIndex {
@@ -140,9 +216,21 @@ fn build(vault_root: &Path) -> Result<TagSnapshot, AppError> {
         // One read per file; reused for both the meta and the snippet.
         let content = std::fs::read_to_string(&path).unwrap_or_default();
         if let Ok(meta) = notes::note_meta_from_content(vault_root, &path, &content) {
-            let (_, body) = notes::parse_front_matter(&content);
+            let (fm, body) = notes::parse_front_matter(&content);
             let snippet = notes::make_snippet(body);
-            notes_out.push(IndexedDoc { meta, snippet });
+            let doc_kind = if is_clip(&fm) {
+                DocKind::Clip
+            } else {
+                DocKind::Note
+            };
+            notes_out.push(IndexedDoc {
+                meta,
+                snippet,
+                created: fm.created.as_deref().and_then(parse_created),
+                doc_kind,
+                source_host: fm.source_url.as_deref().and_then(url_host),
+                event_id: fm.event_id,
+            });
         }
     }
     Ok(TagSnapshot { notes: notes_out })
@@ -285,6 +373,98 @@ mod tests {
         handle.invalidate(v.path());
         let c = idx.get_or_build(v.path()).unwrap();
         assert!(!Arc::ptr_eq(&a, &c));
+    }
+
+    #[test]
+    fn parse_created_accepts_rfc3339_naive_and_date_only() {
+        let at = |s: &str| match parse_created(s) {
+            Some(Created::At(dt)) => dt,
+            other => panic!("{s}: expected At, got {other:?}"),
+        };
+        let utc = at("2026-05-09T12:30:00Z");
+        assert_eq!(utc.timestamp(), 1_778_329_800);
+        let off = at("2026-05-09T14:30:00+02:00");
+        assert_eq!(off.timestamp(), utc.timestamp());
+        let naive = at("2026-05-09 14:30");
+        assert_eq!(
+            naive.format("%Y-%m-%d %H:%M").to_string(),
+            "2026-05-09 14:30"
+        );
+        let naive_s = at("2026-05-09 14:30:15");
+        assert_eq!(naive_s.format("%H:%M:%S").to_string(), "14:30:15");
+        let naive_t = at("2026-05-09T08:05");
+        assert_eq!(naive_t.format("%H:%M").to_string(), "08:05");
+        assert_eq!(
+            parse_created("2026-05-09"),
+            Some(Created::Date(NaiveDate::from_ymd_opt(2026, 5, 9).unwrap()))
+        );
+        assert_eq!(parse_created("yesterday"), None);
+        assert_eq!(parse_created("2026-13-40"), None);
+        assert_eq!(parse_created(""), None);
+    }
+
+    #[test]
+    fn clip_detection_and_host() {
+        let fm = |h: &str| notes::parse_front_matter(h).0;
+        assert!(is_clip(&fm("---
+source_url: https://a.com/x
+---
+")));
+        assert!(is_clip(&fm("---
+clip_type: article
+---
+")));
+        assert!(is_clip(&fm("---
+imported_from: web-clipper
+---
+")));
+        assert!(!is_clip(&fm("---
+imported_from: evernote
+---
+")));
+        assert!(!is_clip(&fm("---
+title: x
+---
+")));
+        assert_eq!(
+            url_host("https://user@Example.COM:8080/a?b#c").as_deref(),
+            Some("example.com")
+        );
+        assert_eq!(url_host("http://[::1]:80/").as_deref(), Some("::1"));
+        assert_eq!(url_host("example.org/path").as_deref(), Some("example.org"));
+        assert_eq!(url_host("https:///x"), None);
+    }
+
+    #[test]
+    fn index_carries_created_kind_and_source_host() {
+        let v = tempdir().unwrap();
+        fsx::atomic_write(
+            &v.path().join("notes/clip.md"),
+            b"---
+created: \"2026-05-09 14:30\"
+source_url: \"https://news.example.com/a\"
+---
+body",
+        )
+        .unwrap();
+        fsx::atomic_write(
+            &v.path().join("notes/plain.md"),
+            b"---
+created: 2026-05-09
+---
+",
+        )
+        .unwrap();
+        let snap = TagIndex::default().get_or_build(v.path()).unwrap();
+        let by = |rel: &str| snap.notes.iter().find(|d| d.meta.rel_path == rel).unwrap();
+        let clip = by("notes/clip.md");
+        assert_eq!(clip.doc_kind, DocKind::Clip);
+        assert_eq!(clip.source_host.as_deref(), Some("news.example.com"));
+        assert!(matches!(clip.created, Some(Created::At(_))));
+        let plain = by("notes/plain.md");
+        assert_eq!(plain.doc_kind, DocKind::Note);
+        assert_eq!(plain.source_host, None);
+        assert!(matches!(plain.created, Some(Created::Date(_))));
     }
 
     #[test]

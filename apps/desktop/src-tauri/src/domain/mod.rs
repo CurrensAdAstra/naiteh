@@ -20,7 +20,9 @@ pub use attachment::AttachmentImport;
 pub use auth::{AuditLogEntry, AuthSession, AuthUser, LoginResult, UserRole};
 pub use error::AppError;
 pub use evernote::{EvernoteImportReport, EvernoteImportedNote};
-pub use journal::{DayMeta, JournalOpenResult, JournalSaveResult, TimelineDay, TimelineItem};
+pub use journal::{
+    DayMeta, DocKind, JournalOpenResult, JournalSaveResult, Placement, TimelineDay, TimelineItem,
+};
 pub use note::{NoteDocument, NoteMeta, NoteWriteResult};
 pub use search::{SearchHit, TagCount};
 pub use sync::SyncStatus;

@@ -48,6 +48,29 @@
   overflow: hidden;
 }
 
+/* Holds the (lazy) editor in every mode. Outside Calendar mode it fills
+   the editor cell exactly as the editor did before. */
+.editorHost {
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Calendar mode: "day timeline | editor" side by side in the editor
+   cell. The timeline pane has a fixed (fitted) width and never grows;
+   the editor takes the rest and keeps at least 320px — the pane shrinks
+   or collapses first (features/calendar/DayTimelinePane). */
+.editorSplit {
+  display: flex;
+  flex-direction: row;
+}
+
+.editorSplit > .editorHost {
+  flex: 1 1 0;
+  min-width: 320px;
+}
+
 /* Placeholder while the lazily-loaded editor chunk arrives; mirrors the
    editor panel's background + border so the swap doesn't flash. */
 .editorFallback {

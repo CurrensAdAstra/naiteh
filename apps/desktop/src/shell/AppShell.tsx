@@ -1,5 +1,6 @@
-import { lazy, Suspense, type CSSProperties } from "react";
+import { lazy, Suspense, useRef, type CSSProperties } from "react";
 
+import { DayTimelinePane } from "../features/calendar/DayTimelinePane";
 import { ChatModelPickerHost } from "../features/chat/ChatModelPickerHost";
 import { SettingsModal } from "../features/settings/SettingsModal";
 import { useUIStore } from "../state/uiStore";
@@ -29,11 +30,6 @@ function EditorPanelFallback() {
   );
 }
 
-// Calendar mode gives the month grid a fixed share of the list+editor
-// region (the monthly calendar reads better wide) instead of the px
-// width the resizer controls in every other view.
-const CALENDAR_LIST_RATIO = 0.7;
-
 export function AppShell() {
   const viewMode = useUIStore((s) => s.viewMode);
   const listPanelWidth = useUIStore((s) => s.listPanelWidth);
@@ -41,17 +37,15 @@ export function AppShell() {
   // Per-vault sync refresh + last-opened restore/persist coordination.
   useWorkspaceLifecycle();
 
+  // Calendar mode reads "month | day timeline | note": the editor cell
+  // becomes a row holding the day timeline pane, then the editor. The
+  // editor host stays the same element in every mode, so switching
+  // modes never remounts the editor.
   const isCalendar = viewMode === "calendar";
-  // In calendar mode the list panel takes CALENDAR_LIST_RATIO of the space
-  // it shares with the editor (the fixed activity / resizer columns
-  // are subtracted first); elsewhere it uses the resizer-controlled width.
-  const listPanelTrack = isCalendar
-    ? `calc((100% - var(--activity-width) - var(--resizer-width))` +
-      ` * ${CALENDAR_LIST_RATIO})`
-    : `${listPanelWidth}px`;
+  const editorCellRef = useRef<HTMLDivElement>(null);
 
   const shellStyle: CSSProperties = {
-    ["--list-panel-width" as string]: listPanelTrack,
+    ["--list-panel-width" as string]: `${listPanelWidth}px`,
   };
 
   return (
@@ -63,13 +57,18 @@ export function AppShell() {
         <PanelRouter mode={viewMode} />
       </div>
       <div className={styles.resizer}>
-        {/* The width is proportional (not drag-sized) in calendar mode. */}
-        {!isCalendar && <ListPanelResizer />}
+        <ListPanelResizer />
       </div>
-      <div className={styles.editor}>
-        <Suspense fallback={<EditorPanelFallback />}>
-          <EditorPanel />
-        </Suspense>
+      <div
+        ref={editorCellRef}
+        className={`${styles.editor} ${isCalendar ? styles.editorSplit : ""}`}
+      >
+        {isCalendar && <DayTimelinePane containerRef={editorCellRef} />}
+        <div className={styles.editorHost}>
+          <Suspense fallback={<EditorPanelFallback />}>
+            <EditorPanel />
+          </Suspense>
+        </div>
       </div>
       <CommandPalette />
       <ChatModelPickerHost />

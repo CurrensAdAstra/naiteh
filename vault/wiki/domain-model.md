@@ -2,7 +2,7 @@
 title: "Domain Model"
 tags: [naiteh-wiki, domain, types, ipc]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-10-11T18:00:00+09:00
+updated: 2026-10-12T12:00:00+09:00
 pinned: false
 ---
 
@@ -87,12 +87,34 @@ Safety](concurrency-safety.md).
 // Used by both journal-mode "Recent Activity" and calendar-mode timeline.
 #[serde(tag = "kind")]
 pub enum TimelineItem {
-    JournalEntry { date: String, path: String, mtime: i64, title: String, snippet: String },
-    Note { rel_path: String, title: String, mtime: i64, snippet: String, pinned: bool },
+    JournalEntry { date: String, path: String, mtime: i64, title: String, snippet: String,
+                   #[serde(flatten)] placement: Placement },
+    Note { rel_path: String, title: String, mtime: i64, snippet: String, pinned: bool,
+           #[serde(flatten)] placement: Placement },
+}
+
+pub enum DocKind { Note, Clip, Journal }   // wire: "note" | "clip" | "journal"
+
+pub struct Placement {                     // flattened, camelCase on the wire
+    pub created_at: Option<String>,  // front-matter `created` with a time, RFC 3339 local offset
+    pub placed_at: Option<String>,   // created_at, else file mtime (local); None if `created` is date-only
+    pub doc_kind: DocKind,           // journal by path; clip (see below); else note
+    pub source_host: Option<String>, // host of front-matter `source_url`
 }
 
 pub struct TimelineDay { pub date: String, pub items: Vec<TimelineItem> } // date local "YYYY-MM-DD"
 ```
+
+- **`created`** (front matter) is parsed as RFC 3339 (`2026-05-09T14:30:00+09:00`,
+  `…Z`), a naive local `YYYY-MM-DD HH:MM[:SS]` (space or `T`), or a bare
+  `YYYY-MM-DD` (a day with no time). Anything else is ignored.
+- **Clip** (web clipping): a note whose front matter has `source_url`,
+  `clip_type`, or `imported_from: web-clipper`. Evernote imports that carry a
+  `source_url` therefore also count as clips.
+- `Placement` is local display data for the calendar-mode day timeline. It is
+  never written to, or sent to, any calendar: subscriptions are read-only.
+- The in-memory index (`services/index.rs` `IndexedDoc`) carries the parsed
+  `created`, `doc_kind` and `source_host`, so timeline queries stay disk-free.
 
 ## Vault
 
@@ -288,6 +310,42 @@ the IPC boundary. Each stored account also carries `mustChangePassword` (see
 [IPC API → Auth & Audit](ipc-api.md#auth--audit)). `UserRole` serializes as
 `"Admin"` / `"User"` (also the `role` argument of `auth_create_user`). The audit log is append-only JSONL at
 `<app-config-dir>/audit-log.jsonl`, rotated to `audit-log.1.jsonl` at 5 MiB.
+
+## Calendar subscriptions
+
+Read-only iCal feeds (see [IPC API](ipc-api.md#calendar-subscriptions)).
+
+```rust
+pub struct CalendarSource {      // camelCase on the wire
+    pub id: String,
+    pub name: String,
+    pub kind: String,            // "google" | "apple" | "ics"
+    pub color: String,           // orange gray green blue purple red teal pink
+    pub enabled: bool,
+    pub url_host: String,        // host only; the full URL is a secret
+    pub last_synced_at: Option<i64>, // unix seconds of the cached fetch
+    pub last_error: Option<String>,  // last fetch failure, cleared on success
+}
+
+pub struct CalendarEvent {
+    pub id: String,              // "<UID>@<instance key>", stable across fetches
+    pub calendar_id: String,
+    pub title: String,           // SUMMARY, "(untitled)" when empty
+    pub start: String,           // RFC3339 with local offset; "YYYY-MM-DD" when all-day
+    pub end: String,             // exclusive; same format as start
+    pub all_day: bool,
+    pub cancelled: bool,         // STATUS:CANCELLED
+    pub location: Option<String>,
+    pub description: Option<String>, // <= 2000 chars
+    pub note_rel_path: Option<String>, // meeting note with this event_id
+}
+```
+
+The instance key is the occurrence's original start: `YYYYMMDD` for all-day,
+UTC `YYYYMMDDTHHMMSSZ` otherwise (a `RECURRENCE-ID` override keeps the key of
+the instance it replaces). A **meeting note** is a note whose front matter has
+`event_id: "<CalendarEvent.id>"` (plus `date`, `calendar`, optional `time`);
+`calendar_event_note` creates them under `notes/meetings/`.
 
 ## Attachments, Workspace, Evernote import
 

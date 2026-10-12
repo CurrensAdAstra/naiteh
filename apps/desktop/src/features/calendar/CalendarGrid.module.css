@@ -1,7 +1,13 @@
+/* Mini month calendar at the top of the calendar list panel.
+   The panel is 200–480px wide: every track is fractional, nothing has a
+   fixed width larger than the narrowest panel. */
+
 .grid {
   display: flex;
   flex-direction: column;
-  border-bottom: 1px solid var(--color-border-strong);
+  min-width: 0;
+  padding: 8px 8px 6px;
+  border-bottom: 1px solid var(--color-border);
   background: var(--color-bg-listpanel);
   user-select: none;
 }
@@ -9,25 +15,45 @@
 .header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  padding: 6px 8px;
+  gap: 4px;
+  min-width: 0;
+  padding: 0 2px 6px 4px;
 }
 
 .label {
   flex: 1;
-  text-align: center;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   font-weight: 600;
-  font-size: var(--font-size-ui);
+  font-size: 14px;
+  color: var(--color-text-primary);
+}
+
+.todayButton {
+  flex-shrink: 0;
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 11px;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+}
+
+.todayButton:hover {
+  background: var(--color-hover);
   color: var(--color-text-primary);
 }
 
 .navButton {
+  flex-shrink: 0;
   width: 22px;
   height: 22px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border-radius: 3px;
+  border-radius: 11px;
   color: var(--color-text-secondary);
 }
 
@@ -36,7 +62,9 @@
   color: var(--color-text-primary);
 }
 
-.navButton:focus-visible {
+.navButton:focus-visible,
+.todayButton:focus-visible,
+.cell:focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: -2px;
 }
@@ -44,71 +72,71 @@
 .weekdays,
 .days {
   display: grid;
-  grid-template-columns: repeat(7, 1fr);
+  grid-template-columns: repeat(7, minmax(0, 1fr));
 }
 
 .weekday {
   text-align: center;
-  padding: 2px 0;
+  padding: 2px 0 4px;
   font-size: 10px;
   font-weight: 600;
-  letter-spacing: 0.04em;
   color: var(--color-text-muted);
-  text-transform: uppercase;
 }
 
 .cell {
-  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  /* The calendar panel is wide in calendar mode (70% of the shell), so
-     cells breathe vertically instead of staying a flat 28px letterbox. */
-  min-height: 52px;
-  font-size: 13px;
+  gap: 1px;
+  min-width: 0;
+  height: 32px;
+  padding: 0;
+  font-size: 12px;
   color: var(--color-text-primary);
-  border-radius: 3px;
+  border-radius: 4px;
 }
 
-.cell:hover {
+.dayNumber {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  max-width: 100%;
+  height: 22px;
+  border-radius: 11px;
+}
+
+.cell:hover .dayNumber {
   background: var(--color-hover);
-}
-
-.cell:focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: -2px;
 }
 
 .outOfMonth {
   color: var(--color-text-muted);
-  opacity: 0.55;
+  opacity: 0.6;
 }
 
-.today {
+.today .dayNumber {
   font-weight: 700;
-  outline: 1px solid var(--color-accent);
-  outline-offset: -2px;
+  color: var(--color-accent);
+  box-shadow: inset 0 0 0 1px var(--color-accent);
 }
 
-.active {
+.active .dayNumber,
+.active:hover .dayNumber {
   background: var(--color-accent);
   color: var(--color-text-inverse);
-}
-
-.active:hover {
-  background: var(--color-accent-hover);
+  font-weight: 600;
+  opacity: 1;
 }
 
 .dot {
-  position: absolute;
-  bottom: 3px;
   width: 4px;
   height: 4px;
   border-radius: 50%;
   background: var(--color-accent);
 }
 
-.active .dot {
-  background: var(--color-text-inverse);
+.dotHidden {
+  visibility: hidden;
 }

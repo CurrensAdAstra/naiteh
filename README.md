@@ -108,6 +108,25 @@ Keep in mind:
   **private** repository, and note that GitHub rejects files over 100 MB, so a
   large Evernote attachment can block every later sync.
 
+## Calendar subscriptions
+
+The Calendar panel can show your Google or iCloud calendars (read-only):
+**My calendars → + Add calendar**, paste the calendar's iCal address and
+pick a colour.
+
+- Google Calendar: Settings → your calendar → *Integrate calendar* →
+  **Secret address in iCal format**.
+- iCloud / Mac Calendar: share the calendar as a **Public Calendar** and copy
+  the `webcal://` link.
+
+Treat these addresses like passwords. naiteh stores them in its app-config
+folder (not in the vault). Calendar mode shows the month, the selected
+day's timeline and the open note side by side; each event in the timeline has
+**Add note**, which creates (or opens) a meeting note linked to that event.
+Your own notes and web clippings appear on the timeline at the time they were
+written or clipped; they are shown in naiteh only and never added to your
+calendars.
+
 ## Checks
 
 `pnpm check` (or `make check`) runs the same checks as CI:

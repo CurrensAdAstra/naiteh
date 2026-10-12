@@ -9,17 +9,22 @@
 //! Classification by vault-relative path:
 //!   - `journal/.../<YYYY-MM-DD>.md` with a well-formed date stem →
 //!     `TimelineItem::JournalEntry` (keyed by that date).
-//!   - anything under `notes/` → `TimelineItem::Note` (keyed by its
-//!     mtime's local date in range queries).
+//!   - anything under `notes/` → `TimelineItem::Note`, keyed in range
+//!     queries by its front-matter `created` local date when that parses
+//!     (timestamp or date-only), else by its mtime's local date.
+//!
+//! Every item carries a `Placement` (time of day on the day timeline,
+//! note/clip/journal kind, clip source host). Placement is purely local
+//! display data: nothing here is ever written to or sent to a calendar.
 //!   - a `journal/` file whose stem isn't a valid date is skipped, matching
 //!     the previous behaviour.
 
 use std::collections::HashMap;
 
-use chrono::{DateTime, Local, NaiveDate};
+use chrono::{DateTime, Local, NaiveDate, SecondsFormat};
 
-use crate::domain::{TimelineDay, TimelineItem};
-use crate::services::index::IndexedDoc;
+use crate::domain::{DocKind, Placement, TimelineDay, TimelineItem};
+use crate::services::index::{Created, IndexedDoc};
 
 /// Most-recently-modified items first, capped at `limit`.
 pub fn recent(docs: &[IndexedDoc], limit: usize) -> Vec<TimelineItem> {
@@ -42,7 +47,8 @@ pub fn pinned(docs: &[IndexedDoc]) -> Vec<TimelineItem> {
 
 /// One `TimelineDay` per date in `[from, to]` (inclusive), newest day
 /// first. Journal entries land on their own date; notes land on their
-/// mtime's local date. Empty days are included.
+/// `created` local date if it parses, else their mtime's local date.
+/// Empty days are included.
 pub fn range(docs: &[IndexedDoc], from: NaiveDate, to: NaiveDate) -> Vec<TimelineDay> {
     let mut journal_by_date: HashMap<String, TimelineItem> = HashMap::new();
     let mut notes_by_date: HashMap<String, Vec<TimelineItem>> = HashMap::new();
@@ -56,7 +62,11 @@ pub fn range(docs: &[IndexedDoc], from: NaiveDate, to: NaiveDate) -> Vec<Timelin
                 journal_by_date.insert(date.clone(), item);
             }
             TimelineItem::Note { .. } => {
-                let date = mtime_to_local_date(item.mtime());
+                let date = match doc.created {
+                    Some(Created::At(dt)) => dt.format("%Y-%m-%d").to_string(),
+                    Some(Created::Date(d)) => d.format("%Y-%m-%d").to_string(),
+                    None => mtime_to_local_date(item.mtime()),
+                };
                 notes_by_date.entry(date).or_default().push(item);
             }
         }
@@ -103,6 +113,7 @@ fn item_from_doc(doc: &IndexedDoc) -> Option<TimelineItem> {
                 meta.title.clone()
             },
             snippet: doc.snippet.clone(),
+            placement: placement(doc, DocKind::Journal),
         })
     } else if meta.rel_path.starts_with("journal/") {
         // A journal/ file with a malformed date stem — skip, as the old
@@ -115,7 +126,28 @@ fn item_from_doc(doc: &IndexedDoc) -> Option<TimelineItem> {
             mtime: meta.mtime,
             snippet: doc.snippet.clone(),
             pinned: meta.pinned,
+            placement: placement(doc, doc.doc_kind),
         })
+    }
+}
+
+/// Time-of-day placement: `created` when it has a time, no time when it
+/// is date-only, else the file mtime (all in the local offset).
+fn placement(doc: &IndexedDoc, doc_kind: DocKind) -> Placement {
+    let rfc = |dt: DateTime<Local>| dt.to_rfc3339_opts(SecondsFormat::Secs, false);
+    let (created_at, placed_at) = match doc.created {
+        Some(Created::At(dt)) => (Some(rfc(dt)), Some(rfc(dt))),
+        Some(Created::Date(_)) => (None, None),
+        None => (
+            None,
+            DateTime::from_timestamp(doc.meta.mtime, 0).map(|d| rfc(d.with_timezone(&Local))),
+        ),
+    };
+    Placement {
+        created_at,
+        placed_at,
+        doc_kind,
+        source_host: doc.source_host.clone(),
     }
 }
 
@@ -168,7 +200,96 @@ mod tests {
                 pinned,
             },
             snippet: format!("snippet of {title}"),
+            event_id: None,
+            created: None,
+            doc_kind: DocKind::Note,
+            source_host: None,
         }
+    }
+
+    fn placement_of(item: &TimelineItem) -> &Placement {
+        match item {
+            TimelineItem::JournalEntry { placement, .. } | TimelineItem::Note { placement, .. } => {
+                placement
+            }
+        }
+    }
+
+    fn local(y: i32, m: u32, d: u32, h: u32, mi: u32) -> DateTime<Local> {
+        use chrono::TimeZone;
+        Local
+            .with_ymd_and_hms(y, m, d, h, mi, 0)
+            .earliest()
+            .unwrap()
+    }
+
+    #[test]
+    fn note_lands_on_created_day_not_mtime_day() {
+        // mtime is days later than `created`.
+        let mtime = local(2026, 5, 20, 12, 0).timestamp();
+        let mut doc = note_doc("notes/a.md", "A", mtime, false);
+        doc.created = Some(Created::At(local(2026, 5, 9, 14, 30)));
+        doc.doc_kind = DocKind::Clip;
+        doc.source_host = Some("example.com".into());
+        let from = NaiveDate::from_ymd_opt(2026, 5, 9).unwrap();
+        let to = NaiveDate::from_ymd_opt(2026, 5, 20).unwrap();
+        let days = range(&[doc], from, to);
+        let with: Vec<_> = days.iter().filter(|d| !d.items.is_empty()).collect();
+        assert_eq!(with.len(), 1);
+        assert_eq!(with[0].date, "2026-05-09");
+        let p = placement_of(&with[0].items[0]);
+        assert_eq!(p.doc_kind, DocKind::Clip);
+        assert_eq!(p.source_host.as_deref(), Some("example.com"));
+        assert_eq!(p.created_at, p.placed_at);
+        let placed = DateTime::parse_from_rfc3339(p.placed_at.as_deref().unwrap()).unwrap();
+        assert_eq!(placed.timestamp(), local(2026, 5, 9, 14, 30).timestamp());
+    }
+
+    #[test]
+    fn note_without_created_lands_on_mtime_day_at_mtime() {
+        let mtime = local(2026, 5, 10, 9, 15).timestamp();
+        let doc = note_doc("notes/a.md", "A", mtime, false);
+        let d = NaiveDate::from_ymd_opt(2026, 5, 10).unwrap();
+        let days = range(&[doc], d, d);
+        let p = placement_of(&days[0].items[0]);
+        assert_eq!(p.created_at, None);
+        assert_eq!(p.doc_kind, DocKind::Note);
+        let placed = DateTime::parse_from_rfc3339(p.placed_at.as_deref().unwrap()).unwrap();
+        assert_eq!(placed.timestamp(), mtime);
+    }
+
+    #[test]
+    fn date_only_created_sets_day_but_no_time() {
+        let mtime = local(2026, 5, 20, 12, 0).timestamp();
+        let mut doc = note_doc("notes/a.md", "A", mtime, false);
+        doc.created = Some(Created::Date(NaiveDate::from_ymd_opt(2026, 5, 9).unwrap()));
+        let d = NaiveDate::from_ymd_opt(2026, 5, 9).unwrap();
+        let days = range(&[doc], d, d);
+        assert_eq!(days[0].items.len(), 1);
+        let p = placement_of(&days[0].items[0]);
+        assert_eq!(p.created_at, None);
+        assert_eq!(p.placed_at, None);
+    }
+
+    #[test]
+    fn journal_entries_have_journal_kind_and_mtime_placement() {
+        let mtime = local(2026, 5, 9, 21, 0).timestamp();
+        let doc = note_doc("journal/2026/05/2026-05-09.md", "Day", mtime, false);
+        let items = recent(&[doc], 1);
+        let p = placement_of(&items[0]);
+        assert_eq!(p.doc_kind, DocKind::Journal);
+        assert!(p.placed_at.is_some());
+    }
+
+    #[test]
+    fn placement_serializes_flat_camel_case() {
+        let doc = note_doc("notes/a.md", "A", 0, false);
+        let json = serde_json::to_string(&recent(&[doc], 1)[0]).unwrap();
+        assert!(json.contains("\"kind\":\"Note\""), "{json}");
+        assert!(json.contains("\"docKind\":\"note\""), "{json}");
+        assert!(json.contains("\"createdAt\":null"), "{json}");
+        assert!(json.contains("\"placedAt\":\""), "{json}");
+        assert!(json.contains("\"sourceHost\":null"), "{json}");
     }
 
     #[test]

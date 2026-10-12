@@ -14,6 +14,12 @@ export const LIST_PANEL_MIN = 200;
 export const LIST_PANEL_MAX = 480;
 export const LIST_PANEL_DEFAULT = 280;
 
+// architecture.md "Calendar panel": the day timeline pane between the
+// list panel and the editor (Calendar mode only).
+export const DAY_TIMELINE_MIN = 280;
+export const DAY_TIMELINE_MAX = 560;
+export const DAY_TIMELINE_DEFAULT = 380;
+
 // architecture.md "Journal mode (quick capture + activity summary)"
 export const JOURNAL_SPLIT_MIN = 0.1;
 export const JOURNAL_SPLIT_MAX = 0.9;
@@ -52,6 +58,15 @@ export type EditorMode = "view" | "edit";
 interface UIState {
   viewMode: ViewMode;
   listPanelWidth: number;
+  /** Calendar mode day timeline pane width (px, preferred). */
+  dayTimelineWidth: number;
+  /** The user hid the day timeline (Calendar mode shows a toggle). */
+  dayTimelineHidden: boolean;
+  /**
+   * Draw the day's notes / web clippings / journal entry as markers on
+   * the day timeline (in memory; on by default).
+   */
+  dayTimelineShowNotes: boolean;
   journalSplitRatio: number;
   commandPaletteOpen: boolean;
   /** The Obsidian-style settings modal overlays the whole shell. */
@@ -71,6 +86,9 @@ interface UIState {
   notice: string | null;
   setViewMode: (mode: ViewMode) => void;
   setListPanelWidth: (px: number) => void;
+  setDayTimelineWidth: (px: number) => void;
+  setDayTimelineHidden: (hidden: boolean) => void;
+  setDayTimelineShowNotes: (show: boolean) => void;
   setJournalSplitRatio: (ratio: number) => void;
   setCommandPaletteOpen: (open: boolean) => void;
   toggleCommandPalette: () => void;
@@ -101,6 +119,9 @@ interface UIState {
 export const useUIStore = create<UIState>((set) => ({
   viewMode: "journal",
   listPanelWidth: LIST_PANEL_DEFAULT,
+  dayTimelineWidth: DAY_TIMELINE_DEFAULT,
+  dayTimelineHidden: false,
+  dayTimelineShowNotes: true,
   journalSplitRatio: JOURNAL_SPLIT_DEFAULT,
   commandPaletteOpen: false,
   settingsOpen: false,
@@ -111,6 +132,12 @@ export const useUIStore = create<UIState>((set) => ({
   setViewMode: (mode) => set({ viewMode: mode }),
   setListPanelWidth: (px) =>
     set({ listPanelWidth: clamp(px, LIST_PANEL_MIN, LIST_PANEL_MAX) }),
+  setDayTimelineWidth: (px) =>
+    set({
+      dayTimelineWidth: clamp(px, DAY_TIMELINE_MIN, DAY_TIMELINE_MAX),
+    }),
+  setDayTimelineHidden: (hidden) => set({ dayTimelineHidden: hidden }),
+  setDayTimelineShowNotes: (show) => set({ dayTimelineShowNotes: show }),
   setJournalSplitRatio: (ratio) =>
     set({
       journalSplitRatio: clamp(ratio, JOURNAL_SPLIT_MIN, JOURNAL_SPLIT_MAX),

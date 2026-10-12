@@ -1,7 +1,15 @@
+/* Calendar list panel: lives in the 200–480px list column of the
+   3-column shell. Nothing here may widen the column: every flex/grid
+   child gets `min-width: 0`, long text ellipsizes or wraps, and the
+   panel itself clips horizontal overflow. */
+
 .panel {
   display: flex;
   flex-direction: column;
   height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
   background: var(--color-bg-listpanel);
   border-right: 1px solid var(--color-border);
 }
@@ -10,6 +18,8 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-shrink: 0;
+  min-width: 0;
   padding: 8px 12px;
   border-bottom: 1px solid var(--color-border);
 }
@@ -23,24 +33,242 @@
   text-transform: uppercase;
 }
 
+/* Tabs */
+
+.tabs {
+  display: flex;
+  flex-shrink: 0;
+  min-width: 0;
+  gap: 4px;
+  padding: 6px 8px 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.tab {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 8px 6px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  border-bottom: 2px solid transparent;
+}
+
+.tab:hover {
+  color: var(--color-text-primary);
+}
+
+.tabActive {
+  color: var(--color-accent);
+  border-bottom-color: var(--color-accent);
+}
+
+.tab:focus-visible,
+.iconButton:focus-visible,
+.eventToggle:focus-visible,
+.linkButton:focus-visible,
+.item:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
 .body {
   flex: 1;
-  overflow: auto;
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
   font-size: var(--font-size-ui);
   scroll-behavior: smooth;
 }
 
-.empty,
 .error {
-  padding: 12px;
+  margin: 0;
+  padding: 8px 12px;
+  color: var(--color-danger);
+  overflow-wrap: anywhere;
+}
+
+.plainList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.listItem {
+  min-width: 0;
+}
+
+/* Day tab */
+
+.dayView {
+  min-width: 0;
+  padding-bottom: 8px;
+}
+
+.dayTitle {
+  margin: 0;
+  padding: 10px 12px 6px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  overflow-wrap: anywhere;
+}
+
+.subHeader {
+  padding: 8px 12px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.eventRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 0;
+  margin: 2px 8px;
+  padding: 4px 4px 4px 0;
+  border-radius: 4px;
+}
+
+.eventRow:hover {
+  background: var(--color-hover);
+}
+
+.eventBar {
+  flex-shrink: 0;
+  align-self: stretch;
+  width: 3px;
+  min-height: 18px;
+  border-radius: 2px;
+}
+
+.eventMain {
+  flex: 1;
+  min-width: 0;
+}
+
+.eventToggle {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  min-width: 0;
+  padding: 0;
+  text-align: left;
+  color: var(--color-text-primary);
+}
+
+.eventTime {
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.eventTitle {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-weight: 500;
+}
+
+.eventCancelled .eventTitle {
+  text-decoration: line-through;
   color: var(--color-text-muted);
 }
 
-.error {
-  color: var(--color-danger);
+.eventCancelled .eventTime {
+  color: var(--color-text-muted);
 }
 
-/* Pinned area (sticky top) */
+.eventDetails {
+  min-width: 0;
+  padding: 4px 0 2px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.detailLine {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+  margin: 0 0 2px;
+}
+
+.detailText {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.description {
+  margin: 2px 0 0;
+  max-height: 160px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.detailMuted {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+.iconButton {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 4px;
+  color: var(--color-text-secondary);
+}
+
+.iconButton:hover:not(:disabled) {
+  background: var(--color-active);
+  color: var(--color-accent);
+}
+
+.iconButton:disabled {
+  opacity: 0.5;
+}
+
+.emptyDay {
+  padding: 8px 12px;
+}
+
+.emptyText {
+  margin: 0 0 6px;
+  color: var(--color-text-muted);
+}
+
+.linkButton {
+  padding: 0;
+  color: var(--color-accent);
+  font-size: 12px;
+}
+
+.linkButton:hover {
+  text-decoration: underline;
+}
+
+/* Agenda tab: pinned area (sticky top) */
 
 .pinnedSection {
   position: sticky;
@@ -59,14 +287,6 @@
   font-weight: 600;
   font-size: var(--font-size-ui);
 }
-
-.pinnedList {
-  list-style: none;
-  margin: 0;
-  padding: 0 0 4px;
-}
-
-/* Day section */
 
 .dayHeader {
   position: sticky;
@@ -87,22 +307,11 @@
   color: var(--color-accent);
 }
 
-.dayItems {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-}
-
-.empty {
-  padding: 4px 12px;
-  color: var(--color-text-muted);
-  font-style: italic;
-}
-
 .item {
   display: flex;
   flex-direction: column;
   width: 100%;
+  min-width: 0;
   padding: 8px 12px;
   text-align: left;
   border-bottom: 1px solid var(--color-border);
@@ -122,6 +331,7 @@
   display: flex;
   align-items: baseline;
   gap: 6px;
+  min-width: 0;
 }
 
 .kindBadge {
@@ -140,6 +350,7 @@
 
 .itemTitle {
   flex: 1;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -148,6 +359,7 @@
 
 .itemSnippet {
   margin-top: 2px;
+  min-width: 0;
   color: var(--color-text-secondary);
   font-size: 11px;
   white-space: nowrap;
@@ -156,8 +368,8 @@
 }
 
 .pinned {
+  flex-shrink: 0;
   color: var(--color-accent);
-  font-size: 11px;
 }
 
 .placeholderRow {

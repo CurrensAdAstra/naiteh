@@ -17,23 +17,40 @@ export interface NoteMeta {
   pinned: boolean;
 }
 
+/** Note / web clipping / journal entry — the day timeline marker icon. */
+export type DocKind = "note" | "clip" | "journal";
+
+/**
+ * Where a timeline item sits on the day timeline (vault/wiki/ipc-api.md,
+ * "timeline_range"). Local display data only — never sent to a calendar.
+ */
+export interface TimelinePlacement {
+  /** Front-matter `created` with a time (RFC 3339, local offset). */
+  createdAt: string | null;
+  /** `createdAt`, else the file mtime; `null` for a date-only `created`. */
+  placedAt: string | null;
+  docKind: DocKind;
+  /** Host of a clip's `source_url`. */
+  sourceHost: string | null;
+}
+
 export type TimelineItem =
-  | {
+  | ({
       kind: "JournalEntry";
       date: string;
       path: string;
       mtime: number;
       title: string;
       snippet: string;
-    }
-  | {
+    } & TimelinePlacement)
+  | ({
       kind: "Note";
       relPath: string;
       title: string;
       mtime: number;
       snippet: string;
       pinned: boolean;
-    };
+    } & TimelinePlacement);
 
 export interface TimelineDay {
   date: string;
@@ -391,4 +408,51 @@ export function formatAppError(err: unknown): string {
   }
   if (err instanceof Error) return err.message;
   return String(err);
+}
+
+// ---------------------------------------------------------------------------
+// Calendar subscriptions (ICS feeds; wiki: ipc-commands, calendar_*)
+// ---------------------------------------------------------------------------
+
+export type CalendarKind = "google" | "apple" | "ics";
+
+export const CALENDAR_COLORS = [
+  "orange",
+  "gray",
+  "green",
+  "blue",
+  "purple",
+  "red",
+  "teal",
+  "pink",
+] as const;
+
+export type CalendarColor = (typeof CALENDAR_COLORS)[number];
+
+export interface CalendarSource {
+  id: string;
+  name: string;
+  kind: CalendarKind;
+  color: CalendarColor;
+  enabled: boolean;
+  /** Host of the feed URL (the secret URL itself never reaches the UI). */
+  urlHost: string;
+  lastSyncedAt: number | null;
+  lastError: string | null;
+}
+
+export interface CalendarEvent {
+  id: string;
+  calendarId: string;
+  title: string;
+  /** RFC3339 with offset, or `YYYY-MM-DD` when `allDay`. */
+  start: string;
+  /** Exclusive end; same format as `start`. */
+  end: string;
+  allDay: boolean;
+  cancelled: boolean;
+  location: string | null;
+  description: string | null;
+  /** Vault-relative path of the linked meeting note, if one exists. */
+  noteRelPath: string | null;
 }

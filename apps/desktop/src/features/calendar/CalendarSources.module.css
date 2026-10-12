@@ -1,0 +1,316 @@
+/* "My calendars": pinned to the bottom of the calendar list panel.
+   Capped in height so the Day list keeps most of the column; scrolls
+   vertically, never horizontally. */
+
+.section {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  max-height: 45%;
+  overflow: hidden;
+  border-top: 1px solid var(--color-border-strong);
+  background: var(--color-bg-listpanel);
+  font-size: 12px;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 4px 6px 4px 8px;
+}
+
+.collapse {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 2px 0;
+  text-align: left;
+  color: var(--color-text-secondary);
+}
+
+.headerLabel {
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.body {
+  min-width: 0;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 0 8px 8px;
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.item {
+  min-width: 0;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 2px 0 2px 4px;
+  border-radius: 4px;
+}
+
+.row:hover {
+  background: var(--color-hover);
+}
+
+.checkbox {
+  flex-shrink: 0;
+  margin: 0;
+}
+
+.name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--color-text-primary);
+  cursor: pointer;
+}
+
+.warning {
+  flex-shrink: 0;
+  display: inline-flex;
+  color: var(--color-warning);
+}
+
+.iconButton {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 4px;
+  color: var(--color-text-secondary);
+}
+
+.iconButton:hover:not(:disabled) {
+  background: var(--color-active);
+  color: var(--color-text-primary);
+}
+
+.iconButton:disabled {
+  opacity: 0.5;
+}
+
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.menu {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+  padding: 4px 0 6px 24px;
+}
+
+.menuItem {
+  padding: 2px 8px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 10px;
+  color: var(--color-text-secondary);
+}
+
+.menuItem:hover {
+  background: var(--color-hover);
+  color: var(--color-text-primary);
+}
+
+.danger {
+  color: var(--color-danger);
+}
+
+.inlineForm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 4px 0 8px 24px;
+}
+
+.confirmText {
+  margin: 0;
+  color: var(--color-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.addButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  padding: 2px 4px;
+  color: var(--color-accent);
+}
+
+.addButton:hover {
+  text-decoration: underline;
+}
+
+.muted {
+  margin: 2px 0 4px;
+  color: var(--color-text-muted);
+}
+
+.error {
+  margin: 4px 0;
+  color: var(--color-danger);
+  overflow-wrap: anywhere;
+}
+
+.dialog {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  margin-top: 6px;
+  padding: 8px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 6px;
+  background: var(--color-bg-editor);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.fieldLabel {
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  padding: 4px 6px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 4px;
+  background: var(--color-bg-editor);
+  color: var(--color-text-primary);
+  font-family: var(--font-ui);
+  font-size: 12px;
+}
+
+.input:focus {
+  outline: 1px solid var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+.swatches {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.swatch {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid transparent;
+}
+
+.swatchActive {
+  box-shadow:
+    0 0 0 2px var(--color-bg-editor),
+    0 0 0 3px var(--color-text-primary);
+}
+
+.help {
+  min-width: 0;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.help summary {
+  cursor: pointer;
+  color: var(--color-accent);
+}
+
+.help p {
+  margin: 4px 0 0;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.button {
+  padding: 3px 10px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 4px;
+  color: var(--color-text-primary);
+}
+
+.button:hover:not(:disabled) {
+  background: var(--color-hover);
+}
+
+.button:disabled {
+  opacity: 0.6;
+}
+
+.primary {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-text-inverse);
+}
+
+.primary:hover:not(:disabled) {
+  background: var(--color-accent-hover);
+}
+
+.dangerButton {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+}
+
+.iconButton:focus-visible,
+.collapse:focus-visible,
+.menuItem:focus-visible,
+.addButton:focus-visible,
+.button:focus-visible,
+.swatch:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
