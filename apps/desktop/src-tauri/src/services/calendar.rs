@@ -1654,7 +1654,10 @@ mod tests {
             "notes/c.md",
             b"---\ncreated: 2026-01-05T11:00:00Z\nsource_url: https://x.com/a\n---\nclip",
         );
-        w("notes/m.md", b"---\nevent_id: a1@20260105T090000Z\n---\nmeeting");
+        w(
+            "notes/m.md",
+            b"---\nevent_id: a1@20260105T090000Z\n---\nmeeting",
+        );
         let snap = crate::services::index::TagIndex::default()
             .get_or_build(vault.path())
             .unwrap();

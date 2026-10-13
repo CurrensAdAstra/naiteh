@@ -1,5 +1,7 @@
 import {
   BookOpen,
+  CloudUpload,
+  GitCompare,
   Calendar,
   Folder,
   Notebook,
@@ -32,6 +34,7 @@ import {
   sendChat,
   stopChat,
 } from "../lib/chatMd/chatFlow";
+import { useBackupStore } from "../state/backupStore";
 import { useUIStore, type ViewMode } from "../state/uiStore";
 import styles from "./CommandPalette.module.css";
 
@@ -97,6 +100,23 @@ export function CommandPalette() {
         detail: "Configure naiteh",
         Icon: Settings,
         run: () => setSettingsOpen(true),
+      },
+      {
+        id: "backup-run",
+        label: "Backup: Back up now",
+        detail: "Back up the vault to every enabled target",
+        Icon: CloudUpload,
+        run: () => void useBackupStore.getState().runBackup(null),
+      },
+      {
+        id: "backup-compare",
+        label: "Backup: Compare copies",
+        detail: "Compare the local vault with each backup",
+        Icon: GitCompare,
+        run: () => {
+          setSettingsOpen(false);
+          useBackupStore.getState().setCompareOpen(true);
+        },
       },
       {
         id: "chat-send",

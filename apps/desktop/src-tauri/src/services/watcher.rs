@@ -267,6 +267,8 @@ fn flush(ctx: &Context, canon_root: &Path, pending: Vec<(PathBuf, RawKind)>, ove
     if changes.is_empty() && !overflow {
         return;
     }
+    // Any change (own or external) makes the vault due for auto backup.
+    crate::services::backup::note_vault_changed();
     if overflow || changes.iter().any(|c| !c.own) {
         ctx.index.invalidate(root);
     }

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("../../lib/chatMd/chatFlow", () => ({ stopChat: vi.fn() }));
 
 import { stopChat } from "../../lib/chatMd/chatFlow";
+import { useBackupStore } from "../../state/backupStore";
 import { useUIStore } from "../../state/uiStore";
 import { StatusBar } from "../StatusBar";
 
@@ -65,5 +66,40 @@ describe("StatusBar live-update state", () => {
     });
     expect(screen.queryByTestId("status-notice")).not.toBeInTheDocument();
     expect(useUIStore.getState().notice).toBeNull();
+  });
+});
+
+describe("StatusBar backup indicator", () => {
+  beforeEach(() => {
+    useUIStore.setState({ notice: null, chatRequest: null, liveUpdatesUnavailable: null, settingsOpen: false, pendingAction: null });
+    useBackupStore.setState({ running: false, progress: {}, lastRunError: null });
+  });
+
+  it("shows nothing when no backup ran", () => {
+    render(<StatusBar />);
+    expect(screen.queryByTestId("status-backup")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("status-backup-error")).not.toBeInTheDocument();
+  });
+
+  it("sums progress across targets while backing up", () => {
+    useBackupStore.setState({
+      running: true,
+      progress: {
+        a: { targetId: "a", done: 40, total: 100, relPath: "x" },
+        b: { targetId: "b", done: 2, total: 20, relPath: "y" },
+      },
+    });
+    render(<StatusBar />);
+    expect(screen.getByTestId("status-backup")).toHaveTextContent("Backing up… 42/120");
+  });
+
+  it("shows the last error and opens Backup settings", () => {
+    useBackupStore.setState({ lastRunError: "NAS: auth failed" });
+    render(<StatusBar />);
+    const btn = screen.getByTestId("status-backup-error");
+    expect(btn).toHaveAttribute("title", "NAS: auth failed");
+    btn.click();
+    expect(useUIStore.getState().settingsOpen).toBe(true);
+    expect(useUIStore.getState().pendingAction).toBe("showBackup");
   });
 });

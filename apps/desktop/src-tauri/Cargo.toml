@@ -44,6 +44,9 @@ notify = "8.2"
 # IANA time zones for calendar subscriptions (services/calendar.rs).
 # 0.10.4 was published 2025-07-11 (MSRV 1.65).
 chrono-tz = "0.10.4"
+# SFTP backup target (services::backup). 0.9.5 (2025-01) shares the
+# libssh2-sys 0.3.1 that git2's "ssh" feature already links.
+ssh2 = "0.9.5"
 
 [dev-dependencies]
 tempfile = "3"

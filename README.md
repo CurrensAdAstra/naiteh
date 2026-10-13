@@ -77,17 +77,24 @@ The admin can then create more accounts in Settings.
 
 ## Backing up your vault
 
-The vault is a plain folder (default `Documents/duramen`), so **Google Drive
-for desktop is the recommended, primary backup**. It handles large Evernote
-attachments and keeps deleted files and earlier versions for a while. The
-same steps, with your vault path and a copy button, are in the app under
-**Settings → Backup**.
+naiteh can keep two backup copies of the vault for you and compare them.
+Open **Settings → Backup**:
 
-1. Install Google Drive for desktop (Windows:
-   `winget install Google.GoogleDrive`) and sign in.
-2. Drive settings → **My Computer** → **Add folder** → pick the vault folder
-   → **Sync with Google Drive**.
-3. That's it: every note save, attachment and Evernote import is uploaded.
+1. **+ Add Google Drive folder**: pick your "My Drive" folder (Google Drive
+   for desktop must be installed and signed in). Backups go to
+   `My Drive/naiteh-backup/<vault>`.
+2. **+ Add SFTP server**: host, user, password or key file, remote folder.
+   On first connect naiteh shows the server's fingerprint; choose **Trust
+   this server** only if it matches.
+3. Turn on **Auto backup** or press **Back up all now**. Only changed files
+   are uploaded; files you delete are moved to the backup's trash folder,
+   never deleted there.
+4. **Compare copies…** shows the vault, the Drive copy and the SFTP copy side
+   by side (same / differs / missing), with a line diff for notes and
+   **Restore to vault as copy** / **Overwrite local**.
+
+You can also keep syncing the vault folder itself with Google Drive, as
+below.
 
 Keep in mind:
 

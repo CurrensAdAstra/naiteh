@@ -372,6 +372,25 @@ the app runs. Two mechanisms cover that:
   ([ipc-api.md](vault/wiki/ipc-api.md) "Events",
   [concurrency-safety.md](vault/wiki/concurrency-safety.md)).
 
+#### Backup targets and copy comparison
+
+Settings → Backup manages in-app backup targets (`features/backup/`,
+`state/backupStore.ts`, `lib/api/backup.ts`; backend `services/backup.rs`,
+`services/backup_sftp.rs`, `commands/backup.rs`): a **Google Drive** target
+is a folder inside the Google Drive for desktop sync folder; an **SFTP**
+target is a remote directory reached with password or key auth, its host key
+pinned on first use. Runs are one-way incremental mirrors driven by a
+per-target manifest; files deleted locally move to the target's
+`.naiteh-backup/trash/` instead of being deleted; secrets live in the
+app-config dir. An auto-backup scheduler runs due targets while signed in.
+The **Compare copies** view (AppShell-level modal above Settings; palette
+"Backup: Compare copies") lines up the vault, the Drive copy and the SFTP
+copy per path (same / differs / missing), shows a line diff
+(`lib/lineDiff.ts`) for text files and restores another copy into the
+vault as a copy or, after confirmation, as a version-checked overwrite. The
+status bar shows run progress. Facts: [ipc-api.md](vault/wiki/ipc-api.md)
+"Backup targets", [vault-and-data.md](vault/wiki/vault-and-data.md) "Backup".
+
 ### 4.2 Theme
 
 naiteh ships with a **light theme** by default, inspired by **VS Code's
@@ -702,6 +721,9 @@ explicitly assign notes to past or future dates (true Agenda-style
 - Local AI providers (Ollama) — key-free, on-device AI Assist
 - Calendar subscriptions (read-only Google / iCloud / iCal feeds) in
   Calendar mode: month | day timeline | note, Add note per event, My calendars
+- Backup targets: Google Drive folder + SFTP (host-key TOFU), incremental
+  mirror with remote trash, auto backup, 3-way Compare copies with diff and
+  restore
 - AI chat in notes (port of chatgpt-md, MIT): chat-note format, Cmd/Ctrl+J
   streaming into the note, new chat / select model / infer title / clear /
   stop, agents, linked-note context, seven providers; replaced the AI

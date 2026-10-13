@@ -41,6 +41,18 @@ pinned: false
 - **Read commands off the UI thread** — read / walk commands are `async` and do
   their I/O on the blocking pool, so a large vault never freezes the window
   (see [IPC API → Threading](ipc-api.md#threading)).
+- **Backup targets**: `backup_run`, auto backup and `backup_compare` read the
+  vault **without the vault lock** (like other read-only paths: atomic renames
+  mean a reader sees the old or the new file, never a torn one). Each file is
+  read once and hashed from the same bytes that are uploaded, so the target
+  manifest always describes what was copied; a file changed mid-run is picked
+  up next run. One run per target at a time (`Conflict`). Target writes are
+  temp + rename; nothing on a target is deleted (it moves to the target's
+  trash). `backup_restore_file` fetches from the backup first, then takes the
+  vault lock for a version-checked, own-change-tagged write. Read-modify-write
+  of `backup-targets.json` is serialized by an in-process mutex never held
+  across network I/O. The scheduler's "vault changed" signal is bumped by every
+  vault-watcher batch (own or external).
 - **External change detection** — the vault folder is usually mirrored by
   Google Drive for desktop (and may be synced to a second PC), so files change
   on disk while the app runs. A Tauri-managed `VaultWatcher`

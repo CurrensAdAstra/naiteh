@@ -617,6 +617,94 @@ calendar_event_note(calendar_id: String, event_id: String, title: String, start:
   `start`'s own offset), and body `# <title>`. `NotFound` for an unknown
   `calendarId`.
 
+## Backup targets
+
+In-app backup of the vault to a **Drive** target (a folder synced by Google
+Drive for desktop) and/or an **SFTP** target, plus a compare of the copies and
+single-file restore. All commands are async and session-gated; copying runs on
+the blocking pool **without** the vault lock. Storage: [App
+Config](app-config.md#backup-targets); behaviour: [Vault &
+Data](vault-and-data.md#backup).
+
+```ts
+BackupTarget { id, kind: "drive" | "sftp", name, enabled, autoBackup: bool,
+  intervalMinutes: number /* default 30, min 5 */, lastBackupAt: number | null,
+  lastError: string | null,
+  drive?: { folder: string },
+  sftp?: { host, port, username, authMethod: "password" | "key", keyPath: string | null,
+           hasPassword: bool, hasPassphrase: bool, remoteDir, hostKeyFingerprint: string | null } }
+BackupRunResult { targetId, uploaded, trashed, unchanged, bytes, durationMs, error: string | null }
+CompareReport { generatedAt, sources: [{ id: "local" | <targetId>, name, kind, ok, error, fileCount }],
+  rows: [{ relPath, entries: { [sourceId]: { size, hash, mtime: number | null } | null },
+           status: "same" | "differs" | "missing" }] }
+```
+
+```rust
+backup_targets_list() -> Vec<BackupTarget>
+backup_drive_candidates() -> Vec<String>
+backup_target_add_drive(name, folder) -> BackupTarget
+backup_target_add_sftp(name, host, port: Option<u16>, username, auth_method, password: Option<String>,
+                       key_path: Option<String>, passphrase: Option<String>, remote_dir: Option<String>)
+    -> { target: BackupTarget, fingerprint: String }
+backup_target_confirm_host_key(id, fingerprint) -> BackupTarget
+backup_target_update(id, name?, enabled?, auto_backup?, interval_minutes?, folder?, remote_dir?,
+                     password?, passphrase?, key_path?) -> BackupTarget
+backup_target_remove(id) -> ()
+backup_test(id) -> ()
+backup_run(id: Option<String>) -> Vec<BackupRunResult>
+backup_compare(deep: bool, include_same: Option<bool>) -> CompareReport
+backup_read_file(source_id, rel_path) -> { content: string | null, size, hash, binary }
+backup_restore_file(source_id, rel_path, mode: "copy" | "overwrite", expected_version: Option<String>)
+    -> { relPath, version }
+```
+
+- **`backup_drive_candidates`**: existing `My Drive` / `내 드라이브` folders
+  under every drive-letter root (Windows), `~/Google Drive`, `~` and
+  `~/Library/CloudStorage/GoogleDrive-*` (macOS).
+- **`backup_target_add_drive`**: `folder` must be absolute; a bare "My Drive"
+  root gets `naiteh-backup/<vault name>` appended. `Validation` when the folder
+  is inside the vault or the vault is inside it (canonicalized). The folder is
+  created.
+- **`backup_target_add_sftp`**: only connects and does the SSH handshake (**no
+  credential is sent**) and returns the server's host-key fingerprint
+  (`SHA256:<base64>`, OpenSSH style). The target is saved with
+  `hostKeyFingerprint: null`, `enabled: false`. `remoteDir` empty →
+  `naiteh-backup/<vault name>` (relative to the login dir; `/…` = absolute; no
+  `..`). Password auth needs `password`; key auth needs an existing `keyPath`.
+  `Network` when the server can't be reached.
+- **`backup_target_confirm_host_key`** (trust on first use): reconnects and,
+  only if the server still presents exactly `fingerprint`, authenticates
+  (`Unauthorized` on bad credentials), creates the remote dir, then pins the
+  key and enables the target. Every later connection refuses a different key
+  with `Validation("Host key changed: …")` before authenticating.
+- **`backup_target_update`**: `""` clears `password` / `passphrase` /
+  `keyPath`; `enabled: true` is refused for an unconfirmed SFTP target;
+  `folder` / `remoteDir` are validated like on add; `intervalMinutes < 5` →
+  `Validation`. **`backup_target_remove`** never touches the backup data.
+- **`backup_test`**: connect, write / read back / delete
+  `.naiteh-backup/probe-<random>.txt`.
+- **`backup_run`**: `id: null` = every enabled, confirmed target (sequentially;
+  per-target failures land in `error`). With an id: `Conflict` when that target
+  is already running, `Validation` when its host key is unconfirmed; a failed
+  run still returns a result with `error` set (and `lastError` recorded).
+- **`backup_compare`**: sources are `local` (hashed now) and every target. A
+  Drive target is always hashed from its real files; an SFTP target is read
+  from its manifest unless `deep` (then every remote file is downloaded and
+  hashed); manifest entries have `mtime: null`. A target that can't be read is
+  `ok: false` with `error` and contributes no entries. A row is `missing` when
+  any readable source lacks the file, `differs` when hashes differ, else
+  `same`; `same` rows only with `includeSame: true`.
+- **`backup_read_file`**: `sourceId` is `local` or a target id. `content` is
+  the UTF-8 text when ≤ 2 MB; `binary` when the bytes aren't UTF-8.
+  `NotFound` when the source lacks the file; excluded paths (`.git/` …) are
+  `InvalidPath`.
+- **`backup_restore_file`**: reads from the backup first (no lock), then under
+  the vault lock: `copy` writes `<stem>.from-<slug(source name)>-<UTC
+  stamp>[-N].<ext>` beside the original; `overwrite` replaces the file only if
+  its current version equals `expectedVersion` (`null` = the file must not
+  exist), else `StaleWrite(current)`. Paths go through `resolve_in_vault`;
+  writes are own-change tagged. `sourceId` must be a target.
+
 ## Evernote import
 
 ```rust
@@ -674,7 +762,7 @@ Import behaviour (`services/evernote/`):
 
 ## Events
 
-Besides the request/response commands above, the backend pushes three kinds of
+Besides the request/response commands above, the backend pushes these kinds of
 events to every window (Tauri `emit`; the frontend subscribes with `listen`).
 Payloads are camelCase.
 
@@ -752,6 +840,13 @@ restarted — replacing the previous watcher — by `vault_set_active` and
 active (`vault_init` alone activates nothing; the frontend follows it with
 `vault_set_active`). It runs on its own OS thread, never holds the vault lock,
 and emits through the `AppHandle`.
+
+### `backup:progress` / `backup:done` — backup runs
+
+`backup:progress` `{ targetId, done, total, relPath }` while a run uploads /
+trashes (throttled to ~10 per second, always including the last item);
+`backup:done` `{ targetId, result: BackupRunResult }` after each run, manual or
+automatic.
 
 ### `ai:chat-chunk` — streamed AI reply text
 

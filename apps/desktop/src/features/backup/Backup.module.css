@@ -1,0 +1,495 @@
+/* Backup targets (Settings > Backup) and the Compare copies modal.
+ * Colors only via tokens (styles/tokens.css); status colors use
+ * --color-success / --color-warning / --color-danger. */
+
+/* ── target list ──────────────────────────────────────────── */
+
+.targetList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  width: 100%;
+  margin: 0 0 10px;
+  padding: 0;
+  list-style: none;
+}
+
+.targetRow {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-app);
+  color: var(--color-text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-ui);
+}
+
+.targetHead,
+.targetControls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.targetText {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.targetName {
+  font-weight: 600;
+}
+
+.kindLabel {
+  margin-left: 8px;
+  font-weight: 400;
+  font-size: 11px;
+  color: var(--color-text-muted);
+}
+
+.targetLoc {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.switchLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.menuHost {
+  position: relative;
+}
+
+.menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 4px);
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  min-width: 120px;
+  padding: 4px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 6px;
+  background: var(--color-bg-app);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.16);
+}
+
+.menuItem {
+  padding: 6px 10px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--color-text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-ui);
+  text-align: left;
+  cursor: pointer;
+}
+
+.menuItem:hover {
+  background: var(--color-hover);
+}
+
+.progressWrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.progress {
+  flex: 0 0 180px;
+  height: 6px;
+  accent-color: var(--color-accent);
+}
+
+.meta {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  overflow-wrap: anywhere;
+}
+
+.errorText {
+  font-size: 12px;
+  color: var(--color-danger);
+  overflow-wrap: anywhere;
+}
+
+.warnText {
+  color: var(--color-warning);
+}
+
+.confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 6px;
+  background: var(--color-bg-listpanel);
+  font-size: 12px;
+}
+
+/* ── inline add / edit panels ─────────────────────────────── */
+
+.panel {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 8px;
+  background: var(--color-bg-listpanel);
+  color: var(--color-text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-ui);
+}
+
+.panelTitle {
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.fieldset {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.fieldRow,
+.inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.inline {
+  align-items: center;
+}
+
+.fieldLabel {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.radioRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
+}
+
+.path,
+.fingerprint {
+  padding: 2px 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  background: var(--color-bg-app);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.fingerprint {
+  display: block;
+  margin: 8px 0;
+  padding: 6px 8px;
+  user-select: all;
+}
+
+/* ── compare modal ────────────────────────────────────────── */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 110;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.32);
+}
+
+.compare {
+  display: flex;
+  flex-direction: column;
+  width: min(1280px, 100%);
+  height: min(860px, 100%);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 10px;
+  background: var(--color-bg-app);
+  color: var(--color-text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-ui);
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.24);
+  overflow: hidden;
+}
+
+.compareHeader {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 16px 10px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.titleRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.source {
+  display: flex;
+  flex-direction: column;
+  padding: 6px 10px;
+  border: 1px solid var(--color-border);
+  border-left-width: 3px;
+  border-radius: 6px;
+  font-size: 12px;
+}
+
+.sourceOk {
+  border-left-color: var(--color-success);
+}
+
+.sourceErr {
+  border-left-color: var(--color-danger);
+}
+
+.toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.chip {
+  padding: 4px 10px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 999px;
+  background: var(--color-bg-app);
+  color: var(--color-text-primary);
+  font-family: var(--font-ui);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.chipOn {
+  border-color: var(--color-accent);
+  background: var(--color-selection);
+}
+
+.search {
+  min-width: 200px;
+  padding: 5px 10px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 6px;
+  background: var(--color-bg-app);
+  color: var(--color-text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--font-size-ui);
+}
+
+.body {
+  display: grid;
+  flex: 1;
+  grid-template-rows: minmax(0, 1fr) minmax(0, 1fr);
+  min-height: 0;
+}
+
+.bodySingle {
+  grid-template-rows: minmax(0, 1fr);
+}
+
+.tableWrap {
+  min-height: 0;
+  overflow: auto;
+}
+
+.table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.table th {
+  position: sticky;
+  top: 0;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--color-border-strong);
+  background: var(--color-bg-listpanel);
+  color: var(--color-text-secondary);
+  font-weight: 600;
+  text-align: left;
+}
+
+.table td {
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--color-border);
+  vertical-align: middle;
+}
+
+.row {
+  cursor: pointer;
+}
+
+.row:hover {
+  background: var(--color-hover);
+}
+
+.rowSelected,
+.rowSelected:hover {
+  background: var(--color-selection);
+}
+
+.relPath {
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.badge {
+  display: inline-block;
+  padding: 1px 6px;
+  border: 1px solid currentColor;
+  border-radius: 4px;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.same {
+  color: var(--color-success);
+}
+
+.differs {
+  color: var(--color-warning);
+}
+
+.missing {
+  color: var(--color-danger);
+}
+
+.cellMeta {
+  margin-left: 6px;
+  font-family: var(--font-mono);
+  color: var(--color-text-muted);
+}
+
+.status {
+  padding: 16px;
+  color: var(--color-text-muted);
+}
+
+.detail {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-top: 1px solid var(--color-border-strong);
+}
+
+.detailBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-bg-listpanel);
+}
+
+.select {
+  padding: 4px 8px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 6px;
+  background: var(--color-bg-app);
+  color: var(--color-text-primary);
+  font-family: var(--font-ui);
+  font-size: 12px;
+}
+
+.diff {
+  flex: 1;
+  margin: 0;
+  overflow: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.diffLine {
+  display: grid;
+  grid-template-columns: 44px 44px 16px 1fr;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.lineNo {
+  padding-right: 6px;
+  color: var(--color-text-muted);
+  text-align: right;
+  user-select: none;
+}
+
+.add {
+  color: var(--color-success);
+}
+
+.del {
+  color: var(--color-danger);
+}
+
+.binary {
+  padding: 16px;
+  font-size: 12px;
+}

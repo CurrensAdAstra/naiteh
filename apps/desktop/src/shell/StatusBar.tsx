@@ -4,6 +4,7 @@ import { stopChat } from "../lib/chatMd/chatFlow";
 import { describeSyncStatus } from "../lib/syncStatusLabel";
 import { countWords } from "../lib/wordCount";
 import { useAuthStore } from "../state/authStore";
+import { subscribeBackupEvents, useBackupStore } from "../state/backupStore";
 import { useEditorStore } from "../state/editorStore";
 import { useSyncStore } from "../state/syncStore";
 import { useUIStore } from "../state/uiStore";
@@ -25,6 +26,20 @@ export function StatusBar() {
   const chatRequest = useUIStore((s) => s.chatRequest);
   const setNotice = useUIStore((s) => s.setNotice);
   const session = useAuthStore((s) => s.session);
+  const backupRunning = useBackupStore((s) => s.running);
+  const backupProgress = useBackupStore((s) => s.progress);
+  const backupError = useBackupStore((s) => s.lastRunError);
+  const requestBackupSettings = useUIStore((s) => s.requestBackupSettings);
+
+  // Automatic backups run in the backend; follow their progress events.
+  useEffect(() => subscribeBackupEvents(), []);
+  const backupLabel = useMemo(() => {
+    const entries = Object.values(backupProgress);
+    if (entries.length === 0) return backupRunning ? "Backing up…" : null;
+    const done = entries.reduce((n, p) => n + p.done, 0);
+    const total = entries.reduce((n, p) => n + p.total, 0);
+    return `Backing up… ${done}/${total}`;
+  }, [backupProgress, backupRunning]);
 
   // Transient notices ("Unsaved edits kept as …") fade after a moment.
   useEffect(() => {
@@ -115,6 +130,28 @@ export function StatusBar() {
         >
           Save failed — retrying
         </span>
+      )}
+      {backupLabel !== null ? (
+        <span
+          className={styles.placeholder}
+          role="status"
+          data-testid="status-backup"
+        >
+          {backupLabel}
+        </span>
+      ) : (
+        backupError !== null && (
+          <button
+            type="button"
+            className={styles.linkLike}
+            onClick={requestBackupSettings}
+            title={backupError}
+            aria-label={`Backup failed: ${backupError} — open Backup settings`}
+            data-testid="status-backup-error"
+          >
+            Backup failed
+          </button>
+        )
       )}
       <button
         type="button"

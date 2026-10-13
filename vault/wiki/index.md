@@ -27,9 +27,9 @@ The wiki is eight pages: this index plus the seven below.
 | Page | Contents |
 |------|----------|
 | [Product Overview](product-overview.md) | What naiteh is, features, non-goals, tech stack |
-| [Vault & Data](vault-and-data.md) | Vault layout on disk, where a vault may live, backup (Google Drive primary), rel-path normal form, slug rules, front-matter schema |
+| [Vault & Data](vault-and-data.md) | Vault layout on disk, where a vault may live, backup (in-app Drive / SFTP targets, compare, restore), rel-path normal form, slug rules, front-matter schema |
 | [Domain Model](domain-model.md) | IPC-boundary entity types (journal, notes, timeline, sync, auth, config view, …) |
-| [IPC API](ipc-api.md) | Every Tauri command, session gate, threading, `AppError` taxonomy, sync pipeline, Evernote import, AI chat (chatgpt-md port), `ai:chat-chunk`, menu events |
+| [IPC API](ipc-api.md) | Every Tauri command, session gate, threading, `AppError` taxonomy, sync pipeline, Evernote import, AI chat (chatgpt-md port), backup targets, `ai:chat-chunk` / `backup:*` events, menu events |
 | [App Config](app-config.md) | App-level + per-vault config schema and paths (incl. appearance, HTML-paste clipping and AI providers / chat settings, legacy AI migration), IPC view vs disk, CLI hooks |
 | [Concurrency & Safety](concurrency-safety.md) | Locking, tag-index generations, autosave ordering, atomic writes, path containment, privacy boundary |
 | [Glossary](glossary.md) | Term definitions |

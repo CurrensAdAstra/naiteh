@@ -47,3 +47,7 @@ pinned: false
 | Stale write | `AppError::StaleWrite(current)`: a save with an `expectedVersion` found a different version on disk (or no file — `current` is `""`), so nothing was written; the UI re-reads and reconciles |
 | Own change | A filesystem change naiteh itself made (recorded by `services/fs.rs` in `services/own_changes.rs`, 3 s TTL); the vault watcher tags it `own: true` in `vault:changed` so the frontend can tell it from an external edit |
 | Vault watcher | The `notify`-based recursive watcher on the active vault root (`services/watcher.rs`) that emits debounced `vault:changed` batches and `vault:watch-error` — see [IPC API → Events](ipc-api.md#events) |
+| Backup target | A place the vault is mirrored to by the in-app backup: a **Drive** folder (synced by Google Drive for desktop) or an **SFTP** directory; see [Vault & Data](vault-and-data.md#backup) |
+| Backup manifest | `.naiteh-backup/manifest.json` on a target: relPath → size + SHA-256 of what was uploaded, plus the vault it mirrors |
+| Backup trash | `.naiteh-backup/trash/<stamp>/` on a target, where files deleted from the vault are moved instead of being deleted |
+| Host-key pinning (TOFU) | An SFTP target's server fingerprint (`SHA256:…`) is shown on first connect, pinned once the user confirms, and any later mismatch is refused (`Host key changed`) |

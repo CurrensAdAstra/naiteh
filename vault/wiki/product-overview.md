@@ -19,8 +19,11 @@ pinned: false
    clips are never added to your calendars, whose subscriptions stay read-only.
 3. **Local-first Markdown notes** — all data lives as plain `.md` files on the
    user's disk.
-4. **Sync / Backup** — the vault is a plain folder, and the primary backup is
-   a folder-sync service (Google Drive for desktop, see
+4. **Sync / Backup**: the vault is a plain folder. Backups are made in-app to
+   backup targets (a Google-Drive-synced folder and/or an SFTP server) as
+   incremental one-way mirrors (files deleted locally go to the target's
+   trash), manually or automatically; a compare view shows where the local
+   vault and each copy differ and restores single files (see
    [Vault & Data](vault-and-data.md#backup)). The optional built-in Sync is
    backed by Git under the hood; the UI never says "Git", only "Sync" or
    "Backup".

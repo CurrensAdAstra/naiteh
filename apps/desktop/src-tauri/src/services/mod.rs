@@ -3,6 +3,8 @@
 
 pub mod attachments;
 pub mod auth;
+pub mod backup;
+pub mod backup_sftp;
 pub mod calendar;
 pub mod chat_doc;
 pub mod config;

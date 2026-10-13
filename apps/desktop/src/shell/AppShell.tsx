@@ -2,7 +2,9 @@ import { lazy, Suspense, useRef, type CSSProperties } from "react";
 
 import { DayTimelinePane } from "../features/calendar/DayTimelinePane";
 import { ChatModelPickerHost } from "../features/chat/ChatModelPickerHost";
+import { CompareModal } from "../features/backup/CompareModal";
 import { SettingsModal } from "../features/settings/SettingsModal";
+import { useBackupStore } from "../state/backupStore";
 import { useUIStore } from "../state/uiStore";
 import { ActivityBar } from "./ActivityBar";
 import { CommandPalette } from "./CommandPalette";
@@ -34,6 +36,7 @@ export function AppShell() {
   const viewMode = useUIStore((s) => s.viewMode);
   const listPanelWidth = useUIStore((s) => s.listPanelWidth);
   const settingsOpen = useUIStore((s) => s.settingsOpen);
+  const compareOpen = useBackupStore((s) => s.compareOpen);
   // Per-vault sync refresh + last-opened restore/persist coordination.
   useWorkspaceLifecycle();
 
@@ -73,6 +76,7 @@ export function AppShell() {
       <CommandPalette />
       <ChatModelPickerHost />
       {settingsOpen && <SettingsModal />}
+      {compareOpen && <CompareModal />}
       <div className={styles.status}>
         <StatusBar />
       </div>

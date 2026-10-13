@@ -1,6 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import { useBackupStore } from "../../state/backupStore";
 import { useUIStore } from "../../state/uiStore";
 import { CommandPalette } from "../CommandPalette";
 
@@ -141,5 +142,30 @@ describe("CommandPalette", () => {
     });
 
     expect(useUIStore.getState().commandPaletteOpen).toBe(false);
+  });
+});
+
+describe("CommandPalette backup commands", () => {
+  beforeEach(() => {
+    useUIStore.setState({ commandPaletteOpen: true, settingsOpen: true });
+    useBackupStore.setState({ compareOpen: false });
+  });
+
+  it("Backup: Compare copies opens the compare view", () => {
+    render(<CommandPalette />);
+    fireEvent.click(screen.getByTestId("command-backup-compare"));
+    expect(useBackupStore.getState().compareOpen).toBe(true);
+    expect(useUIStore.getState().settingsOpen).toBe(false);
+  });
+
+  it("Backup: Back up now runs every enabled target", () => {
+    const runBackup = vi.fn(() => Promise.resolve(null));
+    useBackupStore.setState({ runBackup });
+    render(<CommandPalette />);
+    fireEvent.change(screen.getByTestId("command-palette-input"), {
+      target: { value: "back up now" },
+    });
+    fireEvent.keyDown(screen.getByTestId("command-palette-input"), { key: "Enter" });
+    expect(runBackup).toHaveBeenCalledWith(null);
   });
 });

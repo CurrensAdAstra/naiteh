@@ -114,6 +114,16 @@ impl ActiveSession {
 
     /// The signed-in session, or `Unauthorized`. Expired sessions are
     /// cleared; a live one has its idle timer refreshed.
+    /// True when someone is signed in and the session has not expired.
+    /// Unlike [`Self::require`] this does not refresh the idle timer, so
+    /// background work (the backup scheduler) never keeps a session alive.
+    pub fn is_signed_in(&self) -> bool {
+        let now = Instant::now();
+        self.lock()
+            .as_ref()
+            .is_some_and(|e| !e.times.is_expired(now))
+    }
+
     pub fn require(&self) -> Result<AuthSession, AppError> {
         self.require_at(Instant::now())
     }

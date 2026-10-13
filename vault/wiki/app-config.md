@@ -200,6 +200,7 @@ remembered-session.json  # "keep me signed in" token + 30-day expiry (login chec
 hooks/                   # user-installed CLI hooks (see below)
 calendars.json           # calendar subscriptions incl. their secret URLs (see below)
 calendar-cache/<id>.ics  # last successfully fetched body of each subscription
+backup-targets.json      # Drive / SFTP backup targets incl. SFTP password / passphrase (see below)
 ```
 
 Login attempts, session resumes, account changes and password changes are logged
@@ -225,6 +226,29 @@ seconds); `lastAttemptAt` (backend-only) is the last try, success or not. A
 cache younger than 10 minutes is reused by `calendar_events`. Only the
 `CalendarSource` view (with `urlHost`, no `url`) crosses IPC. See
 [IPC API](ipc-api.md#calendar-subscriptions).
+
+## Backup targets
+
+`backup-targets.json` (app-config dir, never in the vault):
+
+```json
+{ "targets": [ {
+  "id": "9c1e04d2a7b3f5e6", "kind": "sftp", "name": "NAS", "enabled": true,
+  "autoBackup": true, "intervalMinutes": 30,
+  "lastBackupAt": 1791000000, "lastError": null, "lastAttemptAt": 1791000000,
+  "sftp": { "host": "nas.example", "port": 22, "username": "me",
+            "authMethod": "password", "keyPath": null,
+            "password": "…", "passphrase": null,
+            "remoteDir": "naiteh-backup/notes",
+            "hostKeyFingerprint": "SHA256:…" } } ] }
+```
+
+A Drive target has `"drive": { "folder": "G:\\My Drive\\naiteh-backup\\notes" }`
+instead of `sftp`. **Secrets** (`password`, `passphrase`) are stored in plain
+text here, like the AI key, and never cross IPC: the `BackupTarget` view has
+`hasPassword` / `hasPassphrase` instead (`lastAttemptAt` is backend-only too).
+A private key stays wherever `keyPath` points. See
+[IPC API](ipc-api.md#backup-targets).
 
 ## CLI hooks
 

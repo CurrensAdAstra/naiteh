@@ -44,17 +44,41 @@ root itself is validated when it is chosen (`vault_init`, `vault_set_active`,
 ## Backup
 
 The vault folder is the complete note data (notes, journal, attachments,
-Evernote imports, `.naiteh/`), so any folder-level backup or sync copies all of
-it. **Decision (2026-10-11): the primary backup is Google Drive for desktop**,
-with the vault folder added under *My Computer* → *Sync with Google Drive*
-(or the vault placed inside *My Drive*; `G:\My Drive\…` is a valid vault
-location). The app needs no special support for this; **Settings → Backup**
-explains these steps in the app (with the active vault path and a copy
-button), and the Sync panel links there.
+Evernote imports, `.naiteh/`), so any folder-level copy contains all of it.
+**Decision (2026-10-13): backups are made in-app** to one or more **backup
+targets** (Settings → Backup), typically both:
+
+- **Drive**: a folder inside Google Drive for desktop's *My Drive* (detected
+  automatically; default `<My Drive>/naiteh-backup/<vault name>`), which Drive
+  then uploads. It must be outside the vault and must not contain it.
+- **SFTP**: a directory on an SSH server (password or private-key auth); the
+  server's host key is confirmed by the user on first connect and pinned.
+
+A backup run is a **one-way, incremental mirror**: every vault file except
+`.git/`, `.naiteh/workspace.json`, `.naiteh/sync-state.json` and temp / junk
+names (the ones the vault watcher ignores) is compared by SHA-256 against the
+target's `.naiteh-backup/manifest.json`; new and changed files are uploaded
+(temp file + rename), and files deleted from the vault are **moved** to
+`.naiteh-backup/trash/<UTC stamp>/` on the target, so backup data is never
+deleted. Conflict sidecars are user data and are copied. The manifest records
+which vault it mirrors; a run from a different vault is refused. Runs are
+manual or automatic (per target `autoBackup`, every `intervalMinutes` ≥ 5,
+only while someone is signed in and only when the vault changed since the last
+run).
+
+**Compare** lists, per file, the local vault, each Drive copy (hashed from the
+real files) and each SFTP copy (from its manifest, or downloaded and hashed in
+*deep* mode), flagging `differs` / `missing`; a file can be viewed from any
+source and **restored** from a backup as a side-by-side copy or by overwriting
+the local file (version-checked). See [IPC API](ipc-api.md#backup-targets).
 
 - **Not in the vault, so not backed up:** app config, accounts, the remembered
-  session, the AI key, hooks (the app-config dir — see
+  session, the AI key, hooks, backup-target settings (the app-config dir; see
   [App Config](app-config.md)).
+- Syncing the vault folder itself with Drive for desktop (*My Computer* →
+  *Sync with Google Drive*, or a vault inside *My Drive*) still works, but use
+  **one method per copy**: don't also aim a Drive backup target at that same
+  Drive account's copy of the vault.
 - **Built-in Sync is optional** (Git under the hood; see the sync commands in
   [IPC API](ipc-api.md)). Limits that matter with GitHub: files over 100 MB are
   rejected by GitHub (and nothing in naiteh stops one being committed, after

@@ -101,3 +101,21 @@ describe("palettes", () => {
     },
   );
 });
+
+describe("backup status colors", () => {
+  // Compare copies badges: same / differs / missing.
+  it.each(PALETTES.filter((p) => p.id !== "default").map((p) => [p.id, p] as const))(
+    "%s defines success, warning and danger",
+    (_id, p) => {
+      for (const t of ["--color-success", "--color-warning", "--color-danger"]) {
+        expect((p.vars as Record<string, string>)[t]).toMatch(/^#[0-9a-f]{6}$/);
+      }
+    },
+  );
+
+  it("are palette tokens (declared in tokens.css)", () => {
+    for (const t of ["--color-success", "--color-warning", "--color-danger"]) {
+      expect(PALETTE_TOKENS).toContain(t);
+    }
+  });
+});

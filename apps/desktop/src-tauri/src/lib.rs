@@ -242,6 +242,8 @@ pub fn run() {
         .manage(services::llm::ChatRequests::default())
         .setup(|app| {
             services::watcher::restart_for_active_vault(app.handle());
+            // Auto backup to Drive / SFTP targets (services::backup).
+            commands::backup::start_scheduler(app.handle().clone());
             Ok(())
         })
         // Every command except auth_login / auth_resume / auth_logout is
@@ -319,6 +321,18 @@ pub fn run() {
             commands::calendar::calendar_events,
             commands::calendar::calendar_refresh,
             commands::calendar::calendar_event_note,
+            commands::backup::backup_targets_list,
+            commands::backup::backup_drive_candidates,
+            commands::backup::backup_target_add_drive,
+            commands::backup::backup_target_add_sftp,
+            commands::backup::backup_target_confirm_host_key,
+            commands::backup::backup_target_update,
+            commands::backup::backup_target_remove,
+            commands::backup::backup_test,
+            commands::backup::backup_run,
+            commands::backup::backup_compare,
+            commands::backup::backup_read_file,
+            commands::backup::backup_restore_file,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -404,6 +418,7 @@ mod tests {
             "ai" => include_str!("commands/ai.rs"),
             "attachments" => include_str!("commands/attachments.rs"),
             "auth" => include_str!("commands/auth.rs"),
+            "backup" => include_str!("commands/backup.rs"),
             "calendar" => include_str!("commands/calendar.rs"),
             "evernote" => include_str!("commands/evernote.rs"),
             "journal" => include_str!("commands/journal.rs"),
