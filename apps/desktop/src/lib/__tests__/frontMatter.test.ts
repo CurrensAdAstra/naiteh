@@ -206,4 +206,53 @@ describe("frontMatter", () => {
       expect(removeTagFromContent(before, "missing")).toBe(before);
     });
   });
+
+  describe("block-list tags", () => {
+    const block = '---\ntitle: T\ntags:\n    - one\n    - "two words"\n    - \'it\'\'s\'\npinned: true\n---\nbody';
+
+    it("reads block lists (indented or not, quoted items)", () => {
+      expect(getTagsFromContent(block)).toEqual(["one", "two words", "it's"]);
+      expect(getTagsFromContent("---\ntags:\n- a\n\n# c\n- b\nx: 1\n---\n")).toEqual(["a", "b"]);
+    });
+
+    it("reads CRLF block lists", () => {
+      expect(getTagsFromContent("---\r\ntags:\r\n  - a\r\n  - b\r\n---\r\nbody")).toEqual([
+        "a",
+        "b",
+      ]);
+    });
+
+    it("addTag keeps block style and indent", () => {
+      expect(addTagToContent(block, "new")).toBe(
+        '---\ntitle: T\ntags:\n    - one\n    - "two words"\n    - "it\'s"\n    - new\npinned: true\n---\nbody',
+      );
+    });
+
+    it("removeTag keeps block style; removing the last drops the entry", () => {
+      const doc = "---\r\ntags:\r\n  - a\r\n  - b\r\nx: 1\r\n---\r\nbody";
+      expect(removeTagFromContent(doc, "a")).toBe("---\r\ntags:\r\n  - b\r\nx: 1\r\n---\r\nbody");
+      expect(setTagsInContent(doc, [])).toBe("---\r\nx: 1\r\n---\r\nbody");
+    });
+
+    it("flow lists stay flow and new entries are flow", () => {
+      expect(addTagToContent("---\ntags: [a]\n---\n", "b")).toBe("---\ntags: [a, b]\n---\n");
+      expect(addTagToContent("---\ntitle: x\n---\n", "b")).toBe(
+        "---\ntitle: x\ntags: [b]\n---\n",
+      );
+    });
+
+    it("flow lists honour quoted commas and escapes", () => {
+      expect(getTagsFromContent('---\ntags: ["a, b", \'c\', "q\\"x"]\n---\n')).toEqual([
+        "a, b",
+        "c",
+        'q"x',
+      ]);
+    });
+
+    it("pinned and other fields are untouched by tag edits", () => {
+      const out = addTagToContent(block, "z");
+      expect(isPinnedInContent(out)).toBe(true);
+      expect(setPinnedInContent(out, false)).toContain("    - z\npinned: false");
+    });
+  });
 });

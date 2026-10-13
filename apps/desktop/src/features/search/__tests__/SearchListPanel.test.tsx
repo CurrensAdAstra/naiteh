@@ -48,6 +48,27 @@ describe("SearchListPanel", () => {
   });
 
   it(
+    "asks for at least 2 characters and does not search a 1-character query",
+    async () => {
+      mockedSearch.mockResolvedValue([]);
+      const user = userEvent.setup();
+      render(<SearchListPanel />);
+      await user.type(screen.getByTestId("search-input"), " a ");
+      expect(screen.getByTestId("search-too-short")).toHaveTextContent(
+        "Type at least 2 characters",
+      );
+      await new Promise((r) => setTimeout(r, 400));
+      expect(mockedSearch).not.toHaveBeenCalled();
+      await user.type(screen.getByTestId("search-input"), "b");
+      await waitFor(() => expect(mockedSearch).toHaveBeenCalledWith("a b", 100), {
+        timeout: 1500,
+      });
+      expect(screen.queryByTestId("search-too-short")).not.toBeInTheDocument();
+    },
+    3000,
+  );
+
+  it(
     "debounces typing and dispatches a single trimmed query",
     async () => {
       mockedSearch.mockResolvedValue([]);

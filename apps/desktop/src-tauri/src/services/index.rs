@@ -26,12 +26,24 @@
 //! still current. Otherwise it rescans (a few times) and, if writes keep
 //! racing, serves its result uncached.
 //!
+//! ## Search content cache
+//!
+//! `search_text` reads note *contents*, which the snapshot doesn't hold.
+//! [`ContentCache`] keeps each searched file's text and its lowercased
+//! form in memory, keyed by `(rel_path, mtime, size)`, so a repeat search
+//! only re-reads files whose metadata changed. It is memory-only on
+//! purpose: a disk copy under `.naiteh/` would duplicate every note into
+//! Drive / Git sync and backups. It holds one vault at a time (switching
+//! vaults drops it) and is pruned to the snapshot's files on every use.
+//! Being keyed on file metadata, it needs no invalidation by writes.
+//!
 //! `TagIndex` is a cheap `Clone` handle (shared `Arc` inside) so async
 //! commands can move it into a `spawn_blocking` closure.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
+use std::time::SystemTime;
 
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone};
 
@@ -45,6 +57,83 @@ const MAX_BUILD_ATTEMPTS: usize = 3;
 #[derive(Default, Clone)]
 pub struct TagIndex {
     inner: Arc<StdMutex<HashMap<PathBuf, Slot>>>,
+    contents: Arc<StdMutex<ContentCache>>,
+}
+
+/// A file's text plus its lowercased form (lowercased once per read).
+#[derive(Debug)]
+pub struct CachedText {
+    pub text: String,
+    pub lower: String,
+}
+
+struct ContentEntry {
+    mtime: Option<SystemTime>,
+    size: u64,
+    text: Arc<CachedText>,
+}
+
+/// In-memory search content cache for one vault; see the module docs.
+#[derive(Default)]
+pub struct ContentCache {
+    vault: Option<PathBuf>,
+    entries: HashMap<String, ContentEntry>,
+    /// Files read from disk (cache misses) since creation; for tests.
+    reads: u64,
+}
+
+impl ContentCache {
+    /// The text of `abs` (vault-relative `rel_path`), from memory when
+    /// its mtime and size are unchanged, else read fresh. `None` (and the
+    /// entry dropped) when the file can't be read.
+    pub fn get(&mut self, rel_path: &str, abs: &Path) -> Option<Arc<CachedText>> {
+        let Ok(md) = std::fs::metadata(abs) else {
+            self.entries.remove(rel_path);
+            return None;
+        };
+        let (mtime, size) = (md.modified().ok(), md.len());
+        if let Some(e) = self.entries.get(rel_path) {
+            if e.mtime == mtime && e.size == size && mtime.is_some() {
+                return Some(e.text.clone());
+            }
+        }
+        self.reads += 1;
+        let Ok(text) = std::fs::read_to_string(abs) else {
+            self.entries.remove(rel_path);
+            return None;
+        };
+        let lower = text.to_lowercase();
+        let text = Arc::new(CachedText { text, lower });
+        self.entries.insert(
+            rel_path.to_string(),
+            ContentEntry {
+                mtime,
+                size,
+                text: text.clone(),
+            },
+        );
+        Some(text)
+    }
+
+    /// Drop entries for files no longer in the index (deleted, renamed).
+    pub fn retain(&mut self, keep: impl Fn(&str) -> bool) {
+        self.entries.retain(|k, _| keep(k));
+    }
+
+    #[cfg(test)]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    #[cfg(test)]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    #[cfg(test)]
+    pub fn reads(&self) -> u64 {
+        self.reads
+    }
 }
 
 #[derive(Default)]
@@ -200,6 +289,18 @@ impl TagIndex {
         let slot = map.entry(key).or_default();
         slot.generation = slot.generation.wrapping_add(1);
         slot.snapshot = None;
+    }
+
+    /// Run `f` with the search content cache for `vault_root`. The cache
+    /// holds a single vault: a different root empties it first.
+    pub fn with_contents<R>(&self, vault_root: &Path, f: impl FnOnce(&mut ContentCache) -> R) -> R {
+        let key = canonical_or_owned(vault_root);
+        let mut cache = self.contents.lock().unwrap_or_else(|p| p.into_inner());
+        if cache.vault.as_deref() != Some(key.as_path()) {
+            cache.entries.clear();
+            cache.vault = Some(key);
+        }
+        f(&mut cache)
     }
 
     fn lock_map(&self) -> std::sync::MutexGuard<'_, HashMap<PathBuf, Slot>> {
@@ -465,6 +566,73 @@ created: 2026-05-09
         assert_eq!(plain.doc_kind, DocKind::Note);
         assert_eq!(plain.source_host, None);
         assert!(matches!(plain.created, Some(Created::Date(_))));
+    }
+
+    #[test]
+    fn block_list_tags_are_indexed() {
+        let v = tempdir().unwrap();
+        fsx::atomic_write(
+            &v.path().join("notes/obs.md"),
+            b"---\r\ntags:\r\n  - alpha\r\n  - \"beta gamma\"\r\npinned: true\r\n---\r\nbody",
+        )
+        .unwrap();
+        let snap = TagIndex::default().get_or_build(v.path()).unwrap();
+        assert_eq!(snap.notes[0].meta.tags, vec!["alpha", "beta gamma"]);
+        assert!(snap.notes[0].meta.pinned);
+    }
+
+    #[test]
+    fn content_cache_hits_rereads_changed_and_drops_deleted() {
+        let v = tempdir().unwrap();
+        let abs = v.path().join("notes/a.md");
+        fsx::atomic_write(&abs, b"Hello").unwrap();
+        let idx = TagIndex::default();
+        idx.with_contents(v.path(), |c| {
+            assert_eq!(c.get("notes/a.md", &abs).unwrap().lower, "hello");
+            assert_eq!(c.get("notes/a.md", &abs).unwrap().text, "Hello");
+            assert_eq!(c.reads(), 1, "second get is a hit");
+        });
+        // A changed size (and mtime) forces a re-read.
+        fsx::atomic_write(&abs, b"Hello World").unwrap();
+        let mtime = std::fs::metadata(&abs).unwrap().modified().unwrap();
+        idx.with_contents(v.path(), |c| {
+            assert_eq!(c.get("notes/a.md", &abs).unwrap().lower, "hello world");
+            assert_eq!(c.reads(), 2);
+        });
+        // Same size, new mtime: also re-read.
+        fsx::atomic_write(&abs, b"HELLO WORLD").unwrap();
+        let f = std::fs::File::options().write(true).open(&abs).unwrap();
+        f.set_modified(mtime + std::time::Duration::from_secs(5))
+            .unwrap();
+        drop(f);
+        idx.with_contents(v.path(), |c| {
+            assert_eq!(c.get("notes/a.md", &abs).unwrap().text, "HELLO WORLD");
+            assert_eq!(c.reads(), 3);
+        });
+        std::fs::remove_file(&abs).unwrap();
+        idx.with_contents(v.path(), |c| {
+            assert!(c.get("notes/a.md", &abs).is_none());
+            assert!(c.is_empty(), "deleted file dropped");
+        });
+    }
+
+    #[test]
+    fn content_cache_is_dropped_on_vault_switch_and_pruned() {
+        let v1 = tempdir().unwrap();
+        let v2 = tempdir().unwrap();
+        let a = v1.path().join("notes/a.md");
+        let b = v1.path().join("notes/b.md");
+        fsx::atomic_write(&a, b"a").unwrap();
+        fsx::atomic_write(&b, b"b").unwrap();
+        let idx = TagIndex::default();
+        idx.with_contents(v1.path(), |c| {
+            c.get("notes/a.md", &a);
+            c.get("notes/b.md", &b);
+            c.retain(|rel| rel == "notes/a.md");
+            assert_eq!(c.len(), 1);
+        });
+        idx.with_contents(v2.path(), |c| assert!(c.is_empty()));
+        idx.with_contents(v1.path(), |c| assert!(c.is_empty()));
     }
 
     #[test]

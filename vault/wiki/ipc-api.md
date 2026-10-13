@@ -187,6 +187,14 @@ already be in the normal form described in
 [Vault & Data → Vault-relative paths](vault-and-data.md#vault-relative-paths);
 nothing is silently "fixed up".
 
+- **`notes_list` reads the index.** For `rel_dir` = `None` (meaning `notes/`)
+  or any folder under `notes/` or `journal/`, the `NoteMeta`s come from the
+  in-memory index snapshot (`services/index.rs`, invalidated by writes and
+  the file watcher), filtered to that folder and sorted by `relPath` — no
+  per-call file reads. Other folders (e.g. `agents/`) fall back to a walk
+  that reads each file. Empty folders come from `notes_list_dirs`, a pure
+  directory walk.
+
 - **Versions / conflict-safe writes.** A `version` is the lowercase hex
   SHA-256 of the file's bytes on disk (`services/notes.rs` `file_version`).
   `notes_read` returns the version of what it read; `notes_write` with
@@ -235,6 +243,21 @@ hit per matching line (`line` is 1-based, `excerpt` is the trimmed line cut to
 Content edits are seen immediately; a file created outside the app appears
 after the next index invalidation, and a file deleted since the index was built
 is skipped.
+
+Contents come from an **in-memory** cache (`services::index::ContentCache`)
+keyed by `(relPath, mtime, size)` that holds each file's text and its
+lowercased form, so a repeat search re-reads (and re-lowercases) only files
+whose mtime or size changed. It holds one vault (switching vaults drops it), is
+pruned to the index snapshot's files on every search, and is never written to
+disk — a copy under `.naiteh/` would spread every note into Drive / Git sync
+and backups. Results are identical to an uncached scan.
+
+The Search panel only calls `search_text` once the trimmed query has at least
+**2 characters** (shorter input shows "Type at least 2 characters"), after a
+250 ms debounce.
+
+Tags come from front matter in either flow (`tags: [a, b]`) or block-list
+(`tags:` + `- a` lines) form; see vault-and-data.md, "Front-matter schema".
 
 ## Threading
 

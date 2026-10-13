@@ -192,15 +192,37 @@ accepted (files edited on Windows), and the closing `---` may be the last line
 with no trailing newline. When the app rewrites the block (pin toggle, tag
 edits) it keeps the file's line ending.
 
+**Supported YAML subset.** One reader (`services::notes::parse_yaml_map`) serves
+notes, the index, search and chat notes; the editor's `lib/frontMatter.ts`
+mirrors it:
+
+- `key: scalar` — double-quoted values are unescaped (the inverse of the
+  writer's quoting), single-quoted values collapse `''`, others are trimmed;
+- flow lists `key: [a, "b, c", 'd']` (quote-aware);
+- block lists (Obsidian style) — `key:` followed by `- item` lines, indented
+  or not; blank and `#` comment lines are skipped;
+- nested maps and other indented lines are ignored.
+
+So `tags:` may be written either way:
+
+```yaml
+tags:
+  - work
+  - "two words"
+```
+
+Tag edits in the editor keep the existing style (a block list stays a block
+list with the same item indent; a flow list stays flow); a new `tags` entry is
+written as a flow list. A scalar `tags: work` is not a list and yields no tags.
+
 When front matter is absent, `title` falls back to the first H1 or the filename,
 and timestamps fall back to filesystem mtime.
 
-> **What v1 actually reads.** The note parser (`services/notes.rs`) consumes only
-> `title`, `tags`, and `pinned`. `created` / `updated` may be *written* (e.g. by
-> the Evernote importer) but are **not** read back — the timeline always uses
-> filesystem mtime, not these fields. The Evernote importer also writes
-> `source_url`, `author`, `imported_from: evernote` and `import_warnings` (a
-> block list); naiteh ignores them when reading.
+> **What v1 actually reads.** The note parser (`services/notes.rs`) consumes
+> `title`, `tags`, `pinned`, `event_id`, `created`, `source_url`, `clip_type` and
+> `imported_from` (the last four classify web clippings and date timeline
+> entries; see `services/index.rs`). `updated`, `author` and `import_warnings`
+> are written by the Evernote importer but ignored when reading.
 
 A future field `date: YYYY-MM-DD` is reserved for v1.5 (assign arbitrary notes to
 specific calendar days, Agenda-style). v1 does not implement this — only journal

@@ -6,7 +6,6 @@
 //! strings) plus link expansion, which reads vault files. Nothing here
 //! touches the network or the vault lock.
 
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::domain::AppError;
@@ -24,90 +23,15 @@ pub const MAX_LINKS: usize = 10;
 
 // ── front matter ────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum FmValue {
-    Scalar(String),
-    List(Vec<String>),
-}
-
-pub type FrontMatterMap = BTreeMap<String, FmValue>;
+pub use crate::services::notes::{FmValue, FrontMatterMap};
 
 /// Split `content` into its front-matter map and the body after it.
+/// Uses the shared reader, `notes::parse_yaml_map`.
 pub fn split_document(content: &str) -> (FrontMatterMap, &str) {
     match notes::split_front_matter(content) {
-        Some(parts) => (parse_yaml_map(parts.header), parts.body),
+        Some(parts) => (notes::parse_yaml_map(parts.header), parts.body),
         None => (FrontMatterMap::new(), content),
     }
-}
-
-/// A small YAML subset: `key: scalar`, `key: [a, "b"]` and
-/// `key:` followed by `- item` lines. Nested maps are ignored.
-fn parse_yaml_map(header: &str) -> FrontMatterMap {
-    let mut map = FrontMatterMap::new();
-    let mut list_key: Option<String> = None;
-    for line in header.lines() {
-        let line = line.trim_end_matches('\r');
-        let t = line.trim();
-        if t.is_empty() || t.starts_with('#') {
-            continue;
-        }
-        if let Some(item) = t.strip_prefix("- ").or((t == "-").then_some("")) {
-            if let Some(FmValue::List(v)) = list_key.as_ref().and_then(|k| map.get_mut(k)) {
-                let item = notes::parse_scalar(item);
-                if !item.is_empty() {
-                    v.push(item);
-                }
-            }
-            continue;
-        }
-        if line.starts_with(char::is_whitespace) {
-            continue;
-        }
-        list_key = None;
-        let Some((k, v)) = line.split_once(':') else {
-            continue;
-        };
-        let key = k.trim().to_string();
-        let v = v.trim();
-        if v.is_empty() {
-            map.insert(key.clone(), FmValue::List(Vec::new()));
-            list_key = Some(key);
-        } else if v.len() >= 2 && v.starts_with('[') && v.ends_with(']') {
-            map.insert(key, FmValue::List(split_inline_list(&v[1..v.len() - 1])));
-        } else {
-            map.insert(key, FmValue::Scalar(notes::parse_scalar(v)));
-        }
-    }
-    map
-}
-
-fn split_inline_list(inner: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut cur = String::new();
-    let mut quote: Option<char> = None;
-    let mut push = |cur: &mut String| {
-        let v = notes::parse_scalar(cur);
-        if !v.is_empty() {
-            out.push(v);
-        }
-        cur.clear();
-    };
-    for c in inner.chars() {
-        match (quote, c) {
-            (None, '"' | '\'') => {
-                quote = Some(c);
-                cur.push(c);
-            }
-            (Some(q), _) if c == q => {
-                quote = None;
-                cur.push(c);
-            }
-            (None, ',') => push(&mut cur),
-            _ => cur.push(c),
-        }
-    }
-    push(&mut cur);
-    out
 }
 
 // ── messages ────────────────────────────────────────────────────────

@@ -101,6 +101,24 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn block_list_tags_reach_tags_list_and_tags_notes() {
+        let v = tempdir().unwrap();
+        fsx::atomic_write(
+            &v.path().join("notes/obs.md"),
+            b"---\r\ntags:\r\n  - obs\r\n  - \"two words\"\r\n---\r\nbody",
+        )
+        .unwrap();
+        fsx::atomic_write(&v.path().join("notes/flow.md"), b"---\ntags: [obs]\n---\n").unwrap();
+        let list = tags_list_impl(v.path()).unwrap();
+        assert_eq!(list[0].tag, "obs");
+        assert_eq!(list[0].count, 2);
+        assert!(list.iter().any(|t| t.tag == "two words"));
+        let notes = tags_notes_impl(v.path(), "two words").unwrap();
+        assert_eq!(notes.len(), 1);
+        assert_eq!(notes[0].rel_path, "notes/obs.md");
+    }
+
+    #[test]
     fn tags_list_returns_empty_for_empty_vault() {
         let v = tempdir().unwrap();
         assert!(tags_list_impl(v.path()).unwrap().is_empty());

@@ -34,20 +34,58 @@ pub(crate) fn fire_note_saved(vault_root: &Path, rel_path: &str) {
 
 // ── notes_list ────────────────────────────────────────────────────────────
 
+/// Metadata comes from the in-memory index snapshot (`services::index`,
+/// invalidated by every write and by the file watcher) instead of
+/// re-reading every file per call. Folders the index doesn't cover
+/// (anything outside `notes/` and `journal/`) still fall back to a walk.
 #[tauri::command]
 pub async fn notes_list(
     active: tauri::State<'_, ActiveSession>,
+    index: tauri::State<'_, TagIndex>,
     rel_dir: Option<String>,
 ) -> Result<Vec<NoteMeta>, AppError> {
     require_session(&active)?;
+    let index = index.inner().clone();
     fsx::run_blocking(move || {
         let vault_root = config::current_vault_root()?;
-        notes_list_impl(&vault_root, rel_dir.as_deref())
+        notes_list_indexed(&vault_root, &index, rel_dir.as_deref())
     })
     .await
 }
 
-fn notes_list_impl(vault_root: &Path, rel_dir: Option<&str>) -> Result<Vec<NoteMeta>, AppError> {
+fn notes_list_indexed(
+    vault_root: &Path,
+    index: &TagIndex,
+    rel_dir: Option<&str>,
+) -> Result<Vec<NoteMeta>, AppError> {
+    let rel = match rel_dir {
+        Some(rel) => {
+            // Same validation (and errors) as the walk.
+            notes::resolve_in_vault(vault_root, rel)?;
+            notes::normalize_rel_path(rel)?
+        }
+        None => "notes".to_string(),
+    };
+    let indexed = ["notes", "journal"]
+        .iter()
+        .any(|top| rel == *top || rel.starts_with(&format!("{top}/")));
+    if !indexed {
+        return notes_list_walk(vault_root, rel_dir);
+    }
+    let prefix = format!("{rel}/");
+    let snap = index.get_or_build(vault_root)?;
+    let mut metas: Vec<NoteMeta> = snap
+        .notes
+        .iter()
+        .filter(|d| d.meta.rel_path.starts_with(&prefix))
+        .map(|d| d.meta.clone())
+        .collect();
+    metas.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+    Ok(metas)
+}
+
+/// The pre-index implementation: walk `rel_dir` and read every file.
+fn notes_list_walk(vault_root: &Path, rel_dir: Option<&str>) -> Result<Vec<NoteMeta>, AppError> {
     let scan_root = match rel_dir {
         Some(rel) => notes::resolve_in_vault(vault_root, rel)?,
         None => vault_root.join("notes"),
@@ -59,6 +97,11 @@ fn notes_list_impl(vault_root: &Path, rel_dir: Option<&str>) -> Result<Vec<NoteM
         .collect();
     metas.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
     Ok(metas)
+}
+
+#[cfg(test)]
+fn notes_list_impl(vault_root: &Path, rel_dir: Option<&str>) -> Result<Vec<NoteMeta>, AppError> {
+    notes_list_indexed(vault_root, &TagIndex::default(), rel_dir)
 }
 
 // ── notes_read ────────────────────────────────────────────────────────────
@@ -494,6 +537,58 @@ mod tests {
         let v = vault();
         let list = notes_list_impl(v.path(), None).unwrap();
         assert!(list.is_empty());
+    }
+
+    #[test]
+    fn notes_list_from_index_equals_the_walk() {
+        let v = vault();
+        let files: &[(&str, &[u8])] = &[
+            (
+                "notes/_inbox/a.md",
+                b"---\ntitle: A\ntags:\n  - x\n  - y\npinned: true\n---\nbody",
+            ),
+            ("notes/b.md", b"# Heading B\ntext"),
+            (
+                "notes/work/q1/c.md",
+                b"---\r\ntags: [p, \"q, r\"]\r\n---\r\nc",
+            ),
+            ("notes/work/d.md", b""),
+            ("notes/work/skip.txt", b"not md"),
+            (
+                "journal/2026/05/2026-05-09.md",
+                b"---\ntags: [daily]\n---\nday",
+            ),
+            ("agents/helper.md", b"---\ntitle: Helper\n---\n"),
+        ];
+        for (rel, bytes) in files {
+            fsx::atomic_write(&v.path().join(rel), bytes).unwrap();
+        }
+        std::fs::create_dir_all(v.path().join("notes/empty")).unwrap();
+        let idx = TagIndex::default();
+        for dir in [
+            None,
+            Some("notes"),
+            Some("notes/work"),
+            Some("notes/work/"),
+            Some("notes/work/q1"),
+            Some("notes/empty"),
+            Some("notes/missing"),
+            Some("journal"),
+            Some("agents"),
+        ] {
+            let fast = notes_list_indexed(v.path(), &idx, dir).unwrap();
+            let slow = notes_list_walk(v.path(), dir).unwrap();
+            assert_eq!(fast, slow, "rel_dir {dir:?}");
+        }
+        let all = notes_list_indexed(v.path(), &idx, None).unwrap();
+        assert_eq!(all.len(), 4, "journal and agents excluded by default");
+        let a = all
+            .iter()
+            .find(|m| m.rel_path == "notes/_inbox/a.md")
+            .unwrap();
+        assert_eq!(a.tags, vec!["x", "y"]);
+        assert!(a.pinned);
+        assert!(notes_list_indexed(v.path(), &idx, Some("../x")).is_err());
     }
 
     // ── folder management ─────────────────────────────────────────────

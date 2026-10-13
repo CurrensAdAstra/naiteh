@@ -11,6 +11,8 @@ import styles from "./SearchListPanel.module.css";
 
 const DEBOUNCE_MS = 250;
 const RESULT_LIMIT = 100;
+/** Shorter queries match nearly every line and only cost a full scan. */
+export const MIN_QUERY_LENGTH = 2;
 
 export function SearchListPanel() {
   const [query, setQuery] = useState("");
@@ -25,7 +27,7 @@ export function SearchListPanel() {
 
   useEffect(() => {
     const trimmed = query.trim();
-    if (trimmed === "") {
+    if (Array.from(trimmed).length < MIN_QUERY_LENGTH) {
       setHits([]);
       setHasSearched(false);
       setError(null);
@@ -64,7 +66,8 @@ export function SearchListPanel() {
   }
 
   const trimmed = query.trim();
-  const showStatus = trimmed !== "" && (searching || hasSearched);
+  const tooShort = trimmed !== "" && Array.from(trimmed).length < MIN_QUERY_LENGTH;
+  const showStatus = trimmed !== "" && !tooShort && (searching || hasSearched);
 
   return (
     <div className={styles.panel} data-testid="list-panel-search">
@@ -88,6 +91,11 @@ export function SearchListPanel() {
         {error === null && trimmed === "" && (
           <p className={styles.empty}>Type to search note bodies.</p>
         )}
+        {error === null && tooShort && (
+          <p className={styles.empty} data-testid="search-too-short">
+            Type at least {MIN_QUERY_LENGTH} characters.
+          </p>
+        )}
         {error === null && showStatus && (
           <div className={styles.statusRow} data-testid="search-status">
             {searching
@@ -97,7 +105,7 @@ export function SearchListPanel() {
                 : `${hits.length} match${hits.length === 1 ? "" : "es"}`}
           </div>
         )}
-        {error === null && !searching && hits.length > 0 && (
+        {error === null && !tooShort && !searching && hits.length > 0 && (
           <ul className={styles.list} data-testid="search-results">
             {hits.map((hit, index) => {
               const isActive = hit.relPath === openRelPath;

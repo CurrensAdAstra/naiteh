@@ -37,7 +37,11 @@ pinned: false
   `invalidate` bumps, and a rebuild installs its snapshot only if the
   generation it started from is still current. Otherwise it rescans (up to 3
   attempts) and, if writes keep racing, serves its last scan uncached — a stale
-  snapshot is never cached.
+  snapshot is never cached. `notes_list` (for `notes/` and `journal/`) reads
+  the same snapshot. `search_text`'s in-memory content cache needs no
+  invalidation: entries are keyed by file mtime + size and re-read when
+  either changes (a same-size rewrite within the filesystem's mtime
+  resolution is the one blind spot).
 - **Read commands off the UI thread** — read / walk commands are `async` and do
   their I/O on the blocking pool, so a large vault never freezes the window
   (see [IPC API → Threading](ipc-api.md#threading)).

@@ -3,6 +3,7 @@
 //! containment, slugs. See vault/wiki/vault-and-data.md and
 //! vault/wiki/domain-model.md ("Notes").
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
@@ -134,40 +135,91 @@ pub fn parse_front_matter(content: &str) -> (FrontMatter, &str) {
     }
 }
 
-fn parse_header(header: &str) -> FrontMatter {
-    let mut out = FrontMatter::default();
+/// A front-matter value as read by [`parse_yaml_map`].
+#[derive(Debug, Clone, PartialEq)]
+pub enum FmValue {
+    Scalar(String),
+    List(Vec<String>),
+}
+
+/// Parsed front matter: key → value (last occurrence of a key wins).
+pub type FrontMatterMap = BTreeMap<String, FmValue>;
+
+/// The one front-matter reader shared by notes, the index, search and
+/// chat notes (see vault/wiki/vault-and-data.md, "Front matter"). A
+/// small YAML subset:
+///
+/// - `key: scalar` — quoted scalars are unescaped by [`parse_scalar`]
+///   (the exact inverse of [`yaml_quote`]);
+/// - `key: [a, "b, c"]` — flow lists, quote-aware;
+/// - `key:` followed by `- item` lines (indented or not) — block lists;
+/// - `key:` with nothing after it — an empty list.
+///
+/// CRLF line endings, blank lines and `#` comments are tolerated; other
+/// indented lines (nested maps) are ignored.
+pub fn parse_yaml_map(header: &str) -> FrontMatterMap {
+    let mut map = FrontMatterMap::new();
+    let mut list_key: Option<String> = None;
     for line in header.lines() {
-        let Some((key, value)) = line.split_once(':') else {
+        let line = line.trim_end_matches('\r');
+        let t = line.trim();
+        if t.is_empty() || t.starts_with('#') {
+            continue;
+        }
+        if let Some(item) = t.strip_prefix("- ").or((t == "-").then_some("")) {
+            if let Some(FmValue::List(v)) = list_key.as_ref().and_then(|k| map.get_mut(k)) {
+                let item = parse_scalar(item);
+                if !item.is_empty() {
+                    v.push(item);
+                }
+            }
+            continue;
+        }
+        if line.starts_with(char::is_whitespace) {
+            continue;
+        }
+        list_key = None;
+        let Some((k, v)) = line.split_once(':') else {
             continue;
         };
-        let key = key.trim();
-        let value = value.trim();
-        match key {
-            "title" => out.title = Some(parse_scalar(value)),
-            "tags" => out.tags = parse_array(value),
-            "pinned" => out.pinned = value.eq_ignore_ascii_case("true"),
-            "event_id" => {
-                let id = parse_scalar(value);
-                if !id.is_empty() {
-                    out.event_id = Some(id);
-                }
-            }
-            "created" | "source_url" | "imported_from" => {
-                let v = parse_scalar(value);
-                if !v.is_empty() {
-                    let slot = match key {
-                        "created" => &mut out.created,
-                        "source_url" => &mut out.source_url,
-                        _ => &mut out.imported_from,
-                    };
-                    *slot = Some(v);
-                }
-            }
-            "clip_type" => out.clip_type = !parse_scalar(value).is_empty(),
-            _ => {}
+        let key = k.trim().to_string();
+        let v = v.trim();
+        if v.is_empty() {
+            map.insert(key.clone(), FmValue::List(Vec::new()));
+            list_key = Some(key);
+        } else if v.len() >= 2 && v.starts_with('[') && v.ends_with(']') {
+            map.insert(key, FmValue::List(parse_array(v)));
+        } else {
+            map.insert(key, FmValue::Scalar(parse_scalar(v)));
         }
     }
-    out
+    map
+}
+
+fn parse_header(header: &str) -> FrontMatter {
+    let map = parse_yaml_map(header);
+    let scalar = |k: &str| match map.get(k) {
+        Some(FmValue::Scalar(s)) => Some(s.as_str()),
+        _ => None,
+    };
+    let non_empty = |k: &str| scalar(k).filter(|s| !s.is_empty()).map(str::to_string);
+    FrontMatter {
+        title: scalar("title").map(str::to_string),
+        tags: match map.get("tags") {
+            Some(FmValue::List(v)) => v.clone(),
+            _ => Vec::new(),
+        },
+        pinned: scalar("pinned").is_some_and(|v| v.eq_ignore_ascii_case("true")),
+        event_id: non_empty("event_id"),
+        created: non_empty("created"),
+        source_url: non_empty("source_url"),
+        clip_type: match map.get("clip_type") {
+            Some(FmValue::Scalar(s)) => !s.is_empty(),
+            Some(FmValue::List(v)) => !v.is_empty(),
+            None => false,
+        },
+        imported_from: non_empty("imported_from"),
+    }
 }
 
 /// Quote a YAML scalar as a double-quoted string. Escapes `\`, `"`,
@@ -978,6 +1030,37 @@ mod tests {
     fn parse_front_matter_handles_single_quoted_title() {
         let (fm, _) = parse_front_matter("---\ntitle: 'It''s'\n---\n");
         assert_eq!(fm.title.as_deref(), Some("It's"));
+    }
+
+    #[test]
+    fn parse_front_matter_reads_block_list_tags() {
+        let input = "---\r\ntitle: T\r\ntags:\r\n  - work\r\n  - \"a, b\"\r\n  - 'it''s'\r\npinned: true\r\n---\r\nbody";
+        let (fm, body) = parse_front_matter(input);
+        assert_eq!(fm.tags, vec!["work", "a, b", "it's"]);
+        assert_eq!(fm.title.as_deref(), Some("T"));
+        assert!(fm.pinned);
+        assert_eq!(body, "body");
+        // Unindented items are YAML too.
+        let (fm, _) = parse_front_matter("---\ntags:\n- x\n- y\nevent_id: e1\n---\n");
+        assert_eq!(fm.tags, vec!["x", "y"]);
+        assert_eq!(fm.event_id.as_deref(), Some("e1"));
+    }
+
+    #[test]
+    fn yaml_map_scalars_flow_and_block_lists() {
+        let m = parse_yaml_map(
+            "a: 1\nb: [x, \"y, z\"]\nc:\n  - p\n  - \"q\\\"r\"\n# note\nd:\nnested:\n  k: v\n",
+        );
+        assert_eq!(m["a"], FmValue::Scalar("1".into()));
+        assert_eq!(m["b"], FmValue::List(vec!["x".into(), "y, z".into()]));
+        assert_eq!(m["c"], FmValue::List(vec!["p".into(), "q\"r".into()]));
+        assert_eq!(m["d"], FmValue::List(vec![]));
+        assert!(!m.contains_key("k"));
+        // A scalar `tags:` value is not a list.
+        assert!(parse_front_matter("---\ntags: solo\n---\n")
+            .0
+            .tags
+            .is_empty());
     }
 
     #[test]
