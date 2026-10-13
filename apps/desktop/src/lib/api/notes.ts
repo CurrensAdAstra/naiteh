@@ -46,10 +46,6 @@ export function notesRename(from: string, to: string): Promise<NoteMeta> {
   return invoke<NoteMeta>("notes_rename", { from, to });
 }
 
-export function notesSetPinned(relPath: string, pinned: boolean): Promise<NoteMeta> {
-  return invoke<NoteMeta>("notes_set_pinned", { relPath, pinned });
-}
-
 // ── folders ────────────────────────────────────────────────────────────
 
 /** Every folder under `notes/`, including empty ones. */

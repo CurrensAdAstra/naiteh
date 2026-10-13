@@ -97,9 +97,6 @@ pub(crate) struct FrontMatterParts<'a> {
     pub(crate) header: &'a str,
     /// Everything after the closing fence's line terminator.
     pub(crate) body: &'a str,
-    /// The opening fence's line ending, reused when rewriting the block
-    /// so a CRLF file stays CRLF.
-    eol: &'static str,
 }
 
 /// Find a `---` block at the very start of `content`. Accepts LF and
@@ -107,9 +104,9 @@ pub(crate) struct FrontMatterParts<'a> {
 /// end of file with no trailing newline. `None` when there is no block
 /// or it is never closed.
 pub(crate) fn split_front_matter(content: &str) -> Option<FrontMatterParts<'_>> {
-    let (eol, rest) = match content.strip_prefix("---\r\n") {
-        Some(r) => ("\r\n", r),
-        None => ("\n", content.strip_prefix("---\n")?),
+    let rest = match content.strip_prefix("---\r\n") {
+        Some(r) => r,
+        None => content.strip_prefix("---\n")?,
     };
     let mut pos = 0;
     loop {
@@ -120,7 +117,7 @@ pub(crate) fn split_front_matter(content: &str) -> Option<FrontMatterParts<'_>> 
             let before = before.strip_suffix('\n').unwrap_or(before);
             let header = before.strip_suffix('\r').unwrap_or(before);
             let body = line_end.map_or("", |e| &rest[e + 1..]);
-            return Some(FrontMatterParts { header, body, eol });
+            return Some(FrontMatterParts { header, body });
         }
         pos = line_end? + 1;
     }
@@ -634,42 +631,6 @@ pub fn avoid_windows_reserved(stem: String) -> String {
     }
 }
 
-/// Update or insert `pinned: true|false` inside a Markdown file's front
-/// matter. If no front matter exists and `pinned` is true, prepend a
-/// fresh block; if it is false, leave the content unchanged.
-pub fn set_pinned_in_content(content: &str, pinned: bool) -> String {
-    let value = if pinned { "true" } else { "false" };
-    if let Some(FrontMatterParts { header, body, eol }) = split_front_matter(content) {
-        let new_header = upsert_pinned_line(header, value).join(eol);
-        return format!("---{eol}{new_header}{eol}---{eol}{body}");
-    }
-    if pinned {
-        format!("---\npinned: true\n---\n{content}")
-    } else {
-        content.to_string()
-    }
-}
-
-fn upsert_pinned_line(header: &str, value: &str) -> Vec<String> {
-    let mut found = false;
-    let mut lines: Vec<String> = header
-        .lines()
-        .map(|line| {
-            if let Some((key, _)) = line.split_once(':') {
-                if key.trim() == "pinned" {
-                    found = true;
-                    return format!("pinned: {value}");
-                }
-            }
-            line.to_string()
-        })
-        .collect();
-    if !found {
-        lines.push(format!("pinned: {value}"));
-    }
-    lines
-}
-
 /// Recursively collect every `*.md` path under `dir`. Missing directories
 /// produce an empty list rather than an error.
 pub fn collect_md_files(dir: &Path) -> Result<Vec<PathBuf>, AppError> {
@@ -753,14 +714,6 @@ mod tests {
         let (fm, body) = parse_front_matter("---\ntitle: T\n---");
         assert_eq!(fm.title.as_deref(), Some("T"));
         assert_eq!(body, "");
-    }
-
-    #[test]
-    fn set_pinned_keeps_crlf_line_endings() {
-        let input = "---\r\ntitle: T\r\n---\r\nbody\r\n";
-        let out = set_pinned_in_content(input, true);
-        assert_eq!(out, "---\r\ntitle: T\r\npinned: true\r\n---\r\nbody\r\n");
-        assert!(parse_front_matter(&out).0.pinned);
     }
 
     #[test]
@@ -1177,36 +1130,5 @@ mod tests {
         assert!(current_version(&dir.path().join("missing.md"))
             .unwrap()
             .is_none());
-    }
-
-    #[test]
-    fn set_pinned_inserts_block_when_no_front_matter() {
-        let result = set_pinned_in_content("body text\n", true);
-        assert_eq!(result, "---\npinned: true\n---\nbody text\n");
-    }
-
-    #[test]
-    fn set_pinned_no_change_when_unsetting_without_front_matter() {
-        let result = set_pinned_in_content("body text\n", false);
-        assert_eq!(result, "body text\n");
-    }
-
-    #[test]
-    fn set_pinned_replaces_existing_pinned_line() {
-        let input = "---\ntitle: Foo\npinned: false\n---\nbody";
-        let result = set_pinned_in_content(input, true);
-        assert!(result.contains("pinned: true"));
-        assert!(result.contains("title: Foo"));
-        assert!(!result.contains("pinned: false"));
-        assert!(result.ends_with("body"));
-    }
-
-    #[test]
-    fn set_pinned_appends_when_front_matter_lacks_pinned() {
-        let input = "---\ntitle: Foo\n---\nbody";
-        let result = set_pinned_in_content(input, true);
-        assert!(result.contains("title: Foo"));
-        assert!(result.contains("pinned: true"));
-        assert!(result.ends_with("body"));
     }
 }

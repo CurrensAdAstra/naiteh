@@ -34,8 +34,7 @@
 //!   hook is ignored on Windows (with a note on stderr).
 //! - `on-note-save` fires after every successful note write that
 //!   changes a note file's content or location: `notes_write`,
-//!   `notes_create`, `notes_rename` (with the *new* path), and
-//!   `notes_set_pinned`.
+//!   `notes_create`, and `notes_rename` (with the *new* path).
 //! - Environment: `NAITEH_EVENT` (e.g. `note-save`), `NAITEH_VAULT`
 //!   (absolute vault root), and — when the event concerns a file —
 //!   `NAITEH_REL_PATH` / `NAITEH_ABS_PATH`.

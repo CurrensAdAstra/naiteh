@@ -281,7 +281,6 @@ pub fn run() {
             commands::notes::notes_create,
             commands::notes::notes_delete,
             commands::notes::notes_rename,
-            commands::notes::notes_set_pinned,
             commands::notes::notes_list_dirs,
             commands::notes::notes_create_dir,
             commands::notes::notes_delete_dir,

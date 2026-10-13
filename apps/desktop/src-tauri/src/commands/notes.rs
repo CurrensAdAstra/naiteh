@@ -268,44 +268,6 @@ fn notes_rename_impl(vault_root: &Path, from: &str, to: &str) -> Result<NoteMeta
     notes::read_note_meta(vault_root, &to_abs)
 }
 
-// ── notes_set_pinned ──────────────────────────────────────────────────────
-
-#[tauri::command]
-pub async fn notes_set_pinned(
-    active: tauri::State<'_, ActiveSession>,
-    locks: tauri::State<'_, VaultLocks>,
-    index: tauri::State<'_, TagIndex>,
-    rel_path: String,
-    pinned: bool,
-) -> Result<NoteMeta, AppError> {
-    require_session(&active)?;
-    let vault_root = config::current_vault_root()?;
-    let lock = locks.for_vault(&vault_root);
-    let _guard = lock.lock().await;
-    let root = vault_root.clone();
-    let result = fsx::run_blocking(move || notes_set_pinned_impl(&root, &rel_path, pinned)).await;
-    if let Ok(meta) = &result {
-        index.invalidate(&vault_root);
-        fire_note_saved(&vault_root, &meta.rel_path);
-    }
-    result
-}
-
-fn notes_set_pinned_impl(
-    vault_root: &Path,
-    rel_path: &str,
-    pinned: bool,
-) -> Result<NoteMeta, AppError> {
-    let abs = notes::resolve_in_vault(vault_root, rel_path)?;
-    let content = std::fs::read_to_string(&abs).map_err(|e| match e.kind() {
-        std::io::ErrorKind::NotFound => AppError::NotFound(rel_path.to_string()),
-        _ => AppError::Io(e.to_string()),
-    })?;
-    let new_content = notes::set_pinned_in_content(&content, pinned);
-    fsx::atomic_write(&abs, new_content.as_bytes())?;
-    notes::read_note_meta(vault_root, &abs)
-}
-
 // ── folders (directory management under notes/) ───────────────────────────
 
 const NOTES_DIR: &str = "notes";
@@ -834,30 +796,6 @@ mod tests {
         let v = vault();
         let err = notes_rename_impl(v.path(), "notes/missing.md", "notes/new.md").unwrap_err();
         assert!(matches!(err, AppError::NotFound(_)));
-    }
-
-    #[test]
-    fn notes_set_pinned_toggles_front_matter() {
-        let v = vault();
-        fsx::atomic_write(&v.path().join("notes/x.md"), b"---\ntitle: T\n---\nbody").unwrap();
-        let meta = notes_set_pinned_impl(v.path(), "notes/x.md", true).unwrap();
-        assert!(meta.pinned);
-        let content = notes_read_impl(v.path(), "notes/x.md").unwrap().content;
-        assert!(content.contains("pinned: true"));
-
-        let meta2 = notes_set_pinned_impl(v.path(), "notes/x.md", false).unwrap();
-        assert!(!meta2.pinned);
-        let content2 = notes_read_impl(v.path(), "notes/x.md").unwrap().content;
-        assert!(content2.contains("pinned: false"));
-    }
-
-    #[test]
-    fn notes_set_pinned_creates_front_matter_when_absent() {
-        let v = vault();
-        fsx::atomic_write(&v.path().join("notes/x.md"), b"plain body\n").unwrap();
-        notes_set_pinned_impl(v.path(), "notes/x.md", true).unwrap();
-        let content = notes_read_impl(v.path(), "notes/x.md").unwrap().content;
-        assert!(content.starts_with("---\npinned: true\n---\n"));
     }
 
     // ── regression: folder deletion can't escape to notes/ or _inbox ──
