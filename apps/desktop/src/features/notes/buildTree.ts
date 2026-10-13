@@ -72,3 +72,29 @@ function sortNode(node: FolderNode): void {
   node.files.sort((a, b) => a.title.localeCompare(b.title));
   for (const child of node.children) sortNode(child);
 }
+
+/** One visible line of the flattened tree. `depth` is 1 for root children. */
+export type TreeRow =
+  | { kind: "folder"; node: FolderNode; depth: number; expanded: boolean }
+  | { kind: "file"; note: NoteMeta; depth: number };
+
+/**
+ * Flatten `root` (not itself emitted) into the rows a reader sees: folders
+ * first, then files, descending only into folders `isExpanded` accepts.
+ */
+export function flattenTree(
+  root: FolderNode,
+  isExpanded: (path: string, depth: number) => boolean,
+): TreeRow[] {
+  const out: TreeRow[] = [];
+  const walk = (node: FolderNode, depth: number) => {
+    for (const child of node.children) {
+      const expanded = isExpanded(child.path, depth);
+      out.push({ kind: "folder", node: child, depth, expanded });
+      if (expanded) walk(child, depth + 1);
+    }
+    for (const note of node.files) out.push({ kind: "file", note, depth });
+  };
+  walk(root, 1);
+  return out;
+}
