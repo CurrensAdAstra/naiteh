@@ -13,7 +13,7 @@ import {
   type VaultInfo,
 } from "../../../lib/types";
 import { useAuthStore } from "../../../state/authStore";
-import { flushPendingSave, hasPendingSave } from "../../../state/autosave";
+import { flushPendingSave } from "../../../state/autosave";
 import { useEditorStore } from "../../../state/editorStore";
 import { useVaultStore } from "../../../state/vaultStore";
 import { SettingItem } from "../SettingItem";
@@ -26,8 +26,13 @@ import styles from "../SettingsModal.module.css";
  * happen — activating the next vault would discard those edits.
  */
 async function saveBeforeSwitch(): Promise<string | null> {
-  await flushPendingSave();
-  if (!hasPendingSave()) return null;
+  // `leaving`: the switch moves the editor off the open document, so edits
+  // held by a conflict are written to a `.local-` copy in this vault
+  // instead of being stranded in a queue bound to the vault we leave.
+  const { failedKeys } = await flushPendingSave({ leaving: true });
+  // A preserved held edit leaves the (still open) editor dirty, so
+  // `hasPendingSave()` alone can't tell success from failure here.
+  if (failedKeys.length === 0) return null;
   const saveError = useEditorStore.getState().saveError;
   return `Your open note couldn't be saved${
     saveError !== null ? ` (${saveError.message})` : ""

@@ -10,7 +10,7 @@ import {
   type NoteMeta,
   type VaultInfo,
 } from "../../../lib/types";
-import { resetAutosaveForTests } from "../../../state/autosave";
+import { holdSave, resetAutosaveForTests } from "../../../state/autosave";
 import { useEditorStore } from "../../../state/editorStore";
 import { useSettingsStore } from "../../../state/settingsStore";
 import { useUIStore } from "../../../state/uiStore";
@@ -281,6 +281,49 @@ describe("SettingsModal", () => {
       await user.click(await screen.findByTestId("vault-create-new"));
 
       await waitFor(() => expect(order).toEqual(["write", "init", "setActive"]));
+    });
+
+    it("keeps held (conflicting) edits as a .local copy before switching", async () => {
+      const order: string[] = [];
+      mockedListKnown.mockResolvedValue([vault("/v", "v"), vault("/w", "w")]);
+      mockedNotesWrite.mockImplementation(async (relPath, content) => {
+        order.push(`write:${relPath}:${content}:${useVaultStore.getState().active?.root}`);
+        return { meta: noteMeta(relPath), version: "v2" };
+      });
+      mockedSetActive.mockImplementation(async (root) => {
+        order.push(`setActive:${root}`);
+        return vault(root, "w");
+      });
+      openDirtyNote();
+      holdSave("note:notes/x.md");
+
+      const user = userEvent.setup();
+      render(<SettingsModal />);
+      await user.click(await screen.findByTestId("vault-row-/w"));
+
+      await waitFor(() => expect(useVaultStore.getState().active?.root).toBe("/w"));
+      expect(order).toHaveLength(2);
+      expect(order[0]).toMatch(/^write:notes\/x\.local-\d{8}-\d{6}\.md:edited:\/v$/);
+      expect(order[1]).toBe("setActive:/w");
+    });
+
+    it("doesn't switch when held edits couldn't be kept as a copy", async () => {
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      mockedListKnown.mockResolvedValue([vault("/v", "v"), vault("/w", "w")]);
+      mockedNotesWrite.mockRejectedValue({ kind: "Io", message: "read-only" });
+      openDirtyNote();
+      holdSave("note:notes/x.md");
+
+      const user = userEvent.setup();
+      render(<SettingsModal />);
+      await user.click(await screen.findByTestId("vault-row-/w"));
+
+      expect(await screen.findByText(/couldn't be saved.*read-only/i)).toBeInTheDocument();
+      expect(mockedSetActive).not.toHaveBeenCalled();
+      expect(mockedNotesWrite.mock.calls[0]![0]).toMatch(/\.local-/);
+      expect(useEditorStore.getState().open?.content).toBe("edited");
+      resetAutosaveForTests();
+      errorSpy.mockRestore();
     });
 
     it("doesn't switch when the pending edits couldn't be saved", async () => {

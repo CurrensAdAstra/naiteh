@@ -43,6 +43,8 @@ export interface ExternalChange {
 export interface SaveError {
   key: string;
   message: string;
+  /** True when autosave has a retry scheduled for this key. */
+  retrying: boolean;
 }
 
 interface EditorState {
@@ -92,7 +94,11 @@ interface EditorState {
    * while keeping the in-memory content and dirty state.
    */
   retargetOpen: (fromKey: string, source: OpenSource) => void;
-  setSaveError: (key: string, message: string | null) => void;
+  setSaveError: (
+    key: string,
+    message: string | null,
+    retrying?: boolean,
+  ) => void;
   /** Enter (or, with `null`, leave) the changed-on-disk conflict state. */
   setExternalChange: (change: ExternalChange | null) => void;
   setView: (view: EditorView | null) => void;
@@ -185,12 +191,12 @@ export const useEditorStore = create<EditorState>((set) => ({
             : state.externalChange,
       };
     }),
-  setSaveError: (key, message) =>
+  setSaveError: (key, message, retrying = false) =>
     set((state) => {
       if (message === null) {
         return state.saveError?.key === key ? { saveError: null } : state;
       }
-      return { saveError: { key, message } };
+      return { saveError: { key, message, retrying } };
     }),
   setExternalChange: (change) =>
     set((state) => {

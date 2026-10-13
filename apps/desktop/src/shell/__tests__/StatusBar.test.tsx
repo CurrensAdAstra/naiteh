@@ -5,6 +5,7 @@ vi.mock("../../lib/chatMd/chatFlow", () => ({ stopChat: vi.fn() }));
 
 import { stopChat } from "../../lib/chatMd/chatFlow";
 import { useBackupStore } from "../../state/backupStore";
+import { useEditorStore } from "../../state/editorStore";
 import { useUIStore } from "../../state/uiStore";
 import { StatusBar } from "../StatusBar";
 
@@ -66,6 +67,32 @@ describe("StatusBar live-update state", () => {
     });
     expect(screen.queryByTestId("status-notice")).not.toBeInTheDocument();
     expect(useUIStore.getState().notice).toBeNull();
+  });
+});
+
+describe("StatusBar save error", () => {
+  beforeEach(() => {
+    useEditorStore.setState({ saveError: null });
+  });
+
+  it("says 'retrying' only while a retry is scheduled", () => {
+    useEditorStore.setState({
+      saveError: { key: "note:a.md", message: "disk full", retrying: true },
+    });
+    render(<StatusBar />);
+    const el = screen.getByTestId("status-save-error");
+    expect(el).toHaveTextContent("Save failed — retrying");
+    expect(el).toHaveAttribute("title", "disk full");
+  });
+
+  it("shows a plain error when no retry is coming", () => {
+    useEditorStore.setState({
+      saveError: { key: "note:a.md", message: "disk full", retrying: false },
+    });
+    render(<StatusBar />);
+    const el = screen.getByTestId("status-save-error");
+    expect(el).toHaveTextContent("Save failed");
+    expect(el).not.toHaveTextContent(/retrying/);
   });
 });
 

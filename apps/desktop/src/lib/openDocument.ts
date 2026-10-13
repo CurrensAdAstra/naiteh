@@ -65,12 +65,29 @@ export interface OpenOptions {
   edit?: boolean;
 }
 
+/**
+ * Leaving the open document: flush (held edits go to a `.local-` copy).
+ * Switching documents proceeds even if that failed — the text stays
+ * queued in autosave with a backoff retry, so nothing is lost by moving
+ * on — but the user is told, since the copy isn't on disk yet.
+ */
+async function flushLeaving(): Promise<void> {
+  const { preserved } = await flushPendingSave({ leaving: true });
+  if (!preserved) {
+    useUIStore
+      .getState()
+      .setNotice(
+        "Unsaved edits couldn't be kept as a copy yet — still retrying.",
+      );
+  }
+}
+
 export async function openDocument(
   target: OpenTarget,
   opts: OpenOptions = {},
 ): Promise<boolean> {
   const ticket = beginOpen();
-  await flushPendingSave({ leaving: true });
+  await flushLeaving();
   if (!isLatestOpen(ticket)) return false;
   const { content, version } = await readTarget(target);
   if (!isLatestOpen(ticket)) return false;
@@ -111,7 +128,7 @@ export async function closeDocument(
   if (opts.discard === true) {
     if (open !== null) discardPendingSave(open.key);
   } else {
-    await flushPendingSave({ leaving: true });
+    await flushLeaving();
   }
   useEditorStore.getState().closeNote();
 }

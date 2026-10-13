@@ -149,6 +149,7 @@ describe("autosave", () => {
     expect(useEditorStore.getState().saveError).toEqual({
       key: "note:notes/a.md",
       message: "disk full",
+      retrying: true,
     });
     expect(isDirty(useEditorStore.getState().open!)).toBe(true);
 
@@ -316,6 +317,79 @@ describe("autosave", () => {
     expect(
       mockedWrite.mock.calls.some(([p]) => p === "notes/a.md"),
     ).toBe(false);
+  });
+
+  it("a failed .local copy stays held and is retried until it lands", async () => {
+    vi.useFakeTimers();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockedWrite.mockRejectedValueOnce({ kind: "Io", message: "disk full" });
+    useEditorStore.getState().openNote("notes/a.md", "a", "v1");
+    useEditorStore.getState().setContent("a1");
+    holdSave("note:notes/a.md");
+    const result = await flushPendingSave({ leaving: true });
+    expect(result).toEqual({ failedKeys: ["note:notes/a.md"], preserved: false });
+    expect(isSaveHeld("note:notes/a.md")).toBe(true);
+    expect(hasPendingSave()).toBe(true);
+    expect(useEditorStore.getState().saveError).toEqual({
+      key: "note:notes/a.md",
+      message: "disk full",
+      retrying: true,
+    });
+    // The editor moves on; the text survives only in the autosave queue.
+    useEditorStore.getState().openNote("notes/b.md", "b", "v1");
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(mockedWrite).toHaveBeenCalledTimes(2);
+    const [relPath, content] = mockedWrite.mock.calls[1]!;
+    expect(relPath).toMatch(/^notes\/a\.local-/);
+    expect(content).toBe("a1");
+    expect(isSaveHeld("note:notes/a.md")).toBe(false);
+    expect(useEditorStore.getState().saveError).toBeNull();
+    expect(useUIStore.getState().notice).toMatch(/kept as notes\/a\.local-/);
+    expect(mockedWrite.mock.calls.some(([p]) => p === "notes/a.md")).toBe(false);
+    errorSpy.mockRestore();
+  });
+
+  it("a persistently failing .local copy keeps the error and backs off", async () => {
+    vi.useFakeTimers();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockedWrite.mockRejectedValue({ kind: "Io", message: "read-only" });
+    useEditorStore.getState().openNote("notes/a.md", "a", "v1");
+    useEditorStore.getState().setContent("a1");
+    holdSave("note:notes/a.md");
+    const result = await flushPendingSave({ leaving: true });
+    expect(result.preserved).toBe(false);
+    // 2s, 4s, 8s retries; then the next one is 16s away.
+    await vi.advanceTimersByTimeAsync(2_000 + 4_000 + 8_000);
+    expect(mockedWrite).toHaveBeenCalledTimes(4);
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(mockedWrite).toHaveBeenCalledTimes(4);
+    expect(mockedWrite.mock.calls.every(([p]) => /\.local-/.test(p))).toBe(true);
+    expect(isSaveHeld("note:notes/a.md")).toBe(true);
+    expect(useEditorStore.getState().saveError?.retrying).toBe(true);
+    // A second leaving flush still reports the failure and doesn't hang.
+    expect((await flushPendingSave({ leaving: true })).preserved).toBe(false);
+    // Discarding (e.g. vault switch) means no retry is coming any more.
+    discardPendingSave();
+    expect(useEditorStore.getState().saveError).toEqual({
+      key: "note:notes/a.md",
+      message: "read-only",
+      retrying: false,
+    });
+    errorSpy.mockRestore();
+  });
+
+  it("flushPendingSave reports keys whose ordinary write failed", async () => {
+    vi.useFakeTimers();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockedWrite.mockRejectedValueOnce({ kind: "Io", message: "disk full" });
+    useEditorStore.getState().openNote("notes/a.md", "a", "v1");
+    useEditorStore.getState().setContent("a1");
+    expect(await flushPendingSave()).toEqual({
+      failedKeys: ["note:notes/a.md"],
+      preserved: true,
+    });
+    expect(await flushPendingSave()).toEqual({ failedKeys: [], preserved: true });
+    errorSpy.mockRestore();
   });
 
   it("StaleWrite for a note that is no longer open keeps the edits as a copy", async () => {

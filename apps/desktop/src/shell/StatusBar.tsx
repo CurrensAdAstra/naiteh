@@ -128,7 +128,7 @@ export function StatusBar() {
           title={saveError.message}
           data-testid="status-save-error"
         >
-          Save failed — retrying
+          {saveError.retrying ? "Save failed — retrying" : "Save failed"}
         </span>
       )}
       {backupLabel !== null ? (

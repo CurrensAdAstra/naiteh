@@ -11,6 +11,7 @@ import { startVaultWatch } from "../lib/vaultWatch";
 import { flushPendingSave } from "../state/autosave";
 import { useEditorStore } from "../state/editorStore";
 import { useSyncStore } from "../state/syncStore";
+import { useUIStore } from "../state/uiStore";
 
 const SYNC_STATUS_REFRESH_MS = 30_000;
 
@@ -110,7 +111,19 @@ export function useWorkspaceLifecycle(): void {
         const win = getCurrentWindow();
         const un = await win.onCloseRequested(async (event) => {
           event.preventDefault();
-          await flushPendingSave({ leaving: true });
+          const { preserved } = await flushPendingSave({ leaving: true });
+          if (!preserved) {
+            // Edits held by a conflict couldn't be written even as a
+            // `.local-` copy; destroying the window now would lose them.
+            // Stay open (autosave keeps retrying the copy, saveError is
+            // set) and tell the user why the close didn't happen.
+            useUIStore
+              .getState()
+              .setNotice(
+                "Not closing: unsaved edits couldn't be kept as a copy. Still retrying — fix the problem and close again.",
+              );
+            return;
+          }
           try {
             await win.destroy();
           } catch (e) {

@@ -10,6 +10,7 @@ import { takePasswordChangeRequired } from "../lib/api/passwordChangeFlags";
 import type { AuthSession } from "../lib/types";
 import { flushPendingSave } from "./autosave";
 import { useEditorStore } from "./editorStore";
+import { useUIStore } from "./uiStore";
 
 /**
  * A login/resume the backend flagged `mustChangePassword`. The session
@@ -52,14 +53,16 @@ interface AuthState {
   /**
    * Log out: flush the open note's unsaved edits, close it (so the next
    * user never sees the previous user's document), then forget the
-   * session. Concurrent calls share one in-flight logout.
+   * session. Concurrent calls share one in-flight logout. Resolves
+   * `false` (still signed in) when edits held by a conflict could not be
+   * preserved as a `.local-` copy, unless `force` (dead session).
    */
-  clearSession: () => Promise<void>;
+  clearSession: (opts?: { force?: boolean }) => Promise<boolean>;
   /** Logs an audit event; no-op (resolved) when not signed in. */
   logAction: (action: string, detail?: string | null) => Promise<void>;
 }
 
-let clearing: Promise<void> | null = null;
+let clearing: Promise<boolean> | null = null;
 
 export const SESSION_ENDED_MESSAGE =
   "Your session ended. Sign in again to continue.";
@@ -107,15 +110,30 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     }
     await authChangePassword(token, currentPassword, newPassword);
   },
-  clearSession: () => {
+  clearSession: (opts = {}) => {
     if (clearing !== null) return clearing;
     clearing = (async () => {
       try {
         // Persist first, while the session is still valid for audit
-        // logging. A write that fails here keeps retrying in the
-        // background (it targets the same file in the same vault), but
-        // the editor is cleared now.
-        await flushPendingSave();
+        // logging. `leaving`: logout moves the editor off the document,
+        // so edits held by a conflict go to a `.local-` copy instead of
+        // being abandoned. An ordinary write that fails keeps retrying in
+        // the background (same file, same vault), so logout proceeds.
+        const { preserved } = await flushPendingSave({ leaving: true });
+        if (!preserved && opts.force !== true) {
+          // The held edits exist only in memory and in the open editor.
+          // Signing out would clear the editor and hand the app to the
+          // next user while the copy is still failing, so stay signed in
+          // and let the user see/fix the problem (the copy keeps
+          // retrying). A dead session (`handleUnauthorized`) forces the
+          // logout: the backend refuses every write anyway.
+          useUIStore
+            .getState()
+            .setNotice(
+              "Not signed out: unsaved edits couldn't be kept as a copy. Still retrying — fix the problem and try again.",
+            );
+          return false;
+        }
         useEditorStore.getState().resetEditor();
         const { token, pendingPasswordChange } = get();
         for (const t of [token, pendingPasswordChange?.token ?? null]) {
@@ -125,6 +143,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
           void authLogout(t).catch(() => {});
         }
         set({ token: null, session: null, pendingPasswordChange: null });
+        return true;
       } finally {
         clearing = null;
       }
@@ -147,7 +166,7 @@ export const useAuthStore = create<AuthState>((set, get) => ({
 export async function handleUnauthorized(): Promise<void> {
   const state = useAuthStore.getState();
   if (state.token === null && state.pendingPasswordChange === null) return;
-  await state.clearSession();
+  await state.clearSession({ force: true });
   useAuthStore.setState({ signedOutReason: SESSION_ENDED_MESSAGE });
 }
 

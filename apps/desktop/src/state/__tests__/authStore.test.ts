@@ -29,8 +29,14 @@ import {
 } from "../../lib/api/passwordChangeFlags";
 import type { AuthSession } from "../../lib/types";
 import { SESSION_ENDED_MESSAGE, useAuthStore } from "../authStore";
-import { resetAutosaveForTests, scheduleSave } from "../autosave";
+import {
+  holdSave,
+  isSaveHeld,
+  resetAutosaveForTests,
+  scheduleSave,
+} from "../autosave";
 import { beginOpen, isLatestOpen, useEditorStore } from "../editorStore";
+import { useUIStore } from "../uiStore";
 
 const mockedWrite = vi.mocked(notesWrite);
 const mockedTauriInvoke = vi.mocked(tauriInvoke);
@@ -230,5 +236,43 @@ describe("authStore.clearSession (logout)", () => {
     await useAuthStore.getState().clearSession();
     expect(mockedWrite).not.toHaveBeenCalled();
     expect(useEditorStore.getState().open).toBeNull();
+  });
+
+  it("keeps a held (conflicting) edit as a .local copy on logout", async () => {
+    useEditorStore.getState().openNote("notes/a.md", "a", "v1");
+    useEditorStore.getState().setContent("a + mine");
+    holdSave("note:notes/a.md");
+    expect(await useAuthStore.getState().clearSession()).toBe(true);
+    expect(mockedWrite).toHaveBeenCalledTimes(1);
+    const [relPath, content, expected] = mockedWrite.mock.calls[0]!;
+    expect(relPath).toMatch(/^notes\/a\.local-\d{8}-\d{6}\.md$/);
+    expect(content).toBe("a + mine");
+    expect(expected).toBeNull();
+    expect(useAuthStore.getState().token).toBeNull();
+  });
+
+  it("stays signed in when the held edit can't be preserved", async () => {
+    vi.mocked(authLogout).mockClear();
+    vi.useFakeTimers();
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockedWrite.mockRejectedValue({ kind: "Io", message: "read-only" });
+    useEditorStore.getState().openNote("notes/a.md", "a", "v1");
+    useEditorStore.getState().setContent("a + mine");
+    holdSave("note:notes/a.md");
+    expect(await useAuthStore.getState().clearSession()).toBe(false);
+    expect(useAuthStore.getState().token).toBe("t");
+    expect(useEditorStore.getState().open?.content).toBe("a + mine");
+    expect(useEditorStore.getState().saveError?.message).toBe("read-only");
+    expect(useUIStore.getState().notice).toMatch(/Not signed out/);
+    expect(authLogout).not.toHaveBeenCalled();
+    expect(isSaveHeld("note:notes/a.md")).toBe(true);
+    // A dead session forces the logout regardless.
+    expect(await useAuthStore.getState().clearSession({ force: true })).toBe(
+      true,
+    );
+    expect(useAuthStore.getState().token).toBeNull();
+    resetAutosaveForTests();
+    vi.useRealTimers();
+    errorSpy.mockRestore();
   });
 });
