@@ -183,11 +183,13 @@ true when a non-blank key is stored. The renderer can set, keep, or clear a
 key through `app_config_set_ai_provider` (`apiKey` / `clearApiKey`, see
 [IPC API](ipc-api.md#app-config-commands)) but can never read it back.
 
-Every provider `baseUrl` (and a chat note's `url:` override) must be
+Every provider `baseUrl` must be
 `https://…`, or `http://` only for `localhost`, `127.0.0.1` or `[::1]`
 (local providers such as Ollama / LM Studio). The rule is enforced when
 saving and again before every AI request, so a hand-edited `config.json`
-with a plain-http remote URL is refused rather than used.
+with a plain-http remote URL is refused rather than used. A note's or
+agent's `url:` front-matter key may only restate the configured `baseUrl`
+(see [IPC API](ipc-api.md#app-config-commands)).
 
 ## Other app-config files
 
@@ -259,7 +261,7 @@ hooks dir sits in the same trust boundary as `auth.json` and the AI key.
 
 | Hook | Fires after |
 |------|-------------|
-| `hooks/on-note-save`    | a successful `notes_write`, `notes_create`, `notes_rename` (with the **new** path), or `notes_set_pinned` — every note write that changes a note file's content or location |
+| `hooks/on-note-save`    | a successful `notes_write`, `notes_create`, or `notes_rename` (with the **new** path) — every note write that changes a note file's content or location |
 | `hooks/on-journal-save` | a successful `journal_save` |
 | `hooks/on-sync`         | a successful `sync_now` |
 

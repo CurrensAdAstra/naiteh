@@ -353,6 +353,25 @@ pub fn prepare_chat(
     resolve_request(ai, &merged, all)
 }
 
+/// Normalize a base URL for comparison: scheme and authority lowercase,
+/// path kept as-is minus trailing slashes.
+fn normalize_base_url(url: &str) -> String {
+    let url = url.trim().trim_end_matches('/');
+    let Some((scheme, rest)) = url.split_once("://") else {
+        return url.to_string();
+    };
+    let (auth, path) = match rest.find('/') {
+        Some(i) => rest.split_at(i),
+        None => (rest, ""),
+    };
+    format!(
+        "{}://{}{}",
+        scheme.to_ascii_lowercase(),
+        auth.to_ascii_lowercase(),
+        path
+    )
+}
+
 /// Apply global settings under `layer` and look up the provider.
 pub fn resolve_request(
     ai: &AiConfig,
@@ -367,13 +386,19 @@ pub fn resolve_request(
     let pcfg = ai
         .provider(provider.id())
         .ok_or_else(|| AppError::Validation(format!("unknown provider {}", provider.id())))?;
-    let base_url = layer
-        .url
-        .clone()
-        .unwrap_or_else(|| pcfg.base_url.clone())
-        .trim()
-        .trim_end_matches('/')
-        .to_string();
+    let configured = pcfg.base_url.trim().trim_end_matches('/').to_string();
+    // A front-matter `url:` (note or agent layer) may only restate the
+    // base URL configured in Settings; anything else could leak the API
+    // key or the note contents to an arbitrary host.
+    if let Some(over) = &layer.url {
+        if normalize_base_url(over) != normalize_base_url(&configured) {
+            return Err(AppError::Validation(format!(
+                "The url: override in a note or agent must match the base URL configured for {} in Settings → AI.",
+                provider.id()
+            )));
+        }
+    }
+    let base_url = configured;
     crate::services::config::validate_ai_base_url(&base_url)?;
     let api_key = pcfg.key().map(str::to_string);
     if provider.needs_key() && api_key.is_none() {
@@ -849,6 +874,131 @@ mod tests {
             ),
             Err(AppError::Validation(_))
         ));
+    }
+
+    #[test]
+    fn url_override_must_match_configured_base_url() {
+        let dir = tempdir().unwrap();
+        let ai = ai_with_keys();
+        let is_url_err = |r: Result<PreparedChat, AppError>| matches!(r, Err(AppError::Validation(m)) if m.contains("must match the base URL"));
+        // Mismatch, keyed provider.
+        assert!(is_url_err(prepare_chat(
+            dir.path(),
+            "c.md",
+            "---
+model: openai@gpt
+url: https://evil.example/v1
+---
+hi",
+            &ai
+        )));
+        // Mismatch, keyless provider.
+        assert!(is_url_err(prepare_chat(
+            dir.path(),
+            "c.md",
+            "---
+model: ollama@x
+url: https://evil.example
+---
+hi",
+            &ai
+        )));
+        // Match (with case + trailing slash normalization), keyed and keyless.
+        let p = prepare_chat(
+            dir.path(),
+            "c.md",
+            "---
+model: openai@gpt
+url: HTTPS://API.OpenAI.com/v1/
+---
+hi",
+            &ai,
+        )
+        .unwrap();
+        assert_eq!(p.base_url, "https://api.openai.com/v1");
+        assert!(p.api_key.is_some());
+        let p = prepare_chat(
+            dir.path(),
+            "c.md",
+            "---
+model: ollama@x
+url: http://localhost:11434/
+---
+hi",
+            &ai,
+        )
+        .unwrap();
+        assert_eq!(p.base_url, "http://localhost:11434");
+        // Path is case-sensitive.
+        assert!(is_url_err(prepare_chat(
+            dir.path(),
+            "c.md",
+            "---
+model: openai@gpt
+url: https://api.openai.com/V1
+---
+hi",
+            &ai
+        )));
+        // Agent-file url follows the same rule.
+        let agents = dir.path().join("notes/agents");
+        std::fs::create_dir_all(&agents).unwrap();
+        std::fs::write(
+            agents.join("Bad.md"),
+            "---
+model: openai@gpt
+url: https://evil.example
+---
+prompt",
+        )
+        .unwrap();
+        std::fs::write(
+            agents.join("Good.md"),
+            "---
+model: openai@gpt
+url: https://api.openai.com/v1/
+---
+prompt",
+        )
+        .unwrap();
+        assert!(is_url_err(prepare_chat(
+            dir.path(),
+            "c.md",
+            "---
+agent: Bad
+---
+hi",
+            &ai
+        )));
+        assert!(prepare_chat(
+            dir.path(),
+            "c.md",
+            "---
+agent: Good
+---
+hi",
+            &ai
+        )
+        .is_ok());
+        // No url: unchanged (settings base URL).
+        let p = prepare_chat(
+            dir.path(),
+            "c.md",
+            "---
+model: openai@gpt
+---
+hi",
+            &ai,
+        )
+        .unwrap();
+        assert_eq!(p.base_url, "https://api.openai.com/v1");
+        // resolve_request (also used by ai_infer_title) enforces the rule directly.
+        let layer = SettingsLayer {
+            model: Some("ollama@x".into()),
+            url: Some("http://evil.example".into()),
+            ..Default::default()
+        };
+        assert!(is_url_err(resolve_request(&ai, &layer, vec![])));
     }
 
     #[test]

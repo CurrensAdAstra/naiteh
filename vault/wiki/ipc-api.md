@@ -169,7 +169,6 @@ notes_write(rel_path: String, content: String, expected_version: Option<String>)
 notes_create(rel_dir: String, title: String) -> Result<NoteMeta, AppError>
 notes_delete(rel_path: String) -> Result<(), AppError>
 notes_rename(from: String, to: String) -> Result<NoteMeta, AppError>
-notes_set_pinned(rel_path: String, pinned: bool) -> Result<NoteMeta, AppError>
 
 // Folder management. Vault-relative, must live strictly under notes/, symlink-safe
 // via resolve_in_vault. The reserved notes/_inbox cannot be renamed or deleted.
@@ -216,7 +215,8 @@ nothing is silently "fixed up".
   junction out of `notes/`). `notes/_inbox` — by any spelling or filesystem
   alias — is reserved (`Conflict`).
 - `on-note-save` [hooks](app-config.md#cli-hooks) fire after `notes_write`,
-  `notes_create`, `notes_rename` and `notes_set_pinned`.
+  `notes_create` and `notes_rename`. (Pinning is a front-matter text edit
+  saved through `notes_write`; there is no separate pin command.)
 
 ## Search & Tags
 
@@ -441,8 +441,18 @@ saving.
 
 **Base-URL rule:** must parse as a URL with scheme `https`, or `http` only when
 the host is `localhost`, `127.0.0.1` or `[::1]`; anything else → `Validation`
-(nothing is saved). Re-checked before every request, including a note's
-`url:` override.
+(nothing is saved). Re-checked before every request.
+
+**`url:` override rule:** a chat note's or agent file's front-matter `url:` is
+accepted only when it equals the provider's base URL configured in Settings,
+compared after normalization (scheme and host[:port] lowercased, path kept
+case-sensitive, trailing `/` dropped). Otherwise `ai_chat_send` fails with
+`Validation("The url: override in a note or agent must match the base URL
+configured for <provider> in Settings → AI.")` before any request is built —
+for keyed and keyless (Ollama / LM Studio) providers alike, so neither the
+API key nor note content can be sent to an arbitrary host. `ai_infer_title`
+uses the same `resolve_request` path (it never takes a `url:` and always
+uses the Settings base URL).
 
 ## Auth & Audit
 

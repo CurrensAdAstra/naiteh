@@ -232,7 +232,9 @@ A monad is …
   (`provider@model`; a bare model means `openai`), `temperature`,
   `max_tokens`, `top_p`, `presence_penalty`, `frequency_penalty`,
   `system_commands` (string or list → system messages first, in order),
-  `agent`, `url` (base-URL override, same rule as settings), `stream`.
+  `agent`, `url` (must equal the provider's Settings base URL after normalization —
+  scheme/host lowercase, no trailing `/` — else `Validation`; it cannot
+  redirect requests elsewhere), `stream`.
   A non-numeric number / non-boolean `stream` is a `Validation` error.
 - **Agent.** `agent: <name>` loads `<ai.agentsFolder>/<name>.md`. Its
   front matter is a settings layer below the note's (its `system_commands`

@@ -39,7 +39,9 @@ pinned: false
    (Cmd+Shift+J), *Select Model…* and *Stop Streaming* complete the set,
    plus title inference. Providers: OpenAI, Anthropic, Gemini, OpenRouter,
    Z.ai (API keys stored in app config, never sent to the renderer) and
-   local Ollama / LM Studio (no key; nothing leaves the machine). No
+   local Ollama / LM Studio (no key; nothing leaves the machine). A note's
+   `url:` key may only restate the base URL set in Settings → AI, so a
+   note can't redirect a key or its content to another host. No
    network call ever fires without an explicit command. naiteh stays
    local-first everywhere else — AI chat is the one feature that knowingly
    leaves the local trust boundary.
