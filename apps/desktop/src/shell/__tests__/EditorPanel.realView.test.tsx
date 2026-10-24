@@ -116,7 +116,7 @@ describe("EditorPanel with a real CodeMirror view", () => {
     });
 
     expect(mockedWrite).toHaveBeenCalledTimes(1);
-    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "A edited", "v1");
+    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "A edited", "v1", null);
     expect(useEditorStore.getState().open?.key).toBe("note:notes/b.md");
     await waitFor(() => expect(view().state.doc.toString()).toBe("B body"));
   });
@@ -151,7 +151,7 @@ describe("EditorPanel with a real CodeMirror view", () => {
       await flushPendingSave();
     });
     expect(mockedWrite).toHaveBeenCalledTimes(1);
-    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "pulled text!", "v1");
+    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "pulled text!", "v1", null);
   });
 
   it("a remount while dirty shows the current (unsaved) content", () => {

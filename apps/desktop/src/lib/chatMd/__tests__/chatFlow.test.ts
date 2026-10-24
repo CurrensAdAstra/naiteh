@@ -23,11 +23,17 @@ vi.mock("../../api/notes", () => ({
 }));
 vi.mock("../../api/settings", () => ({ appConfigSetAi: vi.fn() }));
 vi.mock("../../openDocument", () => ({ openDocument: vi.fn() }));
-vi.mock("../../../state/authStore", () => ({
-  useAuthStore: {
-    getState: () => ({ logAction: () => Promise.resolve() }),
-  },
-}));
+vi.mock("../../../state/authStore", async () => {
+  const { create } = await import("zustand");
+  return {
+    useAuthStore: create(() => ({
+      token: "token",
+      session: { username: "local", role: "Admin" },
+      busy: null,
+      logAction: () => Promise.resolve(),
+    })),
+  };
+});
 
 import { listen } from "@tauri-apps/api/event";
 
@@ -37,8 +43,10 @@ import { appConfigSetAi } from "../../api/settings";
 import { openDocument } from "../../openDocument";
 import { defaultAiConfig, DEFAULT_AI_SETTINGS, type AppConfig } from "../../types";
 import { useEditorStore } from "../../../state/editorStore";
+import { useAuthStore } from "../../../state/authStore";
 import { useSettingsStore } from "../../../state/settingsStore";
 import { useUIStore } from "../../../state/uiStore";
+import { useVaultStore } from "../../../state/vaultStore";
 import {
   applyModel,
   clearChat,
@@ -101,6 +109,7 @@ describe("chat flow", () => {
   beforeEach(() => {
     chunkHandler = null;
     vi.clearAllMocks();
+    useAuthStore.setState({ token: "token", session: { username: "local", role: "Admin" }, busy: null });
     useEditorStore.setState({ open: null, view: null });
     useEditorStore.getState().openNote("notes/chat.md", NOTE, "v1");
     useUIStore.setState({
@@ -110,6 +119,7 @@ describe("chat flow", () => {
       editorMode: "view",
     });
     useSettingsStore.setState({ config: config() });
+    useVaultStore.setState({ active: { root: "/v", name: "v", initialized: true } });
   });
 
   afterEach(() => {
@@ -149,6 +159,23 @@ describe("chat flow", () => {
     send.resolve({ model: "openai@gpt-x", text: "part more" });
     await done;
     expect(content()).toBe("Other");
+    expect(useUIStore.getState().chatRequest).toBeNull();
+  });
+
+  it.each(["lock", "unauthorized"])("quiesces streaming edits on %s and ignores late replies", async (reason) => {
+    const send = pendingSend();
+    const done = sendChat();
+    await flush();
+    const id = useUIStore.getState().chatRequest?.requestId ?? "";
+    emit(id, "partial reply");
+    const draft = content();
+    if (reason === "lock") useAuthStore.setState({ busy: "lock" });
+    else useAuthStore.setState({ token: null, session: null });
+    expect(mockedStop).toHaveBeenCalledWith(id);
+    emit(id, " late chunk");
+    send.resolve({ model: "openai@gpt-x", text: "late reply" });
+    await done;
+    expect(content()).toBe(draft);
     expect(useUIStore.getState().chatRequest).toBeNull();
   });
 
@@ -224,6 +251,7 @@ describe("chat flow", () => {
       "notes/chats/chat-2026-10-11-0930.md",
       `---\ntitle: "Chat 2026-10-11 0930"\nmodel: ${DEFAULT_AI_SETTINGS.defaultModel}\ntemperature: 1\nmax_tokens: 400\nstream: true\n---\n\n`,
       "v0",
+      "/v",
     );
     expect(openDocument).toHaveBeenCalledWith(
       { kind: "note", relPath: "notes/chats/chat-2026-10-11-0930.md" },
@@ -235,6 +263,34 @@ describe("chat flow", () => {
     await applyModel("ollama@llama3.2");
     expect(content()).toBe("---\nmodel: ollama@llama3.2\n---\nHello");
     expect(appConfigSetAi).not.toHaveBeenCalled();
+  });
+
+  it("binds asynchronous new-chat writes to the originating vault and never opens them in another", async () => {
+    let resolveRead!: (doc: { content: string; version: string }) => void;
+    vi.mocked(notesCreate).mockResolvedValue({ relPath: "notes/chat.md" } as never);
+    vi.mocked(notesRead).mockReturnValue(new Promise((resolve) => { resolveRead = resolve; }));
+    vi.mocked(notesWrite).mockResolvedValue({} as never);
+    const creating = newChat();
+    await flush();
+    useVaultStore.setState({ active: { root: "/B", name: "B", initialized: true } });
+    resolveRead({ content: "original chat", version: "v0" });
+    await creating;
+    expect(notesWrite).toHaveBeenCalledWith("notes/chat.md", expect.any(String), "v0", "/v");
+    expect(openDocument).not.toHaveBeenCalled();
+  });
+
+  it("stops streaming on a vault switch even when the other vault opens the same relative path", async () => {
+    const send = pendingSend();
+    const done = sendChat();
+    await flush();
+    const id = useUIStore.getState().chatRequest?.requestId ?? "";
+    useVaultStore.setState({ active: { root: "/B", name: "B", initialized: true } });
+    useEditorStore.getState().openNote("notes/chat.md", "B note", "v1");
+    emit(id, "A reply");
+    send.resolve({ model: "openai@gpt-x", text: "A reply" });
+    await done;
+    expect(content()).toBe("B note");
+    expect(mockedStop).toHaveBeenCalledWith(id);
   });
 
   it("select model without an open note sets the default model", async () => {
@@ -254,6 +310,17 @@ describe("chat flow", () => {
     expect(content()).toBe(
       '---\nmodel: openai@gpt-x\ntitle: "Greetings: a chat"\n---\nHello',
     );
+  });
+
+  it("does not apply an inferred title after the originating vault changes", async () => {
+    let finish!: (title: string) => void;
+    vi.mocked(aiInferTitle).mockReturnValue(new Promise((resolve) => { finish = resolve; }));
+    const inferring = inferTitle();
+    useVaultStore.setState({ active: { root: "/B", name: "B", initialized: true } });
+    useEditorStore.getState().openNote("notes/chat.md", "B note", "v1");
+    finish("A title");
+    await inferring;
+    expect(content()).toBe("B note");
   });
 
   it("clear chat keeps the front matter after confirming", () => {

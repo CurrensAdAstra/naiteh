@@ -13,12 +13,12 @@ import { isAppError } from "../types";
  * Session gate: the backend refuses every non-auth command with
  * `AppError { kind: "Unauthorized" }` while no session is active (the
  * frontend sends no token to those commands). When that happens the
- * registered handler runs — the auth store registers one that logs the
- * user out, so the login screen appears instead of a broken shell.
+ * registered handler hides the shell while keeping pending drafts for
+ * recovery after access is restored.
  *
- * `auth_*` commands are excluded: there `Unauthorized` means "wrong
- * password" or "not an admin" and must surface as a form error rather
- * than ending the session.
+ * Password-verifying auth transitions are excluded: `Unauthorized` can mean
+ * "wrong password" and must surface without hiding the editor. Audit and
+ * secret-migration commands only validate an active session token.
  */
 
 /** True inside the Tauri webview; false in a plain browser (vite dev). */
@@ -53,7 +53,9 @@ export function setUnauthorizedHandler(
 }
 
 function isGatedCommand(command: string): boolean {
-  return !command.startsWith("auth_");
+  return !command.startsWith("auth_") ||
+    command === "auth_log_action" || command === "auth_list_audit_logs" ||
+    command === "auth_migrate_secrets" || command === "auth_lock";
 }
 
 export async function invoke<T>(

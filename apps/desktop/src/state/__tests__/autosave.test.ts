@@ -80,7 +80,7 @@ describe("autosave", () => {
     scheduleSave({ kind: "note", relPath: "notes/a.md" }, "a1");
     expect(mockedWrite).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(AUTOSAVE_DELAY_MS);
-    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "a1", "v1");
+    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "a1", "v1", null);
     expect(isDirty(useEditorStore.getState().open!)).toBe(false);
   });
 
@@ -93,7 +93,7 @@ describe("autosave", () => {
     useEditorStore.getState().openNote("notes/b.md", "b", "v1");
     await vi.advanceTimersByTimeAsync(AUTOSAVE_DELAY_MS);
     expect(mockedWrite).toHaveBeenCalledTimes(1);
-    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "a-edited", "v1");
+    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "a-edited", "v1", null);
     // B is untouched.
     expect(useEditorStore.getState().open?.content).toBe("b");
     expect(useEditorStore.getState().open?.savedContent).toBe("b");
@@ -114,7 +114,7 @@ describe("autosave", () => {
     useEditorStore.getState().openJournal("2026-05-09", "journal/2026/05/2026-05-09.md", "x", "v1");
     useEditorStore.getState().setContent("x2");
     await flushPendingSave();
-    expect(mockedJournalSave).toHaveBeenCalledWith("2026-05-09", "x2", "v1");
+    expect(mockedJournalSave).toHaveBeenCalledWith("2026-05-09", "x2", "v1", null);
     expect(isDirty(useEditorStore.getState().open!)).toBe(false);
   });
 
@@ -133,7 +133,7 @@ describe("autosave", () => {
     expect(isDirty(open)).toBe(true);
 
     await flushPendingSave();
-    expect(mockedWrite).toHaveBeenLastCalledWith("notes/a.md", "bc", "v2");
+    expect(mockedWrite).toHaveBeenLastCalledWith("notes/a.md", "bc", "v2", null);
     open = useEditorStore.getState().open!;
     expect(open.savedContent).toBe("bc");
     expect(isDirty(open)).toBe(false);
@@ -180,10 +180,10 @@ describe("autosave", () => {
     expect(mockedWrite).not.toHaveBeenCalled();
     resume();
     await vi.advanceTimersByTimeAsync(AUTOSAVE_DELAY_MS);
-    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "held", null);
+    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "held", null, null);
   });
 
-  it("drops a pending save when the vault changed underneath it", async () => {
+  it("retains a pending save when the frontend vault changed and saves only after returning", async () => {
     vi.useFakeTimers();
     useVaultStore.setState({
       active: { root: "/old", name: "old", initialized: true },
@@ -194,6 +194,12 @@ describe("autosave", () => {
     });
     await vi.advanceTimersByTimeAsync(AUTOSAVE_DELAY_MS);
     expect(mockedWrite).not.toHaveBeenCalled();
+    expect(hasPendingSave()).toBe(true);
+    expect((await flushPendingSave()).failedKeys).toEqual(["note:notes/a.md"]);
+    useVaultStore.setState({ active: { root: "/old", name: "old", initialized: true } });
+    await flushPendingSave();
+    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "edit", null, "/old");
+    expect(hasPendingSave()).toBe(false);
   });
 
   it("notifies save listeners after a successful write", async () => {
@@ -224,6 +230,7 @@ describe("autosave", () => {
       "2026-05-09",
       "first words",
       null,
+      null,
     );
     // The entry now exists: the next save is conditional on its version.
     expect(useEditorStore.getState().open?.savedVersion).toBe("v2");
@@ -233,6 +240,7 @@ describe("autosave", () => {
       "2026-05-09",
       "first words, more",
       "v2",
+      null,
     );
   });
 
@@ -241,7 +249,7 @@ describe("autosave", () => {
     useEditorStore.getState().openNote("notes/a.md", "a", "sha-before");
     useEditorStore.getState().setContent("a1");
     await flushPendingSave();
-    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "a1", "sha-before");
+    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "a1", "sha-before", null);
     expect(useEditorStore.getState().open?.savedVersion).toBe("sha-after");
   });
 
@@ -275,7 +283,7 @@ describe("autosave", () => {
     expect(isSaveHeld("note:notes/a.md")).toBe(false);
     await flushPendingSave();
     expect(mockedWrite).toHaveBeenCalledTimes(2);
-    expect(mockedWrite).toHaveBeenLastCalledWith("notes/a.md", "a1", "v1");
+    expect(mockedWrite).toHaveBeenLastCalledWith("notes/a.md", "a1", "v1", null);
   });
 
   it("holdSave stops a scheduled save until releaseSave", async () => {
@@ -292,7 +300,7 @@ describe("autosave", () => {
     // releaseSave drops what was parked; the editor's autosave effect
     // re-schedules anything still dirty (here: an explicit flush).
     await flushPendingSave();
-    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "a1", "v1");
+    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "a1", "v1", null);
   });
 
   it("leaving a document with held edits keeps them as a .local copy", async () => {
@@ -423,7 +431,7 @@ describe("autosave", () => {
       "v4",
     );
     expect(version).toBe("v5");
-    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "mine", "v4");
+    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "mine", "v4", null);
     expect(useEditorStore.getState().open?.savedVersion).toBe("v5");
     expect(isDirty(useEditorStore.getState().open!)).toBe(false);
     expect(listener).toHaveBeenCalledWith(
@@ -439,12 +447,69 @@ describe("autosave", () => {
     releaseSave("note:notes/a.md");
     useEditorStore.getState().setContent("mine3");
     await flushPendingSave();
-    expect(mockedWrite).toHaveBeenLastCalledWith("notes/a.md", "mine3", "v5");
+    expect(mockedWrite).toHaveBeenLastCalledWith("notes/a.md", "mine3", "v5", null);
   });
 
   it("discardPendingSave(key) forgets the key's hold too", () => {
     holdSave("note:notes/gone.md");
     discardPendingSave("note:notes/gone.md");
     expect(isSaveHeld("note:notes/gone.md")).toBe(false);
+  });
+
+  it("parks conflicting copies on a vault mismatch instead of reporting preservation", async () => {
+    const a = { root: "/A", name: "A", initialized: true };
+    useVaultStore.setState({ active: a });
+    scheduleSave({ kind: "note", relPath: "notes/a.md" }, "A draft");
+    holdSave("note:notes/a.md");
+    useVaultStore.setState({ active: { root: "/B", name: "B", initialized: true } });
+    const result = await flushPendingSave({ leaving: true });
+    expect(result.preserved).toBe(false);
+    expect(result.failedKeys).toContain("note:notes/a.md");
+    expect(mockedWrite).not.toHaveBeenCalled();
+    expect(hasPendingSave()).toBe(true);
+    useVaultStore.setState({ active: a });
+    expect((await flushPendingSave({ leaving: true })).preserved).toBe(true);
+    expect(mockedWrite).toHaveBeenCalledWith(expect.stringMatching(/\.local-/), "A draft", null, "/A");
+  });
+
+  it("captures saveNow's vault before waiting behind earlier writes", async () => {
+    const first = deferred<NoteWriteResult>();
+    useVaultStore.setState({ active: { root: "/A", name: "A", initialized: true } });
+    mockedWrite.mockReturnValueOnce(first.promise);
+    const earlier = saveNow({ kind: "note", relPath: "notes/first.md" }, "first", null);
+    const later = saveNow({ kind: "note", relPath: "notes/second.md" }, "second", null);
+    await vi.waitFor(() => expect(mockedWrite).toHaveBeenCalledTimes(1));
+    useVaultStore.setState({ active: { root: "/B", name: "B", initialized: true } });
+    first.resolve({ meta: META, version: "v2" });
+    await Promise.all([earlier, later]);
+    expect(mockedWrite).toHaveBeenNthCalledWith(2, "notes/second.md", "second", null, "/A");
+  });
+
+  it("keeps an in-flight draft visible to close/recovery protection after the editor closes", async () => {
+    const writing = deferred<NoteWriteResult>();
+    mockedWrite.mockReturnValueOnce(writing.promise);
+    scheduleSave({ kind: "note", relPath: "notes/a.md" }, "draft");
+    const flushing = flushPendingSave();
+    await vi.waitFor(() => expect(mockedWrite).toHaveBeenCalled());
+    expect(hasPendingSave()).toBe(true);
+    writing.resolve({ meta: META, version: "v2" });
+    await flushing;
+    expect(hasPendingSave()).toBe(false);
+  });
+
+  it("reports a failure from a write already in flight when a recovery flush starts", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const writing = deferred<NoteWriteResult>();
+    mockedWrite.mockReturnValueOnce(writing.promise);
+    scheduleSave({ kind: "note", relPath: "notes/a.md" }, "draft");
+    const earlier = flushPendingSave();
+    await vi.waitFor(() => expect(mockedWrite).toHaveBeenCalled());
+    const recovering = flushPendingSave();
+    writing.reject(new Error("vault changed"));
+    await earlier;
+    expect((await recovering).failedKeys).toEqual(["note:notes/a.md"]);
+    expect(hasPendingSave()).toBe(true);
+    resetAutosaveForTests();
+    errorSpy.mockRestore();
   });
 });

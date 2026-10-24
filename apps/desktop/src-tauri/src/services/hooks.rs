@@ -167,7 +167,7 @@ fn build_command(script: &Path) -> Command {
         .extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_ascii_lowercase());
-    let mut cmd = match ext.as_deref() {
+    let cmd = match ext.as_deref() {
         Some("cmd") | Some("bat") => {
             let mut c = Command::new("cmd");
             c.arg("/C").arg(script);
@@ -188,12 +188,14 @@ fn build_command(script: &Path) -> Command {
         _ => Command::new(script),
     };
     #[cfg(windows)]
-    {
+    let cmd = {
         use std::os::windows::process::CommandExt;
+        let mut cmd = cmd;
         // Don't flash a console window for every save.
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+        cmd
+    };
     cmd
 }
 

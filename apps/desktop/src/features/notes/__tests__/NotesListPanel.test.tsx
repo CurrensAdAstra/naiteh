@@ -102,7 +102,7 @@ describe("NotesListPanel", () => {
     mockedRenameDir.mockReset();
     mockedRenameDir.mockResolvedValue(undefined);
     useEditorStore.setState({ open: null });
-    useUIStore.setState({ pendingAction: null });
+    useUIStore.setState({ pendingAction: null, editorMode: "view" });
   });
 
   it("renders the empty state when the vault has no notes", async () => {
@@ -146,10 +146,7 @@ describe("NotesListPanel", () => {
     expect(useEditorStore.getState().open?.content).toBe("hello body");
   });
 
-  it("creates a note via prompt and refreshes", async () => {
-    const promptSpy = vi
-      .spyOn(window, "prompt")
-      .mockReturnValue("My New Note");
+  it("creates a note from the dialog and opens it ready to edit", async () => {
     const created = note("notes/my-new-note.md", "My New Note");
     mockedList.mockResolvedValueOnce([]);
     mockedList.mockResolvedValueOnce([created]);
@@ -160,23 +157,71 @@ describe("NotesListPanel", () => {
     render(<NotesListPanel />);
     await screen.findByText(/no notes yet/i);
     await user.click(screen.getByRole("button", { name: /new note/i }));
+    const dialog = screen.getByRole("dialog", { name: "New note" });
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+    expect(within(dialog).getByLabelText("Note title")).toHaveFocus();
+    expect(within(dialog).getByRole("button", { name: "Create note" })).toBeDisabled();
+    await user.type(within(dialog).getByLabelText("Note title"), " My New Note {Enter}");
 
     await waitFor(() => {
       expect(mockedCreate).toHaveBeenCalledWith("notes", "My New Note");
+      expect(useEditorStore.getState().open?.source).toEqual({
+        kind: "note",
+        relPath: "notes/my-new-note.md",
+      });
     });
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(useUIStore.getState().editorMode).toBe("edit");
     expect(mockedList).toHaveBeenCalledTimes(2);
-    promptSpy.mockRestore();
   });
 
-  it("does nothing when the title prompt is cancelled", async () => {
-    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue(null);
+  it("cancels the new-note dialog and returns focus to its button", async () => {
     mockedList.mockResolvedValue([]);
     const user = userEvent.setup();
     render(<NotesListPanel />);
     await screen.findByText(/no notes yet/i);
-    await user.click(screen.getByRole("button", { name: /new note/i }));
+    const trigger = screen.getByRole("button", { name: /new note/i });
+    await user.click(trigger);
+    await user.type(screen.getByLabelText("Note title"), "Discard this title");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
     expect(mockedCreate).not.toHaveBeenCalled();
-    promptSpy.mockRestore();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
+  it("keeps the title and shows creation errors inside the dialog for retry", async () => {
+    mockedList.mockResolvedValue([]);
+    mockedCreate.mockRejectedValueOnce({ kind: "Io", message: "Disk is full" });
+    mockedCreate.mockResolvedValueOnce(note("notes/retry.md", "Retry"));
+    mockedRead.mockResolvedValue({ content: "", version: "v1" });
+    const user = userEvent.setup();
+    render(<NotesListPanel />);
+    await user.click(screen.getByRole("button", { name: /new note/i }));
+    await user.type(screen.getByLabelText("Note title"), "Retry{Enter}");
+    const dialog = await screen.findByRole("dialog", { name: "New note" });
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent("Disk is full");
+    expect(within(dialog).getByLabelText("Note title")).toHaveValue("Retry");
+    await user.click(within(dialog).getByRole("button", { name: "Create note" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(mockedCreate).toHaveBeenCalledTimes(2);
+  });
+
+  it("prevents duplicate creation and dismissal while a note is being created", async () => {
+    mockedList.mockResolvedValue([]);
+    const pending = deferred<NoteMeta>();
+    mockedCreate.mockReturnValue(pending.promise);
+    mockedRead.mockResolvedValue({ content: "", version: "v1" });
+    const user = userEvent.setup();
+    render(<NotesListPanel />);
+    await user.click(screen.getByRole("button", { name: /new note/i }));
+    await user.type(screen.getByLabelText("Note title"), "One note{Enter}");
+    expect(screen.getByRole("button", { name: "Creating…" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    await user.keyboard("{Enter}{Escape}");
+    expect(screen.getByRole("dialog", { name: "New note" })).toBeInTheDocument();
+    expect(mockedCreate).toHaveBeenCalledTimes(1);
+    pending.resolve(note("notes/one-note.md", "One note"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
   });
 
   it("highlights the currently open note", async () => {
@@ -308,7 +353,7 @@ describe("NotesListPanel", () => {
     );
     // Pending edits were written to the file before it was deleted.
     expect(mockedWrite).toHaveBeenCalledTimes(1);
-    expect(mockedWrite).toHaveBeenCalledWith("notes/loose.md", "edited", "v1");
+    expect(mockedWrite).toHaveBeenCalledWith("notes/loose.md", "edited", "v1", null);
 
     // While the delete is in flight the user types and the debounce fires.
     useEditorStore.getState().setContent("edited more");
@@ -335,7 +380,7 @@ describe("NotesListPanel", () => {
       await screen.findByTestId("notes-rename-notes/loose.md"),
     );
     await waitFor(() => expect(mockedRename).toHaveBeenCalled());
-    expect(mockedWrite).toHaveBeenCalledWith("notes/loose.md", "v1", "v1");
+    expect(mockedWrite).toHaveBeenCalledWith("notes/loose.md", "v1", "v1", null);
 
     // Typing during the rename; its debounce fires mid-rename.
     useEditorStore.getState().setContent("v2");
@@ -354,7 +399,7 @@ describe("NotesListPanel", () => {
     const oldPathWrites = mockedWrite.mock.calls.filter(
       ([p]) => p === "notes/loose.md",
     );
-    expect(oldPathWrites).toEqual([["notes/loose.md", "v1", "v1"]]);
+    expect(oldPathWrites).toEqual([["notes/loose.md", "v1", "v1", null]]);
     promptSpy.mockRestore();
   });
 
@@ -396,7 +441,6 @@ describe("NotesListPanel", () => {
   });
 
   it("New folder button creates a folder under notes/", async () => {
-    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("Projects");
     mockedList.mockResolvedValue([]);
     mockedListDirs.mockResolvedValueOnce([]).mockResolvedValueOnce([
       "notes/Projects",
@@ -405,10 +449,57 @@ describe("NotesListPanel", () => {
     render(<NotesListPanel />);
     await screen.findByText(/no notes yet/i);
     await user.click(screen.getByTestId("notes-new-folder"));
+    await user.type(screen.getByLabelText("Folder name"), "Projects{Enter}");
     await waitFor(() => {
       expect(mockedCreateDir).toHaveBeenCalledWith("notes/Projects");
     });
-    promptSpy.mockRestore();
+    expect(await screen.findByTestId("notes-folder-notes/Projects")).toBeInTheDocument();
+  });
+
+  it("opens the subfolder dialog with the selected parent", async () => {
+    mockedList.mockResolvedValue([]);
+    mockedListDirs.mockResolvedValue(["notes/work"]);
+    const user = userEvent.setup();
+    render(<NotesListPanel />);
+    await user.click(await screen.findByTestId("notes-folder-new-notes/work"));
+    const dialog = screen.getByRole("dialog", { name: "New folder" });
+    expect(dialog).toHaveAccessibleDescription("In notes/work/");
+    await user.type(within(dialog).getByLabelText("Folder name"), "Meetings{Enter}");
+    await waitFor(() => {
+      expect(mockedCreateDir).toHaveBeenCalledWith("notes/work/Meetings");
+    });
+  });
+
+  it.each(["work/meetings", "work\\meetings", ".", ".."])(
+    "keeps an invalid folder name (%s) in the dialog without creating it",
+    async (name) => {
+      mockedList.mockResolvedValue([]);
+      const user = userEvent.setup();
+      render(<NotesListPanel />);
+      await user.click(screen.getByTestId("notes-new-folder"));
+      await user.type(screen.getByLabelText("Folder name"), `${name}{Enter}`);
+      expect(screen.getByRole("alert")).toBeInTheDocument();
+      expect(screen.getByLabelText("Folder name")).toHaveValue(name);
+      expect(mockedCreateDir).not.toHaveBeenCalled();
+    },
+  );
+
+  it("traps focus in the folder dialog and closes it with Escape", async () => {
+    mockedList.mockResolvedValue([]);
+    const user = userEvent.setup();
+    render(<NotesListPanel />);
+    const trigger = screen.getByTestId("notes-new-folder");
+    await user.click(trigger);
+    const input = screen.getByLabelText("Folder name");
+    await user.type(input, "Projects");
+    await user.tab({ shift: true });
+    expect(screen.getByRole("button", { name: "Create folder" })).toHaveFocus();
+    await user.tab();
+    expect(input).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(mockedCreateDir).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
   });
 
   it("deletes a folder after confirm", async () => {
@@ -443,31 +534,29 @@ describe("NotesListPanel", () => {
 
   // ── menu-triggered (File ▸ New Note / New Folder) ────────────────────
 
-  it("runs the new-note prompt when uiStore queues it (Cmd+N)", async () => {
-    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("From Menu");
+  it("opens the new-note dialog when uiStore queues it (Cmd+N)", async () => {
     mockedList.mockResolvedValue([]);
     mockedCreate.mockResolvedValue(note("notes/from-menu.md", "From Menu"));
     mockedRead.mockResolvedValue({ content: "body", version: "v1" });
     useUIStore.setState({ pendingAction: "newNote" });
 
     render(<NotesListPanel />);
+    await userEvent.type(await screen.findByLabelText("Note title"), "From Menu{Enter}");
     await waitFor(() => {
       expect(mockedCreate).toHaveBeenCalledWith("notes", "From Menu");
     });
     expect(useUIStore.getState().pendingAction).toBeNull();
-    promptSpy.mockRestore();
   });
 
-  it("runs the new-folder prompt when uiStore queues it (Shift+Cmd+N)", async () => {
-    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("Inbox2");
+  it("opens the new-folder dialog when uiStore queues it (Shift+Cmd+N)", async () => {
     mockedList.mockResolvedValue([]);
     useUIStore.setState({ pendingAction: "newFolder" });
 
     render(<NotesListPanel />);
+    await userEvent.type(await screen.findByLabelText("Folder name"), "Inbox2{Enter}");
     await waitFor(() => {
       expect(mockedCreateDir).toHaveBeenCalledWith("notes/Inbox2");
     });
     expect(useUIStore.getState().pendingAction).toBeNull();
-    promptSpy.mockRestore();
   });
 });

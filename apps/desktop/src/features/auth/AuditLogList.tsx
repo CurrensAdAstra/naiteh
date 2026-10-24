@@ -31,7 +31,6 @@ export function AuditLogList({ entries }: AuditLogListProps) {
             {formatAuditTimestamp(entry.timestamp)}
           </time>
           <span className={styles.auditAction}>{entry.action}</span>
-          <span className={styles.auditUser}>{entry.username}</span>
           {entry.detail !== null && (
             <span className={styles.auditDetail}>{entry.detail}</span>
           )}

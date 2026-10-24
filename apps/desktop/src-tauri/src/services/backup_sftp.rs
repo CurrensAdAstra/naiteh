@@ -23,15 +23,17 @@ const IO_TIMEOUT_MS: u32 = 60_000;
 /// libssh2 SFTP status codes.
 const FX_NO_SUCH_FILE: i32 = 2;
 
-fn net(e: impl std::fmt::Display) -> AppError {
-    AppError::Network(e.to_string())
+fn net(_: impl std::fmt::Display) -> AppError {
+    AppError::Network("SFTP network operation failed".into())
 }
 
 fn sftp_err(e: ssh2::Error) -> AppError {
     match e.code() {
-        ErrorCode::SFTP(FX_NO_SUCH_FILE) => AppError::NotFound(e.message().to_string()),
-        ErrorCode::SFTP(_) => AppError::Io(format!("SFTP: {}", e.message())),
-        ErrorCode::Session(_) => AppError::Network(e.message().to_string()),
+        ErrorCode::SFTP(FX_NO_SUCH_FILE) => AppError::NotFound("SFTP file not found".into()),
+        ErrorCode::SFTP(code) => AppError::Io(format!("SFTP operation failed (status {code})")),
+        ErrorCode::Session(code) => {
+            AppError::Network(format!("SSH operation failed (code {code})"))
+        }
     }
 }
 
@@ -55,11 +57,15 @@ pub fn handshake(host: &str, port: u16) -> Result<(Session, String), AppError> {
     Ok((sess, fingerprint))
 }
 
-fn authenticate(sess: &Session, cfg: &StoredSftp) -> Result<(), AppError> {
-    let unauth = |e: ssh2::Error| AppError::Unauthorized(format!("SSH authentication failed: {e}"));
+fn authenticate(sess: &Session, cfg: &StoredSftp, secret: Option<&str>) -> Result<(), AppError> {
+    // Never return native/server authentication text: it may echo credentials.
+    let unauth = |_: ssh2::Error| AppError::Unauthorized("SSH authentication failed".into());
     match cfg.auth_method.as_str() {
         "password" => sess
-            .userauth_password(&cfg.username, cfg.password.as_deref().unwrap_or_default())
+            .userauth_password(
+                &cfg.username,
+                secret.ok_or_else(|| AppError::Validation("SFTP password is not set".into()))?,
+            )
             .map_err(unauth)?,
         "key" => {
             let key = cfg
@@ -70,7 +76,7 @@ fn authenticate(sess: &Session, cfg: &StoredSftp) -> Result<(), AppError> {
                 &cfg.username,
                 None,
                 Path::new(key),
-                cfg.passphrase.as_deref().filter(|p| !p.is_empty()),
+                secret.filter(|p| !p.is_empty()),
             )
             .map_err(unauth)?
         }
@@ -91,15 +97,21 @@ pub struct SftpFs {
 
 /// Connect to a configured target: handshake, verify the pinned host key,
 /// authenticate, open SFTP and ensure the remote dir exists.
-pub fn connect(cfg: &StoredSftp) -> Result<SftpFs, AppError> {
-    connect_pinned(cfg, cfg.host_key_fingerprint.as_deref())
+pub fn connect(config_dir: &Path, id: &str, cfg: &StoredSftp) -> Result<SftpFs, AppError> {
+    connect_pinned(config_dir, id, cfg, cfg.host_key_fingerprint.as_deref())
 }
 
 /// [`connect`] with an explicit pin (used when confirming a fingerprint).
-pub fn connect_pinned(cfg: &StoredSftp, pinned: Option<&str>) -> Result<SftpFs, AppError> {
+pub fn connect_pinned(
+    config_dir: &Path,
+    id: &str,
+    cfg: &StoredSftp,
+    pinned: Option<&str>,
+) -> Result<SftpFs, AppError> {
     let (sess, fp) = handshake(&cfg.host, cfg.port)?;
     backup::require_trusted(pinned, &fp)?;
-    authenticate(&sess, cfg)?;
+    let secret = backup::resolve_sftp_secret(config_dir, id, cfg)?;
+    authenticate(&sess, cfg, secret.as_deref())?;
     let sftp = sess.sftp().map_err(sftp_err)?;
     let root = if cfg.remote_dir.starts_with('/') {
         cfg.remote_dir.clone()
@@ -257,5 +269,23 @@ impl RemoteFs for SftpFs {
         let root = self.root.clone();
         self.walk(&root, "", &mut out)?;
         Ok(out)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_and_server_errors_do_not_echo_credentials() {
+        let secret = "password-secret";
+        for error in [
+            sftp_err(ssh2::Error::new(ErrorCode::Session(-18), secret)),
+            sftp_err(ssh2::Error::new(ErrorCode::SFTP(4), secret)),
+            net(std::io::Error::other(secret)),
+        ] {
+            assert!(!error.to_string().contains(secret));
+            assert!(!serde_json::to_string(&error).unwrap().contains(secret));
+        }
     }
 }

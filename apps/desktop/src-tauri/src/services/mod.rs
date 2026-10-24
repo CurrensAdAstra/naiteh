@@ -1,6 +1,7 @@
 // Side-effectful services — see vault/wiki/app-config.md and
 // vault/wiki/concurrency-safety.md.
 
+pub mod app_lock;
 pub mod attachments;
 pub mod auth;
 pub mod backup;
@@ -9,6 +10,7 @@ pub mod calendar;
 pub mod chat_doc;
 pub mod config;
 pub mod conflicts;
+pub mod credentials;
 pub mod evernote;
 pub mod fs;
 pub mod fs_naming;

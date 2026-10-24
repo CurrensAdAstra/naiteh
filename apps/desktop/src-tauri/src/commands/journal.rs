@@ -19,7 +19,7 @@ use crate::services::index::TagIndex;
 use crate::services::notes;
 use crate::services::session::{require_session, ActiveSession};
 use crate::services::timeline;
-use crate::services::vault_lock::VaultLocks;
+use crate::services::vault_lock::{check_expected_root, VaultLocks};
 
 const INBOX_DIR: &str = "_inbox";
 
@@ -165,9 +165,10 @@ pub async fn journal_save(
     date: String,
     content: String,
     expected_version: Option<String>,
+    expected_vault_root: String,
 ) -> Result<JournalSaveResult, AppError> {
     require_session(&active)?;
-    let vault_root = config::current_vault_root()?;
+    let vault_root = check_expected_root(config::current_vault_root()?, &expected_vault_root)?;
     let lock = locks.for_vault(&vault_root);
     let _guard = lock.lock().await;
     let root = vault_root.clone();

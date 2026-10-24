@@ -1,38 +1,35 @@
 import { useEffect, useState } from "react";
 
-import { AdminDashboard } from "./features/auth/AdminDashboard";
 import { LoginScreen } from "./features/auth/LoginScreen";
 import { FirstRunSetup } from "./features/settings/FirstRunSetup";
-import { authResume } from "./lib/api/auth";
 import { vaultCurrent } from "./lib/api/vault";
 import { applyAppearance } from "./lib/applyAppearance";
 import { DEFAULT_APPEARANCE, formatAppError } from "./lib/types";
 import { AppShell } from "./shell/AppShell";
 import { useMenuEvents } from "./shell/useMenuEvents";
+import { useDraftCloseGuard } from "./shell/useDraftCloseGuard";
 import { useAuthStore } from "./state/authStore";
+import { hasPendingSave, onSaved } from "./state/autosave";
 import { useSettingsStore } from "./state/settingsStore";
 import { useVaultStore } from "./state/vaultStore";
 import styles from "./App.module.css";
 
-function isAdminPath(): boolean {
-  if (typeof window === "undefined") return false;
-  return window.location.pathname.replace(/\/+$/, "") === "/admin";
-}
-
 export function App() {
   const [loading, setLoading] = useState(true);
-  const [loadedFor, setLoadedFor] = useState<string | null>(null);
+  const [workspaceReady, setWorkspaceReady] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Try to restore a remembered session before deciding to show login,
-  // so a "Keep me signed in" user never sees the login screen flash.
-  const [resuming, setResuming] = useState(true);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const session = useAuthStore((s) => s.session);
-  const setSession = useAuthStore((s) => s.setSession);
+  const ready = useAuthStore((s) => s.ready);
+  const busy = useAuthStore((s) => s.busy);
+  const draftRecovery = useAuthStore((s) => s.draftRecovery);
+  const bootstrap = useAuthStore((s) => s.bootstrap);
+  const hasAccess = ready && session !== null && draftRecovery === null && busy !== "unlock" && busy !== "migrate";
   const active = useVaultStore((s) => s.active);
   const setActive = useVaultStore((s) => s.setActive);
   const refreshSettings = useSettingsStore((s) => s.refresh);
   const appearance = useSettingsStore((s) => s.config?.appearance);
-  const adminPath = isAdminPath();
+  const closeNotice = useDraftCloseGuard(hasAccess && workspaceReady && !loading && error === null && active !== null && busy === null);
   useMenuEvents();
 
   // Palette + fonts follow the settings store (Settings > Appearance).
@@ -41,86 +38,69 @@ export function App() {
   }, [appearance]);
 
   useEffect(() => {
-    let mounted = true;
-    authResume()
-      .then((result) => {
-        if (mounted && result !== null) {
-          setSession(result.token, result.session);
-        }
-      })
-      .catch(() => {
-        // A resume failure is not fatal — fall through to the login screen.
-      })
-      .finally(() => {
-        if (mounted) setResuming(false);
-      });
-    return () => {
-      mounted = false;
-    };
-  }, [setSession]);
+    void bootstrap();
+  }, [bootstrap]);
+
+  // Keep save logging active during recovery, before the editor remounts.
+  useEffect(() => onSaved((source) => {
+    void useAuthStore.getState().logAction(
+      source.kind === "note" ? "note_save" : "journal_save",
+      source.kind === "note" ? source.relPath : source.date,
+    ).catch(() => {});
+  }), []);
 
   useEffect(() => {
-    if (session === null) {
-      setLoadedFor(null);
-      setLoading(false);
-      return;
-    }
-    if (adminPath && session.role === "Admin") {
-      setLoadedFor(session.username);
-      setError(null);
+    if (!hasAccess) {
+      setWorkspaceReady(false);
       setLoading(false);
       return;
     }
     let mounted = true;
     setLoading(true);
-    setLoadedFor(null);
+    setWorkspaceReady(false);
     setError(null);
     Promise.all([
       vaultCurrent().then((vault) => {
-        if (mounted) setActive(vault);
+        if (mounted && useAuthStore.getState().checkDraftVault(vault)) setActive(vault);
       }),
       refreshSettings(),
     ])
       .catch((e: unknown) => {
-        if (mounted) setError(formatAppError(e));
+        if (!mounted) return;
+        if (hasPendingSave()) {
+          useAuthStore.getState().holdDraftRecovery(`Workspace could not be checked: ${formatAppError(e)}. Drafts remain paused and only in memory.`);
+        } else {
+          setError(formatAppError(e));
+        }
       })
       .finally(() => {
         if (mounted) {
-          setLoadedFor(session.username);
+          setWorkspaceReady(true);
           setLoading(false);
         }
       });
     return () => {
       mounted = false;
     };
-  }, [adminPath, session, setActive, refreshSettings]);
+  }, [hasAccess, setActive, refreshSettings, loadAttempt]);
 
-  if (resuming) {
-    return <div className={styles.center}>Loading…</div>;
-  }
-  if (session === null) {
-    return <LoginScreen onLogin={setSession} />;
-  }
-  if (adminPath && session.role === "Admin") {
-    return <AdminDashboard />;
-  }
-  if (loading) {
-    return <div className={styles.center}>Loading…</div>;
-  }
-  if (loadedFor !== session.username) {
-    return <div className={styles.center}>Loading…</div>;
-  }
-  if (error !== null) {
-    return (
+  let content;
+  if (!hasAccess) content = <LoginScreen />;
+  else if (loading || !workspaceReady) content = <div className={styles.center}>Loading…</div>;
+  else if (error !== null) {
+    content = (
       <div className={styles.error} role="alert">
         {error}
+        <button type="button" onClick={() => setLoadAttempt(loadAttempt + 1)}>Retry workspace</button>
       </div>
     );
-  }
-  if (!active) {
-    return <FirstRunSetup />;
-  }
-  // Re-mount the shell when the active vault changes so each panel's
-  // useEffect-driven refresh fires against the new vault.
-  return <AppShell key={active.root} />;
+  } else if (!active) content = <FirstRunSetup />;
+  // Re-mount the shell only when the active vault changes.
+  else content = <AppShell key={active.root} />;
+  return (
+    <>
+      {closeNotice !== null && <div className={styles.closeNotice} role="status">{closeNotice}</div>}
+      {content}
+    </>
+  );
 }

@@ -1,172 +1,115 @@
-import { KeyRound, LockKeyhole } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import { LockKeyhole } from "lucide-react";
+import { useState } from "react";
 
-import { authLogin } from "../../lib/api/auth";
-import { formatAppError, type AuthSession } from "../../lib/types";
 import { useAuthStore } from "../../state/authStore";
-import { ChangePasswordForm } from "./ChangePasswordForm";
+import { PASSWORD_HINT, validateLockPassword } from "./passwordRules";
 import styles from "./LoginScreen.module.css";
 
-interface LoginScreenProps {
-  onLogin: (token: string, session: AuthSession) => void;
-}
-
-function initialUsername(): string {
-  if (typeof window === "undefined") return "";
-  return window.location.pathname.replace(/\/+$/, "") === "/admin" ? "admin" : "";
-}
-
-/**
- * Sign-in, plus the forced "set a new password" step. A login (or a
- * resumed session) the backend flags with `mustChangePassword` is held
- * in `authStore.pendingPasswordChange` — the app keeps rendering this
- * screen until the change succeeds or the user signs out.
- */
-export function LoginScreen({ onLogin }: LoginScreenProps) {
-  const pending = useAuthStore((s) => s.pendingPasswordChange);
-  const signedOutReason = useAuthStore((s) => s.signedOutReason);
-  const setSession = useAuthStore((s) => s.setSession);
-  const completePasswordChange = useAuthStore((s) => s.completePasswordChange);
-  const clearSession = useAuthStore((s) => s.clearSession);
-
-  const [username, setUsername] = useState(initialUsername);
+/** Startup access, password-only unlock, or explicit one-time legacy conversion. */
+export function LoginScreen() {
+  const { ready, busy, error, accessNotice, migrationRequired, bootstrap, unlock, migrate, draftRecovery, token, returnToDraftVault } = useAuthStore();
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  // The password just used to sign in, offered as "current password" in
-  // the change step so the user doesn't have to type it twice. A ref, not
-  // state: it must be in place on the very render that shows the step
-  // (the store update can render before batched state updates land).
-  const changePrefill = useRef("");
-  const [remember, setRemember] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const canSubmit = useMemo(
-    () => username.trim() !== "" && password !== "" && !busy,
-    [busy, password, username],
-  );
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmation, setConfirmation] = useState("");
+  const [validation, setValidation] = useState<string | null>(null);
+  const working = busy !== null;
+  const recovering = draftRecovery !== null && token !== null;
 
-  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
-    e.preventDefault();
-    if (!canSubmit) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const result = await authLogin(username, password, remember);
-      if (result.mustChangePassword) {
-        changePrefill.current = password;
-        setPassword("");
-        setSession(result.token, result.session, true);
-      } else {
-        onLogin(result.token, result.session);
+  async function submit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (working || !ready) return;
+    setValidation(null);
+    if (migrationRequired) {
+      const problem = validateLockPassword(newPassword, confirmation, password);
+      if (problem !== null) {
+        setValidation(problem);
+        return;
       }
-    } catch (err) {
-      setError(formatAppError(err));
-    } finally {
-      setBusy(false);
     }
-  }
-
-  async function handleCancelChange() {
-    changePrefill.current = "";
-    await clearSession();
-  }
-
-  if (pending !== null) {
-    return (
-      <main className={styles.screen} data-testid="login-screen">
-        <section
-          className={styles.form}
-          aria-labelledby="password-change-title"
-          data-testid="password-change-step"
-        >
-          <div className={styles.mark} aria-hidden="true">
-            <KeyRound size={20} />
-          </div>
-          <h1 className={styles.title} id="password-change-title">
-            Set a new password
-          </h1>
-          <p className={styles.intro}>
-            Signed in as <strong>{pending.session.username}</strong>. This
-            account must choose a new password before continuing.
-          </p>
-          <ChangePasswordForm
-            username={pending.session.username}
-            initialCurrentPassword={changePrefill.current}
-            onSubmit={completePasswordChange}
-            submitLabel="Set password and continue"
-            idPrefix="forced-password"
-            autoFocus
-          />
-          <button
-            type="button"
-            className={styles.linkButton}
-            onClick={() => void handleCancelChange()}
-            data-testid="password-change-signout"
-          >
-            Sign out instead
-          </button>
-        </section>
-      </main>
-    );
+    const succeeded = migrationRequired
+      ? await migrate(username, password, newPassword)
+      : await unlock(password);
+    if (succeeded) {
+      setUsername("");
+      setPassword("");
+      setNewPassword("");
+      setConfirmation("");
+    }
   }
 
   return (
     <main className={styles.screen} data-testid="login-screen">
-      <form className={styles.form} onSubmit={handleSubmit}>
-        <div className={styles.mark} aria-hidden="true">
-          <LockKeyhole size={20} />
-        </div>
-        <h1 className={styles.title}>naiteh</h1>
-        {signedOutReason !== null && error === null && (
-          <p className={styles.notice} role="status" data-testid="login-notice">
-            {signedOutReason}
-          </p>
+      <form className={styles.form} onSubmit={(event) => void submit(event)} aria-labelledby="access-title">
+        <div className={styles.mark} aria-hidden="true"><LockKeyhole size={20} /></div>
+        <h1 className={styles.title} id="access-title">
+          {recovering ? "Recover unsaved drafts" : !ready ? "naiteh" : migrationRequired ? "Convert to an app lock" : "Unlock naiteh"}
+        </h1>
+        {accessNotice !== null && <p className={styles.notice} role="status">{accessNotice}</p>}
+        {recovering ? (
+          <>
+            <p className={styles.intro}>
+              App access is unlocked, but draft recovery is paused. Your edits remain only
+              in this window&apos;s memory, not confirmed saved. Keep this window open.
+            </p>
+            <p className={styles.intro}>Draft vault: {draftRecovery.vaultRoot ?? "unknown"}</p>
+            <button type="button" className={styles.button} onClick={() => void bootstrap()} disabled={working}>
+              {working ? "Checking draft recovery..." : "Retry draft recovery"}
+            </button>
+            <button type="button" className={styles.button} onClick={() => void returnToDraftVault()} disabled={working || draftRecovery.vaultRoot === null}>
+              Return to draft vault
+            </button>
+          </>
+        ) : !ready ? (
+          <>
+            <p className={styles.intro}>{working ? "Checking app access..." : "App access could not be checked. No access has been granted."}</p>
+            {!working && <button type="button" className={styles.button} onClick={() => void bootstrap()}>Retry access</button>}
+          </>
+        ) : (
+          <>
+            {migrationRequired ? (
+              <p className={styles.intro}>
+                This installation has legacy accounts. Verify your active legacy account
+                credentials and choose a new app-lock password to convert this device to
+                single-user local access. Conversion enables the lock and removes legacy
+                remembered sign-ins; it does not select another account or disable protection.
+              </p>
+            ) : <p className={styles.intro}>Enter your app-lock password to continue.</p>}
+            <div className={styles.fields}>
+              {migrationRequired && (
+                <label className={styles.field}>
+                  <span className={styles.label}>Legacy username</span>
+                  <input className={styles.input} value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" autoFocus required disabled={working} />
+                </label>
+              )}
+              <label className={styles.field}>
+                <span className={styles.label}>{migrationRequired ? "Legacy password" : "Password"}</span>
+                <input className={styles.input} type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" autoFocus={!migrationRequired} required disabled={working} />
+              </label>
+              {migrationRequired && (
+                <>
+                  <label className={styles.field}>
+                    <span className={styles.label}>New app-lock password</span>
+                    <input className={styles.input} type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} autoComplete="new-password" aria-describedby="migration-password-hint" required disabled={working} />
+                  </label>
+                  <label className={styles.field}>
+                    <span className={styles.label}>Confirm new password</span>
+                    <input className={styles.input} type="password" value={confirmation} onChange={(e) => setConfirmation(e.target.value)} autoComplete="new-password" required disabled={working} />
+                  </label>
+                  <p className={styles.intro} id="migration-password-hint">{PASSWORD_HINT}</p>
+                </>
+              )}
+            </div>
+            <p className={styles.intro}>
+              Markdown files remain unencrypted plaintext. The lock only gates this app&apos;s
+              backend commands (IPC), not direct access to your files or remote copies.
+            </p>
+            <button className={styles.button} type="submit" disabled={working || password === "" || (migrationRequired && username.trim() === "")}>
+              {working ? "Please wait..." : migrationRequired ? "Convert and enable app lock" : "Unlock"}
+            </button>
+          </>
         )}
-        <div className={styles.fields}>
-          <label className={styles.field}>
-            <span className={styles.label}>User</span>
-            <input
-              className={styles.input}
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              autoComplete="username"
-              autoFocus
-              data-testid="login-username"
-            />
-          </label>
-          <label className={styles.field}>
-            <span className={styles.label}>Password</span>
-            <input
-              className={styles.input}
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              autoComplete="current-password"
-              data-testid="login-password"
-            />
-          </label>
-        </div>
-        <label className={styles.remember}>
-          <input
-            type="checkbox"
-            checked={remember}
-            onChange={(e) => setRemember(e.target.checked)}
-            data-testid="login-remember"
-          />
-          <span>Keep me signed in on this device</span>
-        </label>
-        {error !== null && (
-          <p className={styles.error} role="alert">
-            {error}
-          </p>
-        )}
-        <button
-          type="submit"
-          className={styles.button}
-          disabled={!canSubmit}
-          data-testid="login-submit"
-        >
-          {busy ? "Signing in…" : "Sign in"}
-        </button>
+        {(validation ?? error) !== null && <p className={styles.error} role="alert">{validation ?? error}</p>}
       </form>
     </main>
   );

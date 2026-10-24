@@ -10,3 +10,17 @@
   composes: center;
   color: var(--color-danger);
 }
+
+.closeNotice {
+  position: fixed;
+  top: 12px;
+  left: 12px;
+  right: 12px;
+  z-index: 150;
+  padding: 10px 12px;
+  border: 1px solid var(--color-danger);
+  border-radius: 6px;
+  background: var(--color-bg-app);
+  color: var(--color-danger);
+  font-size: 13px;
+}

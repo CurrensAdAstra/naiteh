@@ -151,11 +151,11 @@ describe("EditorPanel", () => {
     );
   });
 
-  it("Edit toggle switches between the rendered view and the source editor", () => {
+  it("Edit and Done switch between reading and editing in Calendar mode", () => {
     useEditorStore.setState({
       open: noteOpen("notes/x.md", "# Title\n\nbody", "# Title\n\nbody"),
     });
-    useUIStore.setState({ editorMode: "view" });
+    useUIStore.setState({ editorMode: "view", viewMode: "calendar" });
     render(<EditorPanel />);
     const button = screen.getByTestId("editor-mode-toggle");
     expect(button).toHaveAttribute("aria-pressed", "false");
@@ -174,6 +174,14 @@ describe("EditorPanel", () => {
     expect(screen.getByTestId("editor-source")).toBeVisible();
     // Save status is shown in both modes.
     expect(screen.getByTestId("editor-status")).toHaveTextContent(/saved/i);
+
+    act(() => {
+      screen.getByRole("button", { name: "Done editing" }).click();
+    });
+    expect(useUIStore.getState().editorMode).toBe("view");
+    expect(useUIStore.getState().viewMode).toBe("calendar");
+    expect(screen.getByTestId("markdown-viewer")).toBeInTheDocument();
+    expect(screen.getByTestId("editor-source")).not.toBeVisible();
   });
 
   it("empty note in view mode offers to start writing", () => {
@@ -202,6 +210,7 @@ describe("EditorPanel", () => {
           "notes/x.md",
           "- [x] buy milk\n",
           "v1",
+          null,
         ),
       { timeout: 2000 },
     );
@@ -266,7 +275,7 @@ describe("EditorPanel", () => {
       });
       await waitFor(
         () => {
-          expect(mockedWrite).toHaveBeenCalledWith("notes/x.md", "dirty", "v1");
+          expect(mockedWrite).toHaveBeenCalledWith("notes/x.md", "dirty", "v1", null);
         },
         { timeout: 1500 },
       );
@@ -292,6 +301,7 @@ describe("EditorPanel", () => {
             "2026-05-09",
             "dirty",
             "v1",
+            null,
           );
         },
         { timeout: 1500 },
@@ -308,7 +318,7 @@ describe("EditorPanel", () => {
       new KeyboardEvent("keydown", { key: "s", metaKey: true }),
     );
     await waitFor(() => {
-      expect(mockedWrite).toHaveBeenCalledWith("notes/x.md", "fresh", "v1");
+      expect(mockedWrite).toHaveBeenCalledWith("notes/x.md", "fresh", "v1", null);
     });
   });
 });

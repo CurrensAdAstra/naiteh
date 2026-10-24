@@ -9,10 +9,13 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 
 use crate::domain::AppError;
+use crate::services::credentials::{self, CredentialRef, CredentialStore, Transaction};
 use crate::services::fs as fsx;
 
 const APP_DIR_NAME: &str = "naiteh";
@@ -155,6 +158,8 @@ pub fn default_provider_base_url(id: &str) -> Option<&'static str> {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(from = "AiConfigOnDisk", rename_all = "camelCase")]
 pub struct AiConfig {
+    /// Providers explicitly added in Settings, in display order.
+    pub added_providers: Vec<String>,
     /// `provider@model`.
     pub default_model: String,
     pub temperature: f64,
@@ -171,22 +176,38 @@ pub struct AiConfig {
     pub providers: BTreeMap<String, ProviderConfig>,
 }
 
-/// One provider's endpoint + key. The key never leaves the backend.
-#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+/// Legacy plaintext is deserialize-only. New writes persist `apiKeyRef`.
+#[derive(Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct ProviderConfig {
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing)]
     pub api_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_key_ref: Option<CredentialRef>,
     pub base_url: String,
 }
 
 impl ProviderConfig {
-    /// The key, when one is set and non-blank.
+    pub fn has_key(&self) -> bool {
+        self.api_key_ref.is_some() || self.key().is_some()
+    }
+
+    /// In-memory key, when non-blank. Network callers must use
+    /// [`resolve_provider`] first, never send a loaded legacy value directly.
     pub fn key(&self) -> Option<&str> {
         self.api_key
             .as_deref()
             .map(str::trim)
             .filter(|k| !k.is_empty())
+    }
+}
+
+impl std::fmt::Debug for ProviderConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProviderConfig")
+            .field("has_api_key", &self.has_key())
+            .field("base_url", &self.base_url)
+            .finish()
     }
 }
 
@@ -196,9 +217,10 @@ pub const AI_LANGUAGE_MAX_LEN: usize = 50;
 
 /// Raw on-disk shape: every field optional plus the legacy (pre-chat)
 /// fields. Unknown fields (e.g. the removed `chat`) are ignored.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 struct AiConfigOnDisk {
+    added_providers: Option<Vec<String>>,
     default_model: Option<String>,
     temperature: Option<f64>,
     max_tokens: Option<u32>,
@@ -235,6 +257,7 @@ impl From<AiConfigOnDisk> for AiConfig {
                     slot.base_url = p.base_url.trim().to_string();
                 }
                 slot.api_key = p.api_key.filter(|k| !k.trim().is_empty());
+                slot.api_key_ref = p.api_key_ref;
             }
         }
         let mut default_model = raw.default_model.filter(|m| !m.trim().is_empty());
@@ -255,15 +278,43 @@ impl From<AiConfigOnDisk> for AiConfig {
                     if !legacy_url.trim().is_empty() {
                         p.base_url = legacy_url.trim().to_string();
                     }
-                    if let Some(k) = raw.api_key.filter(|k| !k.trim().is_empty()) {
+                    if let Some(k) = raw
+                        .api_key
+                        .filter(|k| p.api_key_ref.is_none() && !k.trim().is_empty())
+                    {
                         p.api_key = Some(k.trim().to_string());
                     }
                 }
                 default_model = legacy_model.map(|m| format!("openai@{m}"));
             }
         }
+        let default_model = default_model.unwrap_or(d.default_model);
+        let added_providers = match raw.added_providers {
+            Some(ids) => {
+                let mut added = Vec::new();
+                for id in ids {
+                    let id = id.trim().to_string();
+                    if providers.contains_key(&id) && !added.contains(&id) {
+                        added.push(id);
+                    }
+                }
+                added
+            }
+            None => AI_PROVIDERS
+                .iter()
+                .filter(|(id, url)| {
+                    let p = &providers[*id];
+                    p.has_key()
+                        || (matches!(*id, "ollama" | "lmstudio")
+                            && (default_model.starts_with(&format!("{id}@"))
+                                || p.base_url.trim_end_matches('/') != url.trim_end_matches('/')))
+                })
+                .map(|(id, _)| id.to_string())
+                .collect(),
+        };
         AiConfig {
-            default_model: default_model.unwrap_or(d.default_model),
+            added_providers,
+            default_model,
             temperature: raw
                 .temperature
                 .filter(|t| t.is_finite() && (0.0..=AI_TEMPERATURE_MAX).contains(t))
@@ -300,6 +351,7 @@ impl AiConfig {
         let default = default_provider_base_url(id)?;
         Some(self.providers.get(id).cloned().unwrap_or(ProviderConfig {
             api_key: None,
+            api_key_ref: None,
             base_url: default.to_string(),
         }))
     }
@@ -327,7 +379,7 @@ pub struct JournalConfig {
 /// The IPC shape of [`AppConfig`]: identical except that `ai` is an
 /// [`AiConfigView`], so the API key never reaches the renderer. Every
 /// command that returns app config returns this view; the on-disk
-/// `config.json` keeps the full [`AppConfig`] (key included) unchanged.
+/// `config.json` stores credential references; legacy plaintext is never exposed.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AppConfigView {
@@ -347,6 +399,7 @@ pub struct AppConfigView {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AiConfigView {
+    pub added_providers: Vec<String>,
     pub default_model: String,
     pub temperature: f64,
     pub max_tokens: u32,
@@ -368,6 +421,7 @@ pub struct ProviderView {
 impl From<&AiConfig> for AiConfigView {
     fn from(ai: &AiConfig) -> Self {
         Self {
+            added_providers: ai.added_providers.clone(),
             default_model: ai.default_model.clone(),
             temperature: ai.temperature,
             max_tokens: ai.max_tokens,
@@ -383,7 +437,7 @@ impl From<&AiConfig> for AiConfigView {
                     (
                         id.clone(),
                         ProviderView {
-                            has_api_key: p.key().is_some(),
+                            has_api_key: p.has_key(),
                             base_url: p.base_url.clone(),
                         },
                     )
@@ -493,6 +547,7 @@ impl Default for ClippingConfig {
 impl Default for AiConfig {
     fn default() -> Self {
         Self {
+            added_providers: Vec::new(),
             default_model: "openai@gpt-4.1-mini".to_string(),
             temperature: 0.7,
             max_tokens: 4096,
@@ -508,6 +563,7 @@ impl Default for AiConfig {
                         id.to_string(),
                         ProviderConfig {
                             api_key: None,
+                            api_key_ref: None,
                             base_url: url.to_string(),
                         },
                     )
@@ -552,19 +608,282 @@ pub fn config_path(config_dir: &Path) -> PathBuf {
     config_dir.join(CONFIG_FILE)
 }
 
-/// Load app config. If the file does not exist yet, returns `Default::default()`.
+/// Serializes config read-modify-write cycles, including credential staging.
+/// This is a process-local lock, not a multi-process file lock.
+static CONFIG_LOCK: Mutex<()> = Mutex::new(());
+
+/// Load metadata only. No native credential access or migration on ordinary reads.
 pub fn load(config_dir: &Path) -> Result<AppConfig, AppError> {
-    let path = config_path(config_dir);
-    match fsx::read_json::<AppConfig>(&path) {
-        Ok(cfg) => Ok(cfg),
-        Err(AppError::NotFound(_)) => Ok(AppConfig::default()),
-        Err(e) => Err(e),
-    }
+    credentials::read_json(&config_path(config_dir)).map(|(_, cfg)| cfg)
 }
 
-/// Persist app config atomically.
+/// Persist a supplied config, staging any supplied plaintext keys first.
+/// Use [`modify`] for read-modify-write operations to avoid lost updates.
+#[cfg(test)]
 pub fn save(config_dir: &Path, cfg: &AppConfig) -> Result<(), AppError> {
-    fsx::write_json(&config_path(config_dir), cfg)
+    credentials::with_store(|store| {
+        let touched: Vec<&str> = cfg.ai.providers.keys().map(String::as_str).collect();
+        modify_with_store(config_dir, store, &touched, |current| {
+            *current = cfg.clone();
+            Ok(())
+        })
+        .map(|_| ())
+    })
+}
+
+pub fn modify(
+    config_dir: &Path,
+    f: impl FnOnce(&mut AppConfig) -> Result<(), AppError>,
+) -> Result<AppConfig, AppError> {
+    credentials::with_store(|store| modify_with_store(config_dir, store, &[], f))
+}
+
+/// `touch_key` forces migration even when explicitly setting the same legacy key.
+pub fn modify_ai_provider(
+    config_dir: &Path,
+    id: &str,
+    touch_key: bool,
+    f: impl FnOnce(&mut ProviderConfig) -> Result<(), AppError>,
+) -> Result<AppConfig, AppError> {
+    let touched = [id];
+    credentials::with_store(|store| {
+        modify_with_store(
+            config_dir,
+            store,
+            if touch_key { &touched } else { &[] },
+            |cfg| {
+                let slot = cfg
+                    .ai
+                    .providers
+                    .get_mut(id)
+                    .ok_or_else(|| AppError::Validation("Unknown AI provider".into()))?;
+                f(slot)
+            },
+        )
+    })
+}
+
+fn modify_with_store(
+    config_dir: &Path,
+    store: &dyn CredentialStore,
+    touched: &[&str],
+    f: impl FnOnce(&mut AppConfig) -> Result<(), AppError>,
+) -> Result<AppConfig, AppError> {
+    let _guard = CONFIG_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let (mut raw, before): (_, AppConfig) = credentials::read_json(&config_path(config_dir))?;
+    let previous = raw.clone();
+    let mut after = before.clone();
+    f(&mut after)?;
+    let legacy_provider = if raw
+        .pointer("/ai/baseUrl")
+        .and_then(Value::as_str)
+        .and_then(legacy_ollama_origin)
+        .is_some()
+    {
+        "ollama"
+    } else {
+        "openai"
+    };
+    let legacy_endpoint_changed = before
+        .ai
+        .providers
+        .get(legacy_provider)
+        .map(|p| &p.base_url)
+        != after.ai.providers.get(legacy_provider).map(|p| &p.base_url);
+    let normalizes_legacy = raw.get("ai").is_some_and(|ai| {
+        !ai.get("defaultModel")
+            .and_then(Value::as_str)
+            .is_some_and(|s| !s.trim().is_empty())
+            && ["model", "baseUrl", "apiKey"]
+                .iter()
+                .any(|key| ai.get(key).is_some())
+    }) && (before.ai.default_model != after.ai.default_model
+        || legacy_endpoint_changed);
+    let migrate_root = normalizes_legacy && uses_legacy_root_key(&raw);
+    let mut transaction = Transaction::new(store);
+    for (id, slot) in &mut after.ai.providers {
+        let old = before.ai.providers.get(id).cloned().unwrap_or_default();
+        let key_changed = touched.contains(&id.as_str()) || old.api_key != slot.api_key;
+        let superseded = key_changed || old.api_key_ref != slot.api_key_ref;
+        if superseded || (migrate_root && id == "openai") {
+            migrate_provider(&mut raw, id, &mut transaction, superseded)?;
+            if key_changed || slot.api_key_ref.is_none() {
+                if let Some(key) = slot.key() {
+                    slot.api_key_ref = Some(transaction.stage(key)?);
+                }
+            }
+            slot.api_key = None;
+            let object = provider_object(&mut raw, id);
+            object.remove("apiKey");
+            credentials::set_reference(object, "apiKeyRef", slot.api_key_ref.as_ref())?;
+        }
+    }
+    credentials::merge_changes(
+        &mut raw,
+        &credentials::json(&before)?,
+        &credentials::json(&after)?,
+    );
+    if normalizes_legacy {
+        // Adding defaultModel disables the old model/baseUrl interpretation.
+        // Preserve its effective endpoints, and migrate the effective root key
+        // first rather than silently losing it or sending it to a default host.
+        for (id, slot) in &after.ai.providers {
+            provider_object(&mut raw, id)
+                .insert("baseUrl".into(), Value::String(slot.base_url.clone()));
+        }
+        raw["ai"]["defaultModel"] = Value::String(after.ai.default_model.clone());
+    }
+    transaction.finish(&previous, &raw, || {
+        fsx::write_json(&config_path(config_dir), &raw)
+    })?;
+    Ok(after)
+}
+
+fn provider_object<'a>(raw: &'a mut Value, id: &str) -> &'a mut Map<String, Value> {
+    raw.as_object_mut()
+        .unwrap()
+        .entry("ai")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .unwrap()
+        .entry("providers")
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .unwrap()
+        .entry(id)
+        .or_insert_with(|| serde_json::json!({}))
+        .as_object_mut()
+        .unwrap()
+}
+
+fn uses_legacy_root_key(raw: &Value) -> bool {
+    let Some(ai) = raw.get("ai") else {
+        return false;
+    };
+    !ai.get("defaultModel")
+        .and_then(Value::as_str)
+        .is_some_and(|s| !s.trim().is_empty())
+        && ai.get("apiKey").is_some()
+        && legacy_ollama_origin(ai.get("baseUrl").and_then(Value::as_str).unwrap_or("")).is_none()
+}
+
+fn migrate_provider(
+    raw: &mut Value,
+    id: &str,
+    transaction: &mut Transaction<'_>,
+    superseded: bool,
+) -> Result<usize, AppError> {
+    let root_key = id == "openai" && uses_legacy_root_key(raw);
+    let has_legacy = raw
+        .get("ai")
+        .and_then(|ai| ai.get("providers"))
+        .and_then(|p| p.get(id))
+        .is_some_and(|p| p.get("apiKey").is_some());
+    if !(root_key || has_legacy) {
+        return Ok(0);
+    }
+    let object = provider_object(raw, id);
+    let had_reference = object.get("apiKeyRef").is_some_and(|r| !r.is_null());
+    if root_key && had_reference && !superseded {
+        let existing = serde_json::from_value(object["apiKeyRef"].clone())
+            .map_err(|_| AppError::ConfigCorrupt("Invalid AI credential reference".into()))?;
+        transaction.check_reference(&existing)?;
+    }
+    let mut count =
+        credentials::migrate_slot(transaction, object, "apiKey", "apiKeyRef", true, superseded)?;
+    if root_key {
+        let legacy = raw["ai"].as_object_mut().unwrap().remove("apiKey");
+        if let Some(key) = legacy
+            .as_ref()
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+        {
+            let staged = transaction.stage(key)?;
+            count += 1;
+            if !had_reference {
+                credentials::set_reference(provider_object(raw, id), "apiKeyRef", Some(&staged))?;
+            }
+        }
+    }
+    Ok(count)
+}
+
+pub fn migrate_credentials(config_dir: &Path) -> Result<usize, AppError> {
+    credentials::with_store(|store| migrate_credentials_with_store(config_dir, store))
+}
+
+fn migrate_credentials_with_store(
+    config_dir: &Path,
+    store: &dyn CredentialStore,
+) -> Result<usize, AppError> {
+    let _guard = CONFIG_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let (mut raw, _): (_, AppConfig) = credentials::read_json(&config_path(config_dir))?;
+    let previous = raw.clone();
+    let mut transaction = Transaction::new(store);
+    let mut ids: Vec<String> = raw
+        .pointer("/ai/providers")
+        .and_then(Value::as_object)
+        .map(|p| p.keys().cloned().collect())
+        .unwrap_or_default();
+    if uses_legacy_root_key(&raw) && !ids.iter().any(|id| id == "openai") {
+        ids.push("openai".into());
+    }
+    let mut count = 0;
+    for id in ids {
+        count += migrate_provider(&mut raw, &id, &mut transaction, false)?;
+    }
+    // Obsolete root keys (including old Ollama keys) are not used, but must
+    // still be stored successfully before their plaintext can be removed.
+    if let Some(ai) = raw.get_mut("ai").and_then(Value::as_object_mut) {
+        if let Some(key) = ai.remove("apiKey") {
+            if let Some(key) = key.as_str().map(str::trim).filter(|s| !s.is_empty()) {
+                transaction.stage(key)?;
+                count += 1;
+            }
+        }
+    }
+    if raw != previous {
+        transaction.finish(&previous, &raw, || {
+            fsx::write_json(&config_path(config_dir), &raw)
+        })?;
+    }
+    Ok(count)
+}
+
+/// Resolve only this provider, migrating its effective legacy key on use.
+/// A missing/unavailable referenced credential never falls back to plaintext.
+pub fn resolve_provider(config_dir: &Path, id: &str) -> Result<ProviderConfig, AppError> {
+    credentials::with_store(|store| resolve_provider_with_store(config_dir, id, store))
+}
+
+fn resolve_provider_with_store(
+    config_dir: &Path,
+    id: &str,
+    store: &dyn CredentialStore,
+) -> Result<ProviderConfig, AppError> {
+    let _guard = CONFIG_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let (mut raw, before): (_, AppConfig) = credentials::read_json(&config_path(config_dir))?;
+    if before.ai.provider(id).is_none() {
+        return Err(AppError::Validation("Unknown AI provider".into()));
+    }
+    let previous = raw.clone();
+    let mut transaction = Transaction::new(store);
+    migrate_provider(&mut raw, id, &mut transaction, false)?;
+    if raw != previous {
+        transaction.finish(&previous, &raw, || {
+            fsx::write_json(&config_path(config_dir), &raw)
+        })?;
+    }
+    let cfg: AppConfig = serde_json::from_value(raw)
+        .map_err(|_| AppError::ConfigCorrupt("Invalid AI configuration".into()))?;
+    let mut provider = cfg.ai.provider(id).unwrap();
+    provider.api_key = provider
+        .api_key_ref
+        .as_ref()
+        .map(|reference| credentials::resolve(store, reference))
+        .transpose()?;
+    Ok(provider)
 }
 
 /// Resolve the active vault root from app config. Errors if no vault
@@ -697,16 +1016,273 @@ mod tests {
     }
 
     #[test]
-    fn ai_config_round_trips_with_keys_on_disk() {
+    fn ai_config_round_trips_with_references_only_on_disk() {
         let dir = tempdir().unwrap();
         let mut cfg = AppConfig::default();
         cfg.ai.providers.get_mut("openai").unwrap().api_key = Some("sk-1".into());
         cfg.ai.heading_level = 2;
         save(dir.path(), &cfg).unwrap();
         let back = load(dir.path()).unwrap();
-        assert_eq!(back, cfg);
+        assert_eq!(back.ai.heading_level, cfg.ai.heading_level);
+        assert!(back.ai.providers["openai"].api_key.is_none());
+        assert!(back.ai.providers["openai"].api_key_ref.is_some());
+        assert_eq!(
+            resolve_provider(dir.path(), "openai").unwrap().key(),
+            Some("sk-1")
+        );
         let raw = std::fs::read_to_string(config_path(dir.path())).unwrap();
-        assert!(raw.contains("\"apiKey\": \"sk-1\"") || raw.contains("\"apiKey\":\"sk-1\""));
+        assert!(!raw.contains("sk-1"));
+        assert!(raw.contains("apiKeyRef"));
+        assert!(!format!("{back:?}").contains("sk-1"));
+    }
+
+    #[test]
+    fn migration_is_idempotent_and_preserves_legacy_endpoint_and_unknown_fields() {
+        let dir = tempdir().unwrap();
+        let store = credentials::MemoryStore::default();
+        let legacy = serde_json::json!({"theme":"dark", "extra":true, "ai":{
+            "apiKey":" sk-old ", "model":"old-model", "baseUrl":"https://proxy.example/v1",
+            "providers":{"gemini":{"apiKey":"g-secret"}, "future":{"apiKey":"f-secret"}}
+        }});
+        fsx::write_json(&config_path(dir.path()), &legacy).unwrap();
+        assert_eq!(
+            migrate_credentials_with_store(dir.path(), &store).unwrap(),
+            3
+        );
+        let raw = std::fs::read_to_string(config_path(dir.path())).unwrap();
+        for secret in ["sk-old", "g-secret", "f-secret"] {
+            assert!(!raw.contains(secret));
+        }
+        let cfg = load(dir.path()).unwrap();
+        assert_eq!(cfg.ai.default_model, "openai@old-model");
+        let provider = resolve_provider_with_store(dir.path(), "openai", &store).unwrap();
+        assert_eq!(provider.base_url, "https://proxy.example/v1");
+        assert_eq!(provider.key(), Some("sk-old"));
+        assert!(serde_json::from_str::<Value>(&raw).unwrap()["extra"]
+            .as_bool()
+            .unwrap());
+        assert_eq!(
+            migrate_credentials_with_store(dir.path(), &store).unwrap(),
+            0
+        );
+        assert_eq!(
+            std::fs::read_to_string(config_path(dir.path())).unwrap(),
+            raw
+        );
+        assert_eq!(store.len(), 3);
+    }
+
+    #[test]
+    fn failed_migration_preserves_original_bytes_and_is_retryable() {
+        let dir = tempdir().unwrap();
+        let store = credentials::MemoryStore::default();
+        let original = br#"{"ai":{"providers":{"openai":{"apiKey":"old-secret"},"zai":{"apiKey":"other-secret"}}}}"#;
+        fsx::atomic_write(&config_path(dir.path()), original).unwrap();
+        store.fail_after_writes(1);
+        let error = migrate_credentials_with_store(dir.path(), &store).unwrap_err();
+        assert!(!format!("{error:?}").contains("old-secret"));
+        assert_eq!(std::fs::read(config_path(dir.path())).unwrap(), original);
+        assert_eq!(store.len(), 0);
+        store.fail_after_writes(usize::MAX);
+        assert_eq!(
+            migrate_credentials_with_store(dir.path(), &store).unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn locked_store_does_not_block_unrelated_reads_or_vault_updates() {
+        let dir = tempdir().unwrap();
+        let store = credentials::MemoryStore::default();
+        store.unavailable(true);
+        fsx::atomic_write(
+            &config_path(dir.path()),
+            br#"{"ai":{"apiKey":"old-secret","model":"m"}}"#,
+        )
+        .unwrap();
+        assert!(AppConfigView::from(&load(dir.path()).unwrap()).ai.providers["openai"].has_api_key);
+        modify_with_store(dir.path(), &store, &[], |cfg| {
+            cfg.active_vault = Some("/vault".into());
+            cfg.editor.font_size = 20;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            load(dir.path()).unwrap().ai.providers["openai"].key(),
+            Some("old-secret")
+        );
+        assert!(resolve_provider_with_store(dir.path(), "ollama", &store)
+            .unwrap()
+            .key()
+            .is_none());
+        let before = std::fs::read(config_path(dir.path())).unwrap();
+        for clear in [false, true] {
+            assert!(modify_with_store(dir.path(), &store, &["openai"], |cfg| {
+                let slot = cfg.ai.providers.get_mut("openai").unwrap();
+                slot.api_key = (!clear).then(|| "new-secret".into());
+                slot.api_key_ref = None;
+                Ok(())
+            })
+            .is_err());
+            assert_eq!(std::fs::read(config_path(dir.path())).unwrap(), before);
+        }
+        assert!(resolve_provider_with_store(dir.path(), "openai", &store).is_err());
+    }
+
+    #[test]
+    fn changing_legacy_default_model_migrates_key_without_changing_endpoint() {
+        let dir = tempdir().unwrap();
+        let store = credentials::MemoryStore::default();
+        fsx::atomic_write(
+            &config_path(dir.path()),
+            br#"{"ai":{"apiKey":"old-secret","model":"m","baseUrl":"https://proxy.example/v1"}}"#,
+        )
+        .unwrap();
+        modify_with_store(dir.path(), &store, &[], |cfg| {
+            cfg.ai.default_model = "ollama@local".into();
+            Ok(())
+        })
+        .unwrap();
+        let provider = resolve_provider_with_store(dir.path(), "openai", &store).unwrap();
+        assert_eq!(provider.key(), Some("old-secret"));
+        assert_eq!(provider.base_url, "https://proxy.example/v1");
+        assert_eq!(load(dir.path()).unwrap().ai.default_model, "ollama@local");
+    }
+
+    #[test]
+    fn mixed_ai_normalization_preserves_authoritative_reference() {
+        for change_model in [true, false] {
+            let dir = tempdir().unwrap();
+            let store = credentials::MemoryStore::default();
+            let mut transaction = Transaction::new(&store);
+            let reference = transaction.stage("authoritative-key").unwrap();
+            let original = serde_json::json!({"ai": {
+                "apiKey": "root-shadowed-key", "model": "old-model",
+                "baseUrl": "https://old.example/v1",
+                "providers": {"openai": {
+                    "apiKey": "provider-shadowed-key", "apiKeyRef": reference
+                }}
+            }});
+            transaction
+                .finish(&Value::Null, &original, || {
+                    fsx::write_json(&config_path(dir.path()), &original)
+                })
+                .unwrap();
+            let cfg = modify_with_store(dir.path(), &store, &[], |cfg| {
+                if change_model {
+                    cfg.ai.default_model = "ollama@local".into();
+                } else {
+                    cfg.ai.providers.get_mut("openai").unwrap().base_url =
+                        "https://new.example/v1".into();
+                }
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(
+                cfg.ai.providers["openai"].api_key_ref.as_ref(),
+                Some(&reference)
+            );
+            let loaded = load(dir.path()).unwrap();
+            assert_eq!(
+                loaded.ai.providers["openai"].api_key_ref.as_ref(),
+                Some(&reference)
+            );
+            assert_eq!(
+                credentials::resolve(&store, &reference).unwrap(),
+                "authoritative-key"
+            );
+            assert_eq!(
+                resolve_provider_with_store(dir.path(), "openai", &store)
+                    .unwrap()
+                    .key(),
+                Some("authoritative-key")
+            );
+            assert_eq!(store.len(), 1);
+            let raw = std::fs::read_to_string(config_path(dir.path())).unwrap();
+            assert!(!raw.contains("shadowed-key"));
+        }
+    }
+
+    #[test]
+    fn mixed_ai_set_clear_recovers_missing_reference() {
+        for root_legacy in [false, true] {
+            for clear in [false, true] {
+                let dir = tempdir().unwrap();
+                let mut original = serde_json::json!({"ai": {
+                    "model": "old-model", "baseUrl": "https://proxy.example/v1",
+                    "providers": {"openai": {
+                        "apiKey": "provider-legacy-key",
+                        "apiKeyRef": "v1-00000000000000000000000000000000"
+                    }}
+                }});
+                if root_legacy {
+                    original["ai"]["apiKey"] = "root-legacy-key".into();
+                }
+                fsx::write_json(&config_path(dir.path()), &original).unwrap();
+                let before = std::fs::read(config_path(dir.path())).unwrap();
+                assert!(resolve_provider(dir.path(), "openai").is_err());
+                assert!(migrate_credentials(dir.path()).is_err());
+                assert_eq!(std::fs::read(config_path(dir.path())).unwrap(), before);
+
+                let edit = |slot: &mut ProviderConfig| {
+                    slot.api_key = (!clear).then(|| "new-api-key".into());
+                    slot.api_key_ref = None;
+                    Ok(())
+                };
+                let store = credentials::MemoryStore::default();
+                store.fail_after_writes(0);
+                let error = modify_with_store(dir.path(), &store, &["openai"], |cfg| {
+                    edit(cfg.ai.providers.get_mut("openai").unwrap())
+                })
+                .unwrap_err();
+                assert!(matches!(error, AppError::Io(_)), "{error:?}");
+                assert_eq!(std::fs::read(config_path(dir.path())).unwrap(), before);
+                assert_eq!(store.len(), 0);
+
+                let cfg = modify_ai_provider(dir.path(), "openai", true, edit).unwrap();
+                assert_eq!(cfg.ai.providers["openai"].has_key(), !clear);
+                assert_eq!(
+                    resolve_provider(dir.path(), "openai").unwrap().key(),
+                    (!clear).then_some("new-api-key")
+                );
+                let raw = std::fs::read_to_string(config_path(dir.path())).unwrap();
+                assert!(!raw.contains("legacy-key"));
+                assert!(!raw.contains("new-api-key"));
+            }
+        }
+    }
+
+    #[test]
+    fn referenced_key_never_falls_back_to_legacy_plaintext() {
+        let dir = tempdir().unwrap();
+        let store = credentials::MemoryStore::default();
+        fsx::atomic_write(&config_path(dir.path()), br#"{"ai":{"providers":{"openai":{"apiKey":"old-secret","apiKeyRef":"v1-00000000000000000000000000000000"}}}}"#).unwrap();
+        let before = std::fs::read(config_path(dir.path())).unwrap();
+        assert!(resolve_provider_with_store(dir.path(), "openai", &store).is_err());
+        assert_eq!(store.len(), 0);
+        assert_eq!(std::fs::read(config_path(dir.path())).unwrap(), before);
+    }
+
+    #[test]
+    fn concurrent_config_modifications_do_not_lose_updates() {
+        let dir = tempdir().unwrap();
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    for _ in 0..10 {
+                        modify(dir.path(), |cfg| {
+                            cfg.ai.max_tokens += 1;
+                            Ok(())
+                        })
+                        .unwrap();
+                    }
+                });
+            }
+        });
+        assert_eq!(
+            load(dir.path()).unwrap().ai.max_tokens,
+            AiConfig::default().max_tokens + 80
+        );
     }
 
     fn load_ai(json: &str) -> AiConfig {
@@ -716,12 +1292,28 @@ mod tests {
     }
 
     #[test]
+    fn added_providers_migrate_effective_legacy_configuration_only() {
+        assert!(AiConfig::default().added_providers.is_empty());
+        let ai = load_ai(
+            r#"{"ai":{"defaultModel":"ollama@local","providers":{"openai":{"apiKeyRef":"v1-00000000000000000000000000000000"},"lmstudio":{"baseUrl":"http://localhost:4321/v1"}}}}"#,
+        );
+        assert_eq!(ai.added_providers, ["openai", "ollama", "lmstudio"]);
+        let ai = load_ai(
+            r#"{"ai":{"addedProviders":[],"defaultModel":"ollama@local","providers":{"openai":{"apiKey":"legacy"}}}}"#,
+        );
+        assert!(ai.added_providers.is_empty());
+        let ai = load_ai(r#"{"ai":{"addedProviders":["lmstudio","unknown","ollama","lmstudio"]}}"#);
+        assert_eq!(ai.added_providers, ["lmstudio", "ollama"]);
+    }
+
+    #[test]
     fn legacy_openai_settings_migrate_to_the_provider_table() {
         let ai = load_ai(
             r#"{"ai":{"apiKey":"sk-old","model":"gpt-4o","baseUrl":"https://proxy.example.com/v1",
                 "chat":{"provider":"claude","customUrl":null}}}"#,
         );
         assert_eq!(ai.default_model, "openai@gpt-4o");
+        assert_eq!(ai.added_providers, ["openai"]);
         let openai = ai.provider("openai").unwrap();
         assert_eq!(openai.api_key.as_deref(), Some("sk-old"));
         assert_eq!(openai.base_url, "https://proxy.example.com/v1");
@@ -736,6 +1328,7 @@ mod tests {
                 r#"{{"ai":{{"model":"llama3.2","baseUrl":"{url}"}}}}"#
             ));
             assert_eq!(ai.default_model, "ollama@llama3.2");
+            assert_eq!(ai.added_providers, ["ollama"]);
             let ollama = ai.provider("ollama").unwrap();
             assert!(ollama.base_url.ends_with(":11434"), "{}", ollama.base_url);
             assert!(!ollama.base_url.contains("/v1"));

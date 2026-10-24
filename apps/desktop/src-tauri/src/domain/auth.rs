@@ -8,16 +8,6 @@ pub enum UserRole {
     User,
 }
 
-/// Public account shape returned to the frontend. Password hashes stay
-/// backend-only in the auth service.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AuthUser {
-    pub username: String,
-    pub role: UserRole,
-    pub active: bool,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthSession {
@@ -25,24 +15,22 @@ pub struct AuthSession {
     pub role: UserRole,
 }
 
-/// Returned by `auth_login` and `auth_resume`. The `token` is an opaque
-/// bearer string the frontend keeps in memory and passes to the auth
-/// IPCs that need to know who is asking; the backend resolves it via
-/// `services::auth::SessionStore` (12 h idle / 7-day absolute expiry).
-/// Tokens live in process memory, except that with "keep me signed in"
-/// (`remember: true`) the token is also persisted to
-/// `remembered-session.json` (30-day TTL) so `auth_resume` can restore
-/// it after a restart; without it, a restart signs the user out.
-///
-/// `must_change_password` is true while the account still has the
-/// seeded default password; the UI must route to a change-password
-/// screen (`auth_change_password`).
+/// In-memory access for the single local actor. Never persisted or used
+/// for account isolation; manual locking/restart invalidates the token.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoginResult {
     pub token: String,
     pub session: AuthSession,
     pub must_change_password: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthAccess {
+    pub lock_enabled: bool,
+    pub migration_required: bool,
+    pub login: Option<LoginResult>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

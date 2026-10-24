@@ -6,13 +6,29 @@ const FOCUSABLE = [
   "input:not([disabled]):not([type='hidden'])",
   "select:not([disabled])",
   "textarea:not([disabled])",
+  "summary",
   "[tabindex]:not([tabindex='-1'])",
 ].join(",");
 
-/** Tabbable descendants, skipping anything inside a `hidden` subtree. */
+/** Tabbable descendants, skipping hidden subtrees and closed details content. */
 export function focusableWithin(root: HTMLElement): HTMLElement[] {
   return Array.from(root.querySelectorAll<HTMLElement>(FOCUSABLE)).filter(
-    (el) => el.closest("[hidden]") === null && el.tabIndex >= 0,
+    (el) => {
+      if (el.closest("[hidden]") !== null || el.tabIndex < 0) return false;
+      for (
+        let parent = el.parentElement;
+        parent !== null;
+        parent = parent.parentElement
+      ) {
+        if (parent.tagName === "DETAILS" && !parent.hasAttribute("open")) {
+          const summary = Array.from(parent.children).find(
+            (child) => child.tagName === "SUMMARY",
+          );
+          if (summary?.contains(el) !== true) return false;
+        }
+      }
+      return true;
+    },
   );
 }
 

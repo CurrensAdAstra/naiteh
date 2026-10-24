@@ -1,6 +1,4 @@
-/* Shared account UI: password / create-user forms, the account list and
- * the audit log. Used by Settings, the admin dashboard and the forced
- * password-change step on the login screen. */
+/* App-lock settings and local activity. */
 
 .form {
   display: flex;
@@ -22,8 +20,7 @@
   font-weight: 600;
 }
 
-.input,
-.select {
+.input {
   width: 100%;
   min-width: 0;
   padding: 7px 10px;
@@ -35,8 +32,7 @@
   font-size: var(--font-size-ui);
 }
 
-.input:focus,
-.select:focus {
+.input:focus {
   outline: 2px solid var(--color-accent);
   outline-offset: -1px;
 }
@@ -82,7 +78,7 @@
   font-family: var(--font-ui);
   font-size: var(--font-size-ui);
   cursor: pointer;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .button:hover:not(:disabled) {
@@ -105,7 +101,7 @@
   background: var(--color-accent-hover);
 }
 
-/* ── account list ─────────────────────────────────────────── */
+/* Local activity */
 
 .list {
   display: flex;
@@ -116,46 +112,6 @@
   padding: 0;
   list-style: none;
 }
-
-.accountRow {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 8px 12px;
-  border: 1px solid var(--color-border);
-  border-radius: 6px;
-}
-
-.accountMeta {
-  display: flex;
-  align-items: baseline;
-  gap: 10px;
-  min-width: 0;
-}
-
-.accountName {
-  font-size: 13px;
-  font-weight: 500;
-  color: var(--color-text-primary);
-}
-
-.accountRole {
-  font-size: 11px;
-  color: var(--color-text-muted);
-}
-
-.accountActive {
-  font-size: 11px;
-  color: var(--color-success);
-}
-
-.accountDisabled {
-  font-size: 11px;
-  color: var(--color-danger);
-}
-
-/* ── audit log ────────────────────────────────────────────── */
 
 .auditList {
   gap: 0;
@@ -180,10 +136,6 @@
   font-family: var(--font-mono);
   font-weight: 500;
   color: var(--color-text-primary);
-}
-
-.auditUser {
-  color: var(--color-text-secondary);
 }
 
 .auditDetail {

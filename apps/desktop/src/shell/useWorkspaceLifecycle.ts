@@ -1,4 +1,3 @@
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect } from "react";
 
 import {
@@ -8,10 +7,8 @@ import {
 import { openDocument, type OpenTarget } from "../lib/openDocument";
 import type { LastOpened } from "../lib/types";
 import { startVaultWatch } from "../lib/vaultWatch";
-import { flushPendingSave } from "../state/autosave";
 import { useEditorStore } from "../state/editorStore";
 import { useSyncStore } from "../state/syncStore";
-import { useUIStore } from "../state/uiStore";
 
 const SYNC_STATUS_REFRESH_MS = 30_000;
 
@@ -34,8 +31,7 @@ function targetForLastOpened(last: LastOpened): OpenTarget {
  * 2. Restore the last-opened file from `.naiteh/workspace.json`; clear
  *    a stale marker if that file no longer exists.
  * 3. Persist the last-opened file on every fresh open-transition.
- * 4. Flush unsaved edits before the window closes.
- * 5. Follow changes made to the vault outside naiteh (Google Drive sync,
+ * 4. Follow changes made to the vault outside naiteh (Google Drive sync,
  *    other editors) so lists refetch and the open note reloads or enters
  *    the conflict state (lib/vaultWatch).
  */
@@ -97,55 +93,7 @@ export function useWorkspaceLifecycle(): void {
     return () => unsubscribe();
   }, []);
 
-  // 4. Flush pending autosaves before the window closes. With a JS
-  // close-requested listener registered, Tauri defers the close to us;
-  // `onCloseRequested` destroys the window once this handler resolves
-  // (requires the `core:window:allow-destroy` capability). If destroying
-  // fails, the listener is removed so the next close request goes
-  // through natively instead of trapping the user.
-  useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | null = null;
-    void (async () => {
-      try {
-        const win = getCurrentWindow();
-        const un = await win.onCloseRequested(async (event) => {
-          event.preventDefault();
-          const { preserved } = await flushPendingSave({ leaving: true });
-          if (!preserved) {
-            // Edits held by a conflict couldn't be written even as a
-            // `.local-` copy; destroying the window now would lose them.
-            // Stay open (autosave keeps retrying the copy, saveError is
-            // set) and tell the user why the close didn't happen.
-            useUIStore
-              .getState()
-              .setNotice(
-                "Not closing: unsaved edits couldn't be kept as a copy. Still retrying — fix the problem and close again.",
-              );
-            return;
-          }
-          try {
-            await win.destroy();
-          } catch (e) {
-            console.error("window destroy failed; close again to exit:", e);
-            unlisten?.();
-            unlisten = null;
-          }
-        });
-        if (disposed) un();
-        else unlisten = un;
-      } catch {
-        // Not running inside Tauri (tests, plain browser) — nothing to do.
-      }
-    })();
-    return () => {
-      disposed = true;
-      unlisten?.();
-      unlisten = null;
-    };
-  }, []);
-
-  // 5. Watch the vault for changes made outside naiteh. Torn down when the
+  // 4. Watch the vault for changes made outside naiteh. Torn down when the
   // shell unmounts (logout) or remounts for another vault.
   useEffect(() => {
     let disposed = false;

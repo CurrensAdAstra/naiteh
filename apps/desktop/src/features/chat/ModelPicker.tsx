@@ -119,8 +119,8 @@ export function ModelPicker({ title, initial = "", onPick, onClose }: ModelPicke
         )}
         {!loading && providers.length === 0 && (
           <p className={styles.hint}>
-            No provider is configured — add an API key in Settings → AI, or
-            type a model.
+            Add a provider and configure its connection in Settings → AI,
+            or type a model.
           </p>
         )}
         {errors.map((e) => (

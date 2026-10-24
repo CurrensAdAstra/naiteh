@@ -83,3 +83,17 @@
   grid-area: status;
   min-width: 0;
 }
+
+.accessError {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 110;
+  max-width: min(480px, calc(100vw - 24px));
+  padding: 10px 12px;
+  border: 1px solid var(--color-danger);
+  border-radius: 6px;
+  background: var(--color-bg-app);
+  color: var(--color-danger);
+  font-size: 13px;
+}

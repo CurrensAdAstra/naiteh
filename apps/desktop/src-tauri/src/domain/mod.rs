@@ -17,7 +17,7 @@ pub mod vault;
 pub mod watch;
 
 pub use attachment::AttachmentImport;
-pub use auth::{AuditLogEntry, AuthSession, AuthUser, LoginResult, UserRole};
+pub use auth::{AuditLogEntry, AuthAccess, AuthSession, LoginResult, UserRole};
 pub use error::AppError;
 pub use evernote::{EvernoteImportReport, EvernoteImportedNote};
 pub use journal::{

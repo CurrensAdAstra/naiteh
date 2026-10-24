@@ -20,12 +20,14 @@ export function StatusBar() {
   const syncStatus = useSyncStore((s) => s.status);
   const syncNotInitialized = useSyncStore((s) => s.notInitialized);
   const setViewMode = useUIStore((s) => s.setViewMode);
-  const setSettingsOpen = useUIStore((s) => s.setSettingsOpen);
   const liveUpdatesUnavailable = useUIStore((s) => s.liveUpdatesUnavailable);
   const notice = useUIStore((s) => s.notice);
   const chatRequest = useUIStore((s) => s.chatRequest);
   const setNotice = useUIStore((s) => s.setNotice);
   const session = useAuthStore((s) => s.session);
+  const lockEnabled = useAuthStore((s) => s.lockEnabled);
+  const busy = useAuthStore((s) => s.busy);
+  const lock = useAuthStore((s) => s.lock);
   const backupRunning = useBackupStore((s) => s.running);
   const backupProgress = useBackupStore((s) => s.progress);
   const backupError = useBackupStore((s) => s.lastRunError);
@@ -47,8 +49,6 @@ export function StatusBar() {
     const handle = setTimeout(() => setNotice(null), NOTICE_MS);
     return () => clearTimeout(handle);
   }, [notice, setNotice]);
-  const clearSession = useAuthStore((s) => s.clearSession);
-  const logAction = useAuthStore((s) => s.logAction);
 
   const words = useMemo(
     () => (openContent === null ? null : countWords(openContent)),
@@ -63,28 +63,9 @@ export function StatusBar() {
     [mergePending, syncStatus, syncNotInitialized],
   );
 
-  async function handleLogout() {
-    await logAction("logout").catch(() => {});
-    // clearSession flushes unsaved edits and closes the open note before
-    // forgetting the session.
-    await clearSession();
-  }
-
   return (
     <div className={styles.bar} role="contentinfo" data-testid="status-bar">
       <span className={styles.vault}>{active?.name ?? "—"}</span>
-      {session !== null && (
-        <button
-          type="button"
-          className={styles.linkLike}
-          onClick={() => setSettingsOpen(true)}
-          aria-label="Open account settings"
-          title="Open account settings"
-          data-testid="status-user"
-        >
-          {session.username}
-        </button>
-      )}
       <span className={styles.spacer} />
       {notice !== null && (
         <span
@@ -170,14 +151,15 @@ export function StatusBar() {
       <span className={styles.placeholder} data-testid="status-words">
         {words === null ? "Words: —" : `Words: ${words.toLocaleString()}`}
       </span>
-      {session !== null && (
+      {session !== null && lockEnabled === true && (
         <button
           type="button"
           className={styles.linkLike}
-          onClick={() => void handleLogout()}
-          data-testid="status-logout"
+          onClick={() => void lock()}
+          disabled={busy !== null}
+          data-testid="status-lock"
         >
-          Log out
+          {busy === "lock" ? "Locking..." : "Lock"}
         </button>
       )}
     </div>

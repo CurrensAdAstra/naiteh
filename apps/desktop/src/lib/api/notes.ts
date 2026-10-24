@@ -1,6 +1,7 @@
 import { invoke } from "./invoke";
 
 import type { NoteDocument, NoteMeta, NoteWriteResult } from "../types";
+import { useVaultStore } from "../../state/vaultStore";
 
 export function notesList(relDir: string | null = null): Promise<NoteMeta[]> {
   return invoke<NoteMeta[]>("notes_list", { relDir });
@@ -16,16 +17,20 @@ export function notesRead(relPath: string): Promise<NoteDocument> {
  * write (`AppError` kind `StaleWrite`, message = current on-disk version)
  * when the file's version differs or the file is gone; `null` writes
  * unconditionally (new files, explicit "keep mine" / copies).
+ * The backend also checks the originating vault before writing. Async
+ * callers must capture and pass that root before their first await.
  */
 export function notesWrite(
   relPath: string,
   content: string,
   expectedVersion: string | null,
+  expectedVaultRoot: string | null = useVaultStore.getState().active?.root ?? null,
 ): Promise<NoteWriteResult> {
   return invoke<NoteWriteResult>("notes_write", {
     relPath,
     content,
     expectedVersion,
+    expectedVaultRoot,
   });
 }
 

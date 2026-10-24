@@ -37,6 +37,29 @@ use std::sync::{Arc, Mutex as StdMutex};
 
 use tokio::sync::Mutex as AsyncMutex;
 
+use crate::domain::AppError;
+use crate::services::vault_path;
+
+/// Bind queued editor writes to their originating vault, even when another
+/// instance changes the shared active-vault setting during unlock/recovery.
+pub fn check_expected_root(root: PathBuf, expected: &str) -> Result<PathBuf, AppError> {
+    if expected.is_empty() {
+        return Err(AppError::Validation(
+            "An originating vault is required for saving".into(),
+        ));
+    }
+    let actual = vault_path::simplify(&root.canonicalize()?);
+    let expected = Path::new(expected).canonicalize().map_err(|_| {
+        AppError::Conflict("The draft vault is unavailable; edits have not been saved".into())
+    })?;
+    if actual != vault_path::simplify(&expected) {
+        return Err(AppError::Conflict(
+            "The active vault changed; return to the draft vault before saving".into(),
+        ));
+    }
+    Ok(actual)
+}
+
 #[derive(Default)]
 pub struct VaultLocks {
     inner: StdMutex<HashMap<PathBuf, Arc<AsyncMutex<()>>>>,
@@ -68,6 +91,34 @@ fn canonical_or_owned(path: &Path) -> PathBuf {
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn queued_saves_reject_a_different_vault() {
+        let original = tempdir().unwrap();
+        let current = tempdir().unwrap();
+        assert!(matches!(
+            check_expected_root(
+                current.path().to_path_buf(),
+                original.path().to_str().unwrap()
+            ),
+            Err(AppError::Conflict(_))
+        ));
+        assert!(check_expected_root(original.path().to_path_buf(), "").is_err());
+        assert!(
+            check_expected_root(original.path().to_path_buf(), "/missing-draft-vault").is_err()
+        );
+    }
+
+    #[test]
+    fn originating_vault_accepts_equivalent_path_spellings() {
+        let dir = tempdir().unwrap();
+        let alias = dir.path().join(".");
+        let root = check_expected_root(dir.path().to_path_buf(), alias.to_str().unwrap()).unwrap();
+        assert_eq!(
+            root,
+            vault_path::simplify(&dir.path().canonicalize().unwrap())
+        );
+    }
 
     #[tokio::test]
     async fn same_vault_returns_same_mutex_instance() {

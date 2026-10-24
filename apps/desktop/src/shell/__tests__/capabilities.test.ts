@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import capability from "../../../src-tauri/capabilities/default.json";
-import lifecycleSource from "../useWorkspaceLifecycle.ts?raw";
+import closeGuardSource from "../useDraftCloseGuard.ts?raw";
 
 // `core:default` already covers event listen/unlisten (used by
 // onCloseRequested); `preventDefault()` is JS-only. The one extra window
@@ -11,8 +11,8 @@ describe("Tauri default capability", () => {
   const permissions: readonly unknown[] = capability.permissions;
 
   it("grants window destroy for the close-requested flush handler", () => {
-    expect(lifecycleSource).toMatch(/onCloseRequested\(/);
-    expect(lifecycleSource).toMatch(/\.destroy\(\)/);
+    expect(closeGuardSource).toMatch(/onCloseRequested\(/);
+    expect(closeGuardSource).toMatch(/\.destroy\(\)/);
     expect(permissions).toContain("core:window:allow-destroy");
   });
 

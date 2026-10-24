@@ -209,6 +209,8 @@ export interface AiProviderConfig {
 
 /** Chat-in-a-note settings (port of chatgpt-md). */
 export interface AiSettings {
+  /** Providers added in Settings, in display order. Absent in legacy configs. */
+  addedProviders?: AiProviderId[];
   /** `provider@model`, e.g. `openai@gpt-4.1-mini`. */
   defaultModel: string;
   temperature: number;
@@ -236,14 +238,14 @@ export const DEFAULT_AI_SETTINGS: AiSettings = {
   agentsFolder: "notes/agents",
 };
 
-const DEFAULT_BASE_URLS: Record<AiProviderId, string> = {
+export const DEFAULT_BASE_URLS: Record<AiProviderId, string> = {
   openai: "https://api.openai.com/v1",
   anthropic: "https://api.anthropic.com",
   gemini: "https://generativelanguage.googleapis.com",
   openrouter: "https://openrouter.ai/api/v1",
   zai: "https://api.z.ai/api/paas/v4",
   ollama: "http://localhost:11434",
-  lmstudio: "http://localhost:1234",
+  lmstudio: "http://localhost:1234/v1",
 };
 
 /** Config defaults (also the plain-browser fallback and test fixture). */
@@ -252,18 +254,10 @@ export function defaultAiConfig(): AiConfig {
   for (const id of AI_PROVIDERS) {
     providers[id] = { hasApiKey: false, baseUrl: DEFAULT_BASE_URLS[id] };
   }
-  return { ...DEFAULT_AI_SETTINGS, providers };
+  return { ...DEFAULT_AI_SETTINGS, addedProviders: [], providers };
 }
 
 export type UserRole = "Admin" | "User";
-
-export const USER_ROLES: readonly UserRole[] = ["User", "Admin"];
-
-export interface AuthUser {
-  username: string;
-  role: UserRole;
-  active: boolean;
-}
 
 export interface AuthSession {
   username: string;
@@ -273,8 +267,14 @@ export interface AuthSession {
 export interface LoginResult {
   token: string;
   session: AuthSession;
-  /** The account must set a new password before using the app. */
+  /** Always false for local access; retained in the backend login shape. */
   mustChangePassword: boolean;
+}
+
+export interface AuthAccess {
+  lockEnabled: boolean;
+  migrationRequired: boolean;
+  login: LoginResult | null;
 }
 
 export interface AuditLogEntry {

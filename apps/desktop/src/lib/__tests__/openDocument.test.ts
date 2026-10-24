@@ -140,7 +140,7 @@ describe("openDocument", () => {
 
     await openDocument({ kind: "note", relPath: "notes/b.md" });
 
-    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "a-edited", "v1");
+    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "a-edited", "v1", null);
     expect(order).toEqual(["write:notes/a.md", "read:notes/b.md"]);
     expect(useEditorStore.getState().open?.key).toBe("note:notes/b.md");
   });
@@ -186,7 +186,7 @@ describe("openDocument", () => {
     useEditorStore.getState().openNote("notes/a.md", "a", "v1");
     useEditorStore.getState().setContent("a1");
     await closeDocument();
-    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "a1", "v1");
+    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "a1", "v1", null);
     expect(useEditorStore.getState().open).toBeNull();
 
     mockedWrite.mockClear();

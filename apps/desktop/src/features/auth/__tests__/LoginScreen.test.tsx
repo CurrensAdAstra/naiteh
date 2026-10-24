@@ -1,256 +1,120 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-
-import { authChangePassword, authLogin, authLogout } from "../../../lib/api/auth";
-import {
-  notePasswordChangeRequired,
-  resetPasswordChangeFlagsForTests,
-} from "../../../lib/api/passwordChangeFlags";
-import type { AuthSession } from "../../../lib/types";
-import { useAuthStore } from "../../../state/authStore";
-import { LoginScreen } from "../LoginScreen";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../lib/api/auth", () => ({
-  authLogin: vi.fn(),
-  authLogout: vi.fn().mockResolvedValue(undefined),
-  authChangePassword: vi.fn(),
-  authLogAction: vi.fn().mockResolvedValue(undefined),
+  authBootstrap: vi.fn(), authUnlock: vi.fn(), authMigrate: vi.fn(),
+  authSetLock: vi.fn(), authLock: vi.fn(), authLogAction: vi.fn(),
 }));
 
-const mockedLogin = vi.mocked(authLogin);
-const mockedLogout = vi.mocked(authLogout);
-const mockedChange = vi.mocked(authChangePassword);
+import { authBootstrap, authMigrate, authUnlock } from "../../../lib/api/auth";
+import { useAuthStore } from "../../../state/authStore";
+import { resetAutosaveForTests } from "../../../state/autosave";
+import { useEditorStore } from "../../../state/editorStore";
+import { LoginScreen } from "../LoginScreen";
+import { validateLockPassword } from "../passwordRules";
 
-const ALICE: AuthSession = { username: "alice", role: "User" };
+const ACCESS = { lockEnabled: true, migrationRequired: false, login: { token: "token", session: { username: "local", role: "Admin" as const }, mustChangePassword: false } };
 
-describe("LoginScreen", () => {
-  beforeEach(() => {
-    mockedLogin.mockReset();
-    mockedChange.mockReset();
-    mockedLogout.mockClear();
-    resetPasswordChangeFlagsForTests();
-    useAuthStore.setState({
-      token: null,
-      session: null,
-      pendingPasswordChange: null,
-      signedOutReason: null,
-    });
-    window.history.replaceState({}, "", "/");
-  });
+beforeEach(() => {
+  vi.resetAllMocks();
+  resetAutosaveForTests();
+  useEditorStore.setState({ open: null });
+  useAuthStore.setState({ token: null, session: null, lockEnabled: true, migrationRequired: false, ready: true, busy: null, error: null, accessNotice: null, draftRecovery: null });
+});
+afterEach(() => resetAutosaveForTests());
 
-  it("submits credentials and returns the token + session", async () => {
-    mockedLogin.mockResolvedValue({
-      token: "deadbeef",
-      session: { username: "admin", role: "Admin" },
-      mustChangePassword: false,
-    });
-    const onLogin = vi.fn();
+describe("app unlock", () => {
+  it("submits only the password, with no username, role, or remembered-login controls", async () => {
+    vi.mocked(authUnlock).mockResolvedValue(ACCESS);
     const user = userEvent.setup();
-
-    render(<LoginScreen onLogin={onLogin} />);
-    await user.type(screen.getByTestId("login-username"), "admin");
-    await user.type(screen.getByTestId("login-password"), "admin");
-    await user.click(screen.getByTestId("login-submit"));
-
-    await waitFor(() => {
-      // "Keep me signed in" defaults on, so remember=true.
-      expect(mockedLogin).toHaveBeenCalledWith("admin", "admin", true);
-      expect(onLogin).toHaveBeenCalledWith("deadbeef", {
-        username: "admin",
-        role: "Admin",
-      });
-    });
+    render(<LoginScreen />);
+    expect(screen.queryByLabelText(/user|remember|keep me/i)).toBeNull();
+    expect(screen.queryByText("Admin")).toBeNull();
+    await user.type(screen.getByLabelText("Password"), "lock-password");
+    await user.click(screen.getByRole("button", { name: "Unlock" }));
+    expect(authUnlock).toHaveBeenCalledWith("lock-password");
+    expect(useAuthStore.getState().session).toEqual(ACCESS.login.session);
+    expect(screen.getByLabelText("Password")).toHaveValue("");
   });
 
-  it("passes remember=false when the checkbox is unticked", async () => {
-    mockedLogin.mockResolvedValue({
-      token: "deadbeef",
-      session: { username: "admin", role: "Admin" },
-      mustChangePassword: false,
-    });
+  it("keeps an unlock error visible and lets the user retry", async () => {
+    vi.mocked(authUnlock).mockRejectedValueOnce({ kind: "Unauthorized", message: "Incorrect app-lock password" }).mockResolvedValueOnce(ACCESS);
     const user = userEvent.setup();
-
-    render(<LoginScreen onLogin={vi.fn()} />);
-    await user.type(screen.getByTestId("login-username"), "admin");
-    await user.type(screen.getByTestId("login-password"), "admin");
-    await user.click(screen.getByTestId("login-remember"));
-    await user.click(screen.getByTestId("login-submit"));
-
-    await waitFor(() => {
-      expect(mockedLogin).toHaveBeenCalledWith("admin", "admin", false);
-    });
+    render(<LoginScreen />);
+    await user.type(screen.getByLabelText("Password"), "password");
+    await user.click(screen.getByRole("button", { name: "Unlock" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Incorrect app-lock password");
+    expect(useAuthStore.getState().session).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Unlock" }));
+    expect(authUnlock).toHaveBeenCalledTimes(2);
   });
 
-  it("prefills admin on the admin path", () => {
-    window.history.replaceState({}, "", "/admin");
-    render(<LoginScreen onLogin={vi.fn()} />);
-    expect(screen.getByTestId("login-username")).toHaveValue("admin");
-  });
-
-  it("shows a login failure", async () => {
-    mockedLogin.mockRejectedValue({
-      kind: "Unauthorized",
-      message: "invalid username or password",
-    });
+  it("shows bootstrap errors with an explicit retry, never an unlocked shell", async () => {
+    useAuthStore.setState({ ready: false, lockEnabled: null, error: "Access file unreadable" });
+    vi.mocked(authBootstrap).mockResolvedValue({ ...ACCESS, login: null });
     const user = userEvent.setup();
-
-    render(<LoginScreen onLogin={vi.fn()} />);
-    await user.type(screen.getByTestId("login-username"), "admin");
-    await user.type(screen.getByTestId("login-password"), "wrong");
-    await user.click(screen.getByTestId("login-submit"));
-
-    expect(
-      await screen.findByText(/invalid username or password/i),
-    ).toBeInTheDocument();
+    render(<LoginScreen />);
+    expect(screen.getByRole("alert")).toHaveTextContent("Access file unreadable");
+    expect(screen.queryByLabelText("Password")).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Retry access" }));
+    expect(authBootstrap).toHaveBeenCalledTimes(1);
+    expect(await screen.findByLabelText("Password")).toBeInTheDocument();
   });
 
-  it("explains an unexpected sign-out", () => {
-    useAuthStore.setState({ signedOutReason: "Your session ended." });
-    render(<LoginScreen onLogin={vi.fn()} />);
-    expect(screen.getByTestId("login-notice")).toHaveTextContent(
-      "Your session ended.",
-    );
+  it("disables duplicate submissions during backend throttling or unlock", () => {
+    useAuthStore.setState({ busy: "unlock" });
+    render(<LoginScreen />);
+    expect(screen.getByLabelText("Password")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Please wait..." })).toBeDisabled();
   });
 
-  describe("forced password change", () => {
-    it("after login: blocks entry until a valid new password is set", async () => {
-      mockedLogin.mockResolvedValue({
-        token: "tok",
-        session: ALICE,
-        mustChangePassword: true,
-      });
-      mockedChange.mockResolvedValue(undefined);
-      const onLogin = vi.fn();
-      const user = userEvent.setup();
+});
 
-      render(<LoginScreen onLogin={onLogin} />);
-      await user.type(screen.getByTestId("login-username"), "alice");
-      await user.type(screen.getByTestId("login-password"), "initial-pw");
-      await user.click(screen.getByTestId("login-submit"));
+describe("one-time legacy conversion", () => {
+  beforeEach(() => useAuthStore.setState({ migrationRequired: true, lockEnabled: false }));
 
-      expect(await screen.findByTestId("password-change-step")).toBeInTheDocument();
-      // Not signed in yet: App keeps showing the login screen.
-      expect(onLogin).not.toHaveBeenCalled();
-      expect(useAuthStore.getState().session).toBeNull();
-      expect(useAuthStore.getState().token).toBeNull();
-      // The password just typed is offered as the current one.
-      expect(screen.getByTestId("forced-password-current")).toHaveValue(
-        "initial-pw",
-      );
+  it("explains the conversion and plaintext boundary and submits explicit legacy credentials", async () => {
+    vi.mocked(authMigrate).mockResolvedValue(ACCESS);
+    const user = userEvent.setup();
+    render(<LoginScreen />);
+    expect(screen.getByText(/removes legacy remembered sign-ins/)).toBeInTheDocument();
+    expect(screen.getByText(/Markdown files remain unencrypted plaintext/)).toBeInTheDocument();
+    expect(screen.queryByRole("combobox")).toBeNull();
+    await user.type(screen.getByLabelText("Legacy username"), "old-user");
+    await user.type(screen.getByLabelText("Legacy password"), "old-password");
+    await user.type(screen.getByLabelText("New app-lock password"), "new-lock-password");
+    await user.type(screen.getByLabelText("Confirm new password"), "new-lock-password");
+    await user.click(screen.getByRole("button", { name: "Convert and enable app lock" }));
+    expect(authMigrate).toHaveBeenCalledWith("old-user", "old-password", "new-lock-password");
+    expect(useAuthStore.getState()).toMatchObject({ migrationRequired: false, lockEnabled: true });
+  });
 
-      // Client-side rules run before any IPC.
-      await user.type(screen.getByTestId("forced-password-new"), "short");
-      await user.type(screen.getByTestId("forced-password-confirm"), "short");
-      await user.click(screen.getByTestId("forced-password-submit"));
-      expect(await screen.findByTestId("forced-password-error")).toHaveTextContent(
-        /at least 8/i,
-      );
-      expect(mockedChange).not.toHaveBeenCalled();
+  it("rejects unchanged or mismatched new passwords before IPC and surfaces backend conversion failures", async () => {
+    vi.mocked(authMigrate).mockRejectedValue(new Error("Legacy account is inactive"));
+    const user = userEvent.setup();
+    render(<LoginScreen />);
+    fireEvent.change(screen.getByLabelText("Legacy username"), { target: { value: "legacy" } });
+    fireEvent.change(screen.getByLabelText("Legacy password"), { target: { value: "old-password" } });
+    fireEvent.change(screen.getByLabelText("New app-lock password"), { target: { value: "old-password" } });
+    fireEvent.change(screen.getByLabelText("Confirm new password"), { target: { value: "old-password" } });
+    await user.click(screen.getByRole("button", { name: "Convert and enable app lock" }));
+    expect(screen.getByRole("alert")).toHaveTextContent(/different/);
+    expect(authMigrate).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("New app-lock password"), { target: { value: "new-password" } });
+    await user.click(screen.getByRole("button", { name: "Convert and enable app lock" }));
+    expect(screen.getByRole("alert")).toHaveTextContent(/don't match/);
+    fireEvent.change(screen.getByLabelText("Confirm new password"), { target: { value: "new-password" } });
+    await user.click(screen.getByRole("button", { name: "Convert and enable app lock" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/inactive/);
+    expect(useAuthStore.getState()).toMatchObject({ session: null, migrationRequired: true });
+  });
 
-      await user.clear(screen.getByTestId("forced-password-new"));
-      await user.clear(screen.getByTestId("forced-password-confirm"));
-      await user.type(screen.getByTestId("forced-password-new"), "alice");
-      await user.type(screen.getByTestId("forced-password-confirm"), "alice");
-      await user.click(screen.getByTestId("forced-password-submit"));
-      expect(await screen.findByTestId("forced-password-error")).toHaveTextContent(
-        /at least 8/i,
-      );
-
-      await user.clear(screen.getByTestId("forced-password-new"));
-      await user.clear(screen.getByTestId("forced-password-confirm"));
-      await user.type(screen.getByTestId("forced-password-new"), "a-much-better-pw");
-      await user.type(
-        screen.getByTestId("forced-password-confirm"),
-        "a-much-better-pw",
-      );
-      await user.click(screen.getByTestId("forced-password-submit"));
-
-      await waitFor(() => {
-        expect(mockedChange).toHaveBeenCalledWith(
-          "tok",
-          "initial-pw",
-          "a-much-better-pw",
-        );
-        expect(useAuthStore.getState().session).toEqual(ALICE);
-      });
-      expect(useAuthStore.getState().token).toBe("tok");
-      expect(useAuthStore.getState().pendingPasswordChange).toBeNull();
-    });
-
-    it("rejects a new password equal to the username or the current one", async () => {
-      useAuthStore.getState().setSession("tok", ALICE, true);
-      const user = userEvent.setup();
-      render(<LoginScreen onLogin={vi.fn()} />);
-
-      await user.type(screen.getByTestId("forced-password-current"), "same-password");
-      await user.type(screen.getByTestId("forced-password-new"), "same-password");
-      await user.type(screen.getByTestId("forced-password-confirm"), "same-password");
-      await user.click(screen.getByTestId("forced-password-submit"));
-      expect(await screen.findByTestId("forced-password-error")).toHaveTextContent(
-        /different from the current/i,
-      );
-      expect(mockedChange).not.toHaveBeenCalled();
-    });
-
-    it("after resume: asks for the current password and shows backend errors", async () => {
-      // App's resume path only forwards (token, session); the flag is
-      // recorded by authResume and picked up by setSession.
-      notePasswordChangeRequired({
-        token: "resumed",
-        session: ALICE,
-        mustChangePassword: true,
-      });
-      useAuthStore.getState().setSession("resumed", ALICE);
-      expect(useAuthStore.getState().session).toBeNull();
-      mockedChange
-        .mockRejectedValueOnce({
-          kind: "Unauthorized",
-          message: "current password is incorrect",
-        })
-        .mockResolvedValueOnce(undefined);
-
-      const user = userEvent.setup();
-      render(<LoginScreen onLogin={vi.fn()} />);
-      const current = await screen.findByTestId("forced-password-current");
-      expect(current).toHaveValue("");
-
-      await user.type(current, "wrong-old-pw");
-      await user.type(screen.getByTestId("forced-password-new"), "brand-new-pw");
-      await user.type(screen.getByTestId("forced-password-confirm"), "brand-new-pw");
-      await user.click(screen.getByTestId("forced-password-submit"));
-      expect(await screen.findByTestId("forced-password-error")).toHaveTextContent(
-        /current password is incorrect/i,
-      );
-      // A wrong current password on an auth command never logs out.
-      expect(useAuthStore.getState().pendingPasswordChange).not.toBeNull();
-
-      // Fields are kept after a failure; only the current password changes.
-      await user.clear(screen.getByTestId("forced-password-current"));
-      await user.type(screen.getByTestId("forced-password-current"), "right-old-pw");
-      await user.click(screen.getByTestId("forced-password-submit"));
-      await waitFor(() => {
-        expect(useAuthStore.getState().session).toEqual(ALICE);
-      });
-      expect(mockedChange).toHaveBeenLastCalledWith(
-        "resumed",
-        "right-old-pw",
-        "brand-new-pw",
-      );
-    });
-
-    it("can't be skipped — only abandoned by signing out", async () => {
-      useAuthStore.getState().setSession("tok", ALICE, true);
-      const user = userEvent.setup();
-      render(<LoginScreen onLogin={vi.fn()} />);
-
-      expect(screen.queryByTestId("login-submit")).not.toBeInTheDocument();
-      await user.click(screen.getByTestId("password-change-signout"));
-
-      expect(await screen.findByTestId("login-submit")).toBeInTheDocument();
-      expect(mockedLogout).toHaveBeenCalledWith("tok");
-      expect(useAuthStore.getState().pendingPasswordChange).toBeNull();
-      expect(useAuthStore.getState().session).toBeNull();
-    });
+  it("counts Unicode scalar characters, with both length bounds", () => {
+    const scalar = String.fromCodePoint(0x1f510);
+    expect(validateLockPassword(scalar.repeat(4), scalar.repeat(4))).toMatch(/8 to 1024/);
+    expect(validateLockPassword(scalar.repeat(8), scalar.repeat(8))).toBeNull();
+    expect(validateLockPassword(scalar.repeat(1024), scalar.repeat(1024))).toBeNull();
+    expect(validateLockPassword("x".repeat(1025), "x".repeat(1025))).toMatch(/8 to 1024/);
   });
 });

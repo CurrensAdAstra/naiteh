@@ -5,6 +5,7 @@ vi.mock("../../lib/chatMd/chatFlow", () => ({ stopChat: vi.fn() }));
 
 import { stopChat } from "../../lib/chatMd/chatFlow";
 import { useBackupStore } from "../../state/backupStore";
+import { useAuthStore } from "../../state/authStore";
 import { useEditorStore } from "../../state/editorStore";
 import { useUIStore } from "../../state/uiStore";
 import { StatusBar } from "../StatusBar";
@@ -128,5 +129,27 @@ describe("StatusBar backup indicator", () => {
     btn.click();
     expect(useUIStore.getState().settingsOpen).toBe(true);
     expect(useUIStore.getState().pendingAction).toBe("showBackup");
+  });
+});
+
+describe("StatusBar local access", () => {
+  beforeEach(() => {
+    useAuthStore.setState({ token: "token", session: { username: "local", role: "Admin" }, lockEnabled: false, busy: null });
+  });
+
+  it("has no username or logout controls and no lock control when disabled", () => {
+    render(<StatusBar />);
+    expect(screen.queryByText("local")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Log out" })).toBeNull();
+    expect(screen.queryByTestId("status-lock")).toBeNull();
+  });
+
+  it("offers manual lock only when enabled and disables it while awaiting acknowledgement", () => {
+    useAuthStore.setState({ lockEnabled: true });
+    render(<StatusBar />);
+    expect(screen.getByTestId("status-lock")).toHaveTextContent("Lock");
+    act(() => useAuthStore.setState({ busy: "lock" }));
+    expect(screen.getByTestId("status-lock")).toBeDisabled();
+    expect(screen.getByTestId("status-lock")).toHaveTextContent("Locking...");
   });
 });

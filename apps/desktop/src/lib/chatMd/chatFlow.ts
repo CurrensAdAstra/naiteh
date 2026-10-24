@@ -39,6 +39,7 @@ import {
 import { useSettingsStore } from "../../state/settingsStore";
 import { useUIStore } from "../../state/uiStore";
 import { notifyVaultContentChanged } from "../../state/vaultContentStore";
+import { useVaultStore } from "../../state/vaultStore";
 import { chatHeader, chatTitle } from "./format";
 
 export const NO_NOTE_MESSAGE = "Open a note to chat.";
@@ -113,6 +114,13 @@ export async function sendChat(): Promise<void> {
   const unsubscribe = useEditorStore.subscribe((s) => {
     if (s.open?.key !== key) abort();
   });
+  const unsubscribeAccess = useAuthStore.subscribe((state, previous) => {
+    if (state.busy === "lock" || (previous.session !== null && state.session === null)) abort();
+  });
+  const vaultRoot = useVaultStore.getState().active?.root ?? null;
+  const unsubscribeVault = useVaultStore.subscribe((state) => {
+    if ((state.active?.root ?? null) !== vaultRoot) abort();
+  });
   let unlisten: (() => void) | null = null;
 
   try {
@@ -152,6 +160,8 @@ export async function sendChat(): Promise<void> {
   } finally {
     unlisten?.();
     unsubscribe();
+    unsubscribeAccess();
+    unsubscribeVault();
     const current = useUIStore.getState();
     if (current.chatRequest?.requestId === requestId) {
       current.setChatRequest(null);
@@ -171,9 +181,11 @@ export function stopChat(): void {
  * settings in its front matter and open it for typing.
  */
 export async function newChat(now: Date = new Date()): Promise<void> {
+  const vaultRoot = useVaultStore.getState().active?.root ?? null;
   const settings = chatSettings();
   try {
     const meta = await notesCreate(settings.chatsFolder, chatTitle(now));
+    if ((useVaultStore.getState().active?.root ?? null) !== vaultRoot) return;
     const doc = await notesRead(meta.relPath);
     let content = doc.content;
     content = setFrontMatterField(content, "model", settings.defaultModel);
@@ -195,7 +207,8 @@ export async function newChat(now: Date = new Date()): Promise<void> {
       String(settings.stream),
       true,
     );
-    await notesWrite(meta.relPath, content, doc.version);
+    await notesWrite(meta.relPath, content, doc.version, vaultRoot);
+    if ((useVaultStore.getState().active?.root ?? null) !== vaultRoot) return;
     void useAuthStore
       .getState()
       .logAction("note_create", meta.relPath)
@@ -243,6 +256,7 @@ export async function applyModel(model: string): Promise<void> {
 
 /** Ask the model for a title and store it as front matter `title:`. */
 export async function inferTitle(): Promise<void> {
+  const vaultRoot = useVaultStore.getState().active?.root ?? null;
   const ui = useUIStore.getState();
   const open = useEditorStore.getState().open;
   const doc = readCurrentDoc();
@@ -254,7 +268,8 @@ export async function inferTitle(): Promise<void> {
     const title = (await aiInferTitle(doc)).trim();
     if (title === "") return;
     const current = readCurrentDoc();
-    if (useEditorStore.getState().open?.key !== open.key || current === null) {
+    if (useEditorStore.getState().open?.key !== open.key || current === null ||
+        (useVaultStore.getState().active?.root ?? null) !== vaultRoot) {
       return;
     }
     replaceWholeDocument(setFrontMatterField(current, "title", title));

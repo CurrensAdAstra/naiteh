@@ -40,27 +40,20 @@ the code.
    adds the next user header. Front matter (`model: provider@model`,
    `temperature`, `max_tokens`, `system_commands`, `agent`, …) overrides
    agent notes, which override Settings → AI. Providers: OpenAI,
-   Anthropic, Gemini, OpenRouter, Z.AI, Ollama, LM Studio; keys stay in app
-   config and never reach the renderer. Linked notes are sent as context.
-   No network call fires without an explicit command. naiteh stays
-   local-first everywhere else — this is the one feature that knowingly
-   leaves the local trust boundary.
-7. **Local user access control** — the app opens on a login screen before
-   any vault content is shown, and the backend enforces it with a session
-   gate on every non-auth command. A single `admin` account is seeded only
-   on the very first run (password equals the username) and must change
-   its password right after that first login. Any user can change their
-   own password; an admin creates further accounts and enables / disables
-   them in the UI. Login mints an opaque session token; the frontend passes
-   that token, never a plain username, to the auth IPCs that need to know
-   who is asking. The login screen has a "keep me signed in on this device"
-   checkbox, checked by default: the token is persisted to the app-config
-   dir with a 30-day expiry and restored on the next launch via
-   `auth_resume`, so single-user machines aren't re-prompted every start.
-   Unchecking it means a restart (which empties the in-memory session
-   store) returns to the login screen. Sign-out, signing in with the box
-   unchecked, a password change and disabling the account all drop the
-   saved token, so a deactivated account can't ride a stale token back in.
+   Anthropic, Gemini, OpenRouter, Z.AI, Ollama, LM Studio; keys use OS
+   credential storage, with references in app config, and never reach the
+   renderer. Linked notes are sent as context. No AI network call fires
+   without an explicit command.
+7. **Single-user access with optional app lock**: fresh installs open without
+   app login or seeded accounts. An optional password-only lock uses an
+   Argon2id hash in app-config `app-lock.json`; every non-auth IPC checks
+   `ActiveSession` whether the lock is enabled or disabled. Sessions/tokens
+   are memory-only with no expiry timer, remember UI or token persistence.
+   An enabled lock requires unlocking after manual lock or app restart.
+   Existing accounts require explicit one-time conversion to the app lock
+   (§4.1), not silent removal of protection. There is no admin route or
+   account-management UI; the internal `local` / `Admin` session is only
+   audit attribution, not an account role or vault isolation.
 
 The canonical feature list and non-goals are mirrored in the wiki's
 [product-overview.md](vault/wiki/product-overview.md).
@@ -75,8 +68,8 @@ The canonical feature list and non-goals are mirrored in the wiki's
 - Calendar event integration (system Calendar / Reminders)
 - Implicit AI calls — auto-completion, ghost text, background revision,
   embedding-based search, etc. v1 AI Assist is strictly user-initiated.
-- Cloud identity, SSO, or multi-tenant server authorization. v1 auth is
-  local app access control backed by the user's OS app-config directory.
+- Cloud identity, SSO, multi-user account management or multi-tenant server
+  authorization. The optional app lock is single-user app access control.
 
 ---
 
@@ -139,17 +132,16 @@ naiteh/
         ├── index.html
         ├── src/                       ← React frontend
         │   ├── main.tsx
-        │   ├── App.tsx                ← resume / login / admin / first-run / shell
+        │   ├── App.tsx                ← access bootstrap / unlock / conversion / first-run / shell
         │   ├── shell/                 ← AppShell (lazy-loads EditorPanel),
         │   │                             MarkdownViewer (view mode),
         │   │                             ActivityBar, StatusBar, CommandPalette,
-        │   │                             useMenuEvents, useWorkspaceLifecycle
+        │   │                             useMenuEvents, useWorkspaceLifecycle,
+        │   │                             useDraftCloseGuard (mounted by App)
         │   ├── features/
         │   │   ├── chat/               ← ModelPicker (AI chat in notes; flow in lib/chatMd/)
-        │   │   ├── auth/               ← LoginScreen (incl. forced password
-        │   │   │                          change), AdminDashboard, shared
-        │   │   │                          AccountList / AuditLogList /
-        │   │   │                          ChangePasswordForm / CreateUserForm
+        │   │   ├── auth/               ← LoginScreen (unlock / legacy conversion),
+        │   │   │                          AuditLogList, app-lock password rules
         │   │   ├── journal/
         │   │   ├── notes/
         │   │   ├── calendar/
@@ -202,8 +194,8 @@ naiteh/
                 │   ├── mod.rs
                 │   ├── error.rs         ← AppError
                 │   ├── attachment.rs    ← AttachmentImport
-                │   ├── auth.rs          ← UserRole, AuthUser, AuthSession,
-                │   │                      LoginResult, AuditLogEntry
+                │   ├── auth.rs          ← AuthAccess, AuthSession, LoginResult,
+                │   │                      AuditLogEntry (audit-only role shape)
                 │   ├── evernote.rs      ← EvernoteImportReport, …Note
                 │   ├── journal.rs       ← DayMeta, Journal*Result,
                 │   │                      TimelineItem, TimelineDay
@@ -213,10 +205,12 @@ naiteh/
                 │   └── vault.rs         ← VaultInfo
                 └── services/           ← side-effectful logic
                     ├── mod.rs
+                    ├── app_lock.rs     ← optional Argon2id app lock + legacy conversion
                     ├── attachments.rs
-                    ├── auth.rs         ← Argon2 accounts + SessionStore + audit log
+                    ├── auth.rs         ← legacy account verification + audit log
                     ├── config.rs       ← AppConfig on disk, AppConfigView over IPC
                     ├── conflicts.rs    ← sync-conflict discovery + resolution
+                    ├── credentials.rs  ← OS credential references + safe migration
                     ├── evernote/       ← streaming .enex reader, ENML→MD, importer
                     ├── fs.rs           ← atomic writes, run_blocking
                     ├── fs_naming.rs    ← shared sanitize/MIME/label helpers
@@ -225,10 +219,10 @@ naiteh/
                     ├── index.rs        ← in-memory tag index (generation-checked)
                     ├── notes.rs        ← front matter, slugify, normalize_rel_path,
                     │                     resolve_in_vault
-                    ├── session.rs      ← ActiveSession gate, login throttle, expiry
+                    ├── session.rs      ← ActiveSession gate, memory-only access (no expiry)
                     ├── sync_state.rs   ← .naiteh/sync-state.json (last sync, pending merge)
                     ├── timeline.rs     ← activity/timeline items from the index
-                    ├── vault_lock.rs   ← per-vault write/sync mutex
+                    ├── vault_lock.rs   ← per-vault mutex + originating-root check
                     ├── vault_path.rs   ← vault-root validation (no home / system dirs)
                     └── workspace.rs    ← per-vault last-opened state
 ```
@@ -247,60 +241,72 @@ types and commands they expose is documented in the wiki
 
 #### Authentication gate
 
-The first screen at the dev URL root (`/`) and admin URL (`/admin`) is the
-same local login screen. No vault, journal, note, sync, or settings content
-is rendered before a successful login.
+The app is single-user. `App.tsx` starts with `auth_bootstrap` and withholds
+vault/settings IPC and the workspace until the backend reports access ready.
+Fresh installs proceed without app login; optional locking is configured in
+Settings → Security. Startup errors remain visible with retry and fail closed,
+never assuming that an unreadable lock configuration means locking is disabled.
 
-- `admin`/`admin` is seeded only when `auth.json` does not exist (first
-  run), flagged `mustChangePassword`; `LoginResult.mustChangePassword`
-  makes the UI demand a new password before anything else. Removing
-  `admin` from an existing file never resurrects it; a file with no active
-  admin makes login fail with a clear `ConfigCorrupt` error instead. The
-  admin creates further accounts (`auth_create_user`) and enables /
-  disables them (`auth_set_user_active`; the last active admin and the
-  admin's own account can't be disabled); every user can change their own
-  password (`auth_change_password`, Settings → Account). The forced
-  first-login change happens inside `LoginScreen`: the token is held as a
-  *pending* password change and the shell isn't shown until it succeeds.
-- Passwords are hashed with Argon2id (per-user salt embedded in the PHC
-  string). Pre-token installs that still hold SHA-256 hashes are
-  upgraded transparently on the next successful login. Argon2 runs on the
-  blocking pool (`auth_login` etc. are async) so the UI never stalls.
-- Successful login mints a 256-bit hex bearer token held in the Tauri
-  process memory (12 h idle / 7-day absolute expiry); with "keep me
-  signed in" it is also persisted for `auth_resume` (30-day TTL). Every
-  auth IPC that needs an identity takes that token and resolves it via
-  the in-process session store.
-- **Session gate.** Login also sets the instance's `ActiveSession`
-  (`services/session.rs`); every non-auth command calls
-  `require_session(&active)?` as its first statement and returns
-  `Unauthorized` while nobody is signed in — hiding the UI is no longer
-  the only barrier. Only `auth_login`, `auth_resume` and `auth_logout`
-  run before sign-in. A unit test in `lib.rs` parses the
-  `generate_handler!` list and fails if any command skips the gate. On
-  the frontend, every IPC goes through `lib/api/invoke.ts`; an
-  `Unauthorized` from a non-`auth_*` command (e.g. after a restart without
-  a remembered session) flushes pending saves and signs the user out with
-  a "session ended" notice instead of leaving a broken shell.
-- Login hardening: unknown usernames still pay one Argon2 verification
-  (dummy hash) so timing doesn't reveal which accounts exist; the password
-  is checked before the "disabled" flag; 5 failures lock a username for
-  5 minutes (in memory). Unknown user and wrong password share one
-  message; only the correct password reveals "account is disabled".
-- `auth_log_action` accepts only an allowlist of renderer work events, so
-  the renderer can't forge `login_success` & co. in the audit log.
-- `/admin` does not bypass authentication; after an admin signs in there it
-  renders the standalone `AdminDashboard` (accounts, create user, own
-  password, audit log) instead of the vault shell. A non-admin at `/admin`
-  gets the normal app. The same account / audit components back the
-  Settings modal's Accounts and Audit Log sections.
-- Failed and successful login attempts are written to the audit log.
+- The password-only app lock stores an Argon2id hash in app-config
+  `app-lock.json`; new passwords are 8–1024 characters. `auth_unlock` opens
+  access with that password. Sessions and tokens live only in memory with no
+  idle/absolute expiry, remember UI or persistence. An enabled lock is reapplied
+  only on manual lock or app restart, not on a timer.
+- Existing `auth.json` without `app-lock.json` requires explicit one-time
+  `auth_migrate(username, password, newPassword)`: validate the supplied legacy
+  credentials and require a new 8–1024-character app-lock password different
+  from the old password. Conversion enables the lock; it never silently
+  disables protection or chooses an arbitrary account. Old account hashes and
+  audit history remain but no longer determine access. Legacy
+  `remembered-session.json` is deleted without retaining its token.
+- **Backend gate.** Every non-auth command checks `ActiveSession`
+  (`services/session.rs`), including when the optional lock is disabled.
+  `auth_bootstrap`, `auth_unlock` and `auth_migrate` establish access;
+  `auth_set_lock`, `auth_lock`, `auth_migrate_secrets` and the retained audit
+  commands validate the active token. The exact contract lives in the wiki's
+  [IPC API](vault/wiki/ipc-api.md#auth--audit).
+- **Manual lock.** `authStore.lock` first flushes saves/preserves held edits
+  with `flushPendingSave({ leaving: true })`. Any failure refuses locking;
+  otherwise it waits for `auth_lock` acknowledgement before clearing local
+  access. Failed backend acknowledgement is not presented as a successful lock.
+- **Unexpected access loss.** `lib/api/invoke.ts` immediately hides the workspace
+  on `Unauthorized` from any non-auth command or `auth_lock`,
+  `auth_list_audit_logs`, `auth_log_action`, or `auth_migrate_secrets`, preserving
+  drafts and pending save/retry entries in memory with autosave access paused.
+  Wrong-password errors from `auth_unlock`, `auth_migrate` and `auth_set_lock`
+  remain form errors rather than triggering access loss.
+- **Draft recovery.** After backend access is restored, recovery checks the
+  backend vault against the originating draft vault before flushing, and checks
+  again during workspace loading before replacing the local active vault.
+  A mismatch/read/save error keeps drafts paused and the workspace withheld.
+  The UI offers **Retry draft recovery** and **Return to draft vault**; the
+  latter explicitly restores the original vault without editor reset or queue
+  discard. The notice warns to keep the window open: edits are not confirmed
+  saved and retaining them in memory does not make them survive app exit.
+- The internal `AuthSession` is `local` / `Admin` for audit attribution only,
+  not an account role or isolation boundary. There is no admin route or account
+  management. `auth_list_audit_logs` and allowlisted `auth_log_action` remain
+  active-token validated. Old login/resume/logout, account password-change,
+  create/list-user and set-active IPCs have been removed.
 
 Related hardening outside auth (facts in the wiki): the AI API key never
 crosses IPC (`AppConfigView.ai.hasApiKey` instead; base URL must be
 https or loopback http), and vault roots are validated so path
 containment can't be defeated by choosing `~` or `C:\` as the vault
 (`services/vault_path.rs`; `.git` paths are refused too).
+
+AI/SFTP secret storage uses `services/credentials.rs` with `keyring` 3.6.3:
+macOS Keychain, Windows Credential Manager and persistent Linux Secret Service
+over session D-Bus. JSON stores references; secret use/update or the manual
+`auth_migrate_secrets(token)` retry stages unique entries before atomic metadata
+commit, with best-effort superseded/orphan cleanup. Unrelated reads/settings and
+vault operations do not require the store or discard unmigrated secrets.
+Requests resolve only selected-provider credentials; SFTP resolves after the
+host-key check. Store errors are visible with no plaintext fallback. Calendar
+secret feed URLs are outside this migration; historical copies may retain old
+plaintext. Schema and failure details belong in
+[App Config](vault/wiki/app-config.md#credential-storage). Unit tests use a
+memory store; native OS runtime validation remains pending as of 2026-10-17.
 
 VS Code-like 3-column shell:
 
@@ -336,9 +342,18 @@ VS Code-like 3-column shell:
 Opening, closing and reloading documents all go through
 `lib/openDocument.ts`, which flushes pending saves first and applies only
 the latest open request. Saves go through `state/autosave.ts`: debounced
-(800 ms), keyed per document, serialized, retried with backoff, and flushed
-before anything moves the editor off a document — including window close,
-which is why the default capability grants `core:window:allow-destroy`.
+(800 ms), keyed per document, serialized, retried with backoff, and bound to the
+originating vault captured with the edit. A vault mismatch parks drafts rather
+than silently dropping them. `notes_write` / `journal_save` require that root
+as `expectedVaultRoot`: a canonical mismatch returns `Conflict` without writing;
+a missing root cannot save. After validation, the command keeps the captured
+canonical root for the write even if the active setting changes later.
+
+`App.tsx` mounts `useDraftCloseGuard` across locked, loading, error, recovery and
+shell states. It prevents window close while unsaved or in-flight writes cannot
+be flushed safely, including when access is paused; only a successful
+flush/preservation with access still ready permits window destruction. This is
+why the default capability grants `core:window:allow-destroy`.
 The precise ordering guarantees are facts and live in the wiki
 ([concurrency-safety.md](vault/wiki/concurrency-safety.md)).
 
@@ -381,8 +396,9 @@ is a folder inside the Google Drive for desktop sync folder; an **SFTP**
 target is a remote directory reached with password or key auth, its host key
 pinned on first use. Runs are one-way incremental mirrors driven by a
 per-target manifest; files deleted locally move to the target's
-`.naiteh-backup/trash/` instead of being deleted; secrets live in the
-app-config dir. An auto-backup scheduler runs due targets while signed in.
+`.naiteh-backup/trash/` instead of being deleted; SFTP secrets use OS credential
+storage, with references in app-config JSON. An auto-backup scheduler runs due
+targets while backend access is ready.
 The **Compare copies** view (AppShell-level modal above Settings; palette
 "Backup: Compare copies") lines up the vault, the Drive copy and the SFTP
 copy per path (same / differs / missing), shows a line diff
@@ -517,11 +533,11 @@ payloads are listed in the wiki's
 
 Settings is **not** a `ViewMode`; it is a full-screen modal
 (`features/settings/SettingsModal`) overlaying the shell, opened from
-the app menu (Cmd/Ctrl+,), the Activity Bar gear, the status-bar user
-name, or the palette. It mirrors the Obsidian settings layout: a
+the app menu (Cmd/Ctrl+,), the Activity Bar gear, the status-bar settings
+control, or the palette. It mirrors the Obsidian settings layout: a
 left section nav (Vault, Backup, Appearance, Editor, Web Clipping, AI,
-Import from Evernote, Account, plus an Administration group — Accounts /
-Audit Log — for admins) beside a scrolling column of "name + description →
+Import from Evernote, Security and Audit Log; no Administration group)
+beside a scrolling column of "name + description →
 control" rows. Backup is explanatory: it walks through backing the vault up
 with Google Drive for desktop (showing the vault path with a copy button),
 says what the backup does not include, and lists the optional in-app Sync's
@@ -672,6 +688,9 @@ explicitly assign notes to past or future dates (true Agenda-style
 
 ### v1.0 (MVP)
 
+Historical scope: the account/login milestones below are superseded by the
+2026-10-17 single-user app-lock implementation (§4.1).
+
 - Vault picker + first-run setup
 - Local login screen with a single seeded `admin` account
 - Admin-only account management (create, enable / disable) and audit-log
@@ -699,10 +718,11 @@ explicitly assign notes to past or future dates (true Agenda-style
   per-note progress events, reachable from File ▸ Import
 - Notes folder management (create / rename / delete, empty dirs shown)
 - Sync conflict-resolution UI (keep mine / keep theirs)
-- Auth hardening: Argon2id passwords + in-memory session tokens, with a
-  persisted "keep me signed in" token (checkbox, on by default; 30-day TTL,
-  `auth_resume`)
-- Backend session gate on every non-auth IPC; forced first-login password
+- Historical auth hardening (superseded by §4.1): Argon2id passwords + in-memory
+  session tokens, with a persisted "keep me signed in" token (checkbox, on by
+  default; 30-day TTL, `auth_resume`)
+- Historical auth milestone (account flows/expiry superseded by §4.1): backend
+  session gate on every non-auth IPC; forced first-login password
   change, self-service password change, admin user creation; login
   lockout + timing equalization; token expiry (12 h idle / 7 days);
   allowlisted client audit actions; key-less AI config view + base-URL
@@ -760,6 +780,55 @@ explicitly assign notes to past or future dates (true Agenda-style
 - Headless engine daemon + pluggable sync backends (folder watching, web
   clipping, Git / E2EE server sync behind one switch) — **proposal, not
   implemented**: [docs/design/engine-daemon.md](docs/design/engine-daemon.md)
+
+### Single-user security requirements (implementation status)
+
+Updated 2026-10-17 from the initial requirements-only note. Checked items record
+implemented/documented portions, **not native GUI/OS-store validation** or a
+release commitment. Integrated `pnpm check` and `pnpm build` passed; the build
+retains the existing CodeMirror chunk-size warning. Local Rust checks used
+1.97.1, not the CI-pinned 1.90 toolchain. Results and the six resolved review
+findings are recorded in the [dated addendum](docs/fix-plan-F1-F5.md).
+Credential unit tests use a memory store. No native GUI or real OS credential
+store was tested on any OS, and macOS/Windows runtime verification remains
+outstanding.
+
+- [x] Preserve the single-user, local-first workflow and ordinary, externally
+  readable/editable Markdown notes. Moving notes into a database is not a
+  security requirement and does not by itself provide encryption.
+- [x] Document the baseline security boundary: a private OS account, screen
+  locking, appropriate vault/app-config file permissions, and full-disk
+  encryption for device loss or offline disk access. These controls do not
+  protect an unlocked OS session from malicious software running as that user.
+- [x] Implement OS credential-store protection for AI API keys, SFTP passwords
+  and private-key passphrases (extends review finding L4), using references in
+  JSON. Safe idempotent migration removes legacy plaintext only after secure
+  write and metadata commit; failures are visible with no plaintext fallback.
+  Unrelated metadata/settings/vault operations preserve unmigrated values and
+  need no store. Superseded/orphan cleanup is best effort; old backups may
+  retain plaintext. Calendar secret feed URLs are not migrated. Remembered
+  tokens are deleted, not retained. Native runtime verification is pending;
+  the OS store is not a guarantee against same-user malware.
+- [x] Simplify multi-user IDs, admin roles and account-management UI into a
+  single-user mode with an optional app lock. When enabled, enforce that lock
+  in the backend IPC path, not just the UI; retain path validation and other
+  command safety checks regardless of lock settings. Preserve existing vaults
+  and unsaved-edit protection during manual lock/access loss. Existing accounts
+  require explicit credential validation and a new password to enable the app
+  lock; there is no silent disable or arbitrary account selection.
+- [x] Clearly label the optional app lock as app access control, **not vault
+  encryption**: someone able to read the vault files can still read notes
+  directly. Do not imply that separate app accounts isolate vault contents.
+- [x] Document backup/sync copies as a separate security boundary: restrict
+  destination sharing/access, retain secure transport and SFTP host-key checks,
+  and disclose that private Git repositories or SFTP do not provide
+  client-side content encryption. Local full-disk encryption does not protect
+  remote copies.
+- [ ] Application-level vault/backup-content encryption remains deferred unless
+  sensitive content or a requirement to protect copied files or hide content
+  from the backup provider justifies it. Before implementing it, define key
+  recovery, attachment handling and treatment of existing plaintext backups/Git history;
+  do not present the future E2EE sync proposal as current vault encryption.
 
 ### Release follow-ups (open)
 

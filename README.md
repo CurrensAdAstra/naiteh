@@ -54,8 +54,11 @@ Install Node.js >= 20 and Rust through [rustup](https://rustup.rs). Then
 install the system dependencies from the
 [Tauri v2 prerequisites guide](https://v2.tauri.app/start/prerequisites/):
 Xcode Command Line Tools on macOS, and WebKitGTK 4.1, librsvg, and related
-packages on Linux. On Debian/Ubuntu you also need `libssh2-1-dev`; see
-`.github/workflows/ci.yml` for the exact package list.
+packages on Linux. On Debian/Ubuntu you also need `libssh2-1-dev` and
+`libdbus-1-dev`; see `.github/workflows/ci.yml` for the exact package list.
+Saving or using AI/SFTP credentials on Linux requires a running, unlocked
+Secret Service provider (such as GNOME Keyring or KWallet) on the user's
+session D-Bus. There is no automatic plaintext credential fallback.
 
 ## Development setup
 
@@ -68,12 +71,44 @@ pnpm tauri dev           # or: pnpm tauri:dev / make tauri-dev
 `pnpm dev` starts only the Vite frontend on http://localhost:4200, without
 the native shell.
 
-### First login
+In **Settings → AI**, use **+ Add provider**, configure its **Connection**,
+then choose an LLM **Model**. The minus button removes a provider and its saved
+credentials. API keys and local APIs are supported; **Web sign-in** is marked
+**Coming soon**. Additional options are under **Advanced chat settings**.
 
-The app opens on a local login screen. On first run it seeds a single
-**`admin`** account whose password is the same as the username. **Change
-that default password right after your first login** (Settings → account).
-The admin can then create more accounts in Settings.
+### Security and App Lock
+
+Fresh installs open without an app login. **Settings → Security** can enable
+an optional password-only app lock (Argon2id hash in app-config `app-lock.json`).
+The backend checks access for every non-auth command. Sessions are memory-only,
+without expiry timers, a remember checkbox or persisted tokens; an enabled
+lock is reapplied on manual lock or app restart. There is no account management
+or admin route.
+
+Existing `auth.json` without `app-lock.json` requires one-time validation of your
+legacy username/password and a new 8–1024-character app-lock password different
+from the old one. Conversion enables the lock; it never silently disables it or
+chooses an account. Old account hashes/audit history remain but no longer
+determine access; legacy `remembered-session.json` is deleted without keeping
+its token.
+
+App lock is **not vault encryption**. Notes, attachments and backups remain
+plaintext. Use a private OS account, screen locking, appropriate file permissions
+and full-disk encryption for offline disk access/device loss. Disk encryption
+does not protect remote copies or against same-user malware in an unlocked
+session. Private Git and SFTP are not end-to-end content encryption; protect
+backup access separately.
+
+AI API keys and SFTP passwords/private-key passphrases use OS credential storage,
+with references in JSON and no secret-readback IPC. Store errors are visible
+with no plaintext fallback. Legacy plaintext is removed only after a secure
+write and metadata commit; historical backups may still contain it. Unrelated
+settings and vault operations do not require the store. Retry migration through
+Settings → Security. Calendar secret feed URLs are outside this migration.
+
+Native OS credential persistence, migration and lock-recovery runtime checks
+remain pending as of 2026-10-17; unit tests use a memory credential store. See
+the [implementation status](docs/fix-plan-F1-F5.md).
 
 ## Backing up your vault
 
@@ -146,6 +181,18 @@ calendars.
 | `pnpm fmt:check` | `make fmt-check` | `cargo fmt --check` (`pnpm fmt` to fix) |
 | `pnpm clippy` | `make clippy` | `cargo clippy -D warnings` |
 | `pnpm test:rust` | `make test-rust` | `cargo test` |
+
+For a focused security regression run:
+
+| pnpm | make | What |
+|------|------|------|
+| `pnpm test:security` | `make test-security` | Both security suites below |
+| `pnpm test:security:frontend` | `make test-security-frontend` | App access, optional lock, draft recovery and close protection |
+| `pnpm test:security:rust` | `make test-security-rust` | Access gates, credential migration, AI/SFTP secret handling and vault-bound writes |
+
+These tests use an isolated memory credential store, not real OS credentials.
+They do not replace native keychain, restart or GUI verification. Linux native
+builds still need the D-Bus development library listed in the prerequisites.
 
 The Rust checks need `apps/desktop/dist/` to exist because
 `tauri::generate_context!` embeds it. `pnpm rust:prep` (run automatically by

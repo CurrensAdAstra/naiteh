@@ -80,20 +80,6 @@
   outline-offset: 0;
 }
 
-.remember {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 13px;
-  color: var(--color-text-secondary);
-  cursor: pointer;
-  user-select: none;
-}
-
-.remember input {
-  cursor: pointer;
-}
-
 .error {
   margin: 0;
   padding: 8px 10px;
@@ -142,20 +128,4 @@
   color: var(--color-text-secondary);
   font-size: 12px;
   line-height: 1.35;
-}
-
-.linkButton {
-  align-self: flex-start;
-  padding: 0;
-  border: none;
-  background: none;
-  color: var(--color-text-muted);
-  font: inherit;
-  font-size: 12px;
-  text-decoration: underline;
-  cursor: pointer;
-}
-
-.linkButton:hover {
-  color: var(--color-text-primary);
 }

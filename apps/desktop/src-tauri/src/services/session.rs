@@ -1,28 +1,13 @@
-//! In-memory session state: the backend **session gate** and the login
-//! throttle. See vault/wiki/ipc-api.md ("Session gate").
-//!
-//!   - [`ActiveSession`] is the Tauri-managed record of who is signed in
-//!     to *this* app instance. `auth_login` / `auth_resume` set it,
-//!     `auth_logout` clears it, and every non-auth IPC command calls
-//!     [`require_session`] as its first statement — so hiding the UI is
-//!     no longer the only thing standing between a logged-out renderer
-//!     and the vault. The frontend passes no token to gated commands.
-//!   - [`LoginThrottle`] locks a username for [`LOCKOUT`] after
-//!     [`MAX_FAILED_ATTEMPTS`] consecutive failed sign-ins.
-//!   - [`SessionTimes`] is the shared expiry policy (idle + absolute) for
-//!     both the active session and the bearer-token map in
-//!     `services::auth::SessionStore`.
+//! Backend app-access gate and password-attempt throttle. Access is local,
+//! memory-only and ends on manual lock or process exit, not a hidden timer.
+//! See vault/wiki/ipc-api.md ("Session gate").
 
 use std::collections::HashMap;
 use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
 
-use crate::domain::{AppError, AuthSession};
+use crate::domain::{AppError, AuthSession, LoginResult, UserRole};
 
-/// A session not used for this long expires.
-pub const IDLE_TIMEOUT: Duration = Duration::from_secs(12 * 60 * 60);
-/// A session expires this long after sign-in regardless of activity.
-pub const ABSOLUTE_TIMEOUT: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 /// Consecutive failed sign-ins (per username) before a lockout.
 pub const MAX_FAILED_ATTEMPTS: u32 = 5;
 /// How long a username stays locked after too many failures.
@@ -31,43 +16,12 @@ pub const LOCKOUT: Duration = Duration::from_secs(5 * 60);
 /// grow the map without bound; unlocked entries are dropped past it.
 const THROTTLE_MAX_ENTRIES: usize = 1024;
 
-// ── expiry policy ────────────────────────────────────────────────────
-
-/// Creation + last-use instants for a session, with the shared expiry
-/// rule (idle [`IDLE_TIMEOUT`] / absolute [`ABSOLUTE_TIMEOUT`]).
-#[derive(Debug, Clone, Copy)]
-pub struct SessionTimes {
-    created: Instant,
-    last_seen: Instant,
-}
-
-impl SessionTimes {
-    pub fn new(now: Instant) -> Self {
-        Self {
-            created: now,
-            last_seen: now,
-        }
-    }
-
-    pub fn is_expired(&self, now: Instant) -> bool {
-        now.saturating_duration_since(self.created) >= ABSOLUTE_TIMEOUT
-            || now.saturating_duration_since(self.last_seen) >= IDLE_TIMEOUT
-    }
-
-    pub fn touch(&mut self, now: Instant) {
-        if now > self.last_seen {
-            self.last_seen = now;
-        }
-    }
-}
-
 // ── ActiveSession (the gate) ─────────────────────────────────────────
 
 #[derive(Debug, Clone)]
 struct ActiveEntry {
     token: String,
     session: AuthSession,
-    times: SessionTimes,
 }
 
 /// Who is signed in to this app instance. `None` = logged out; every
@@ -84,65 +38,70 @@ impl ActiveSession {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// Mark `session` (holding `token`) as the signed-in user.
-    pub fn set(&self, token: &str, session: AuthSession) {
-        self.set_at(token, session, Instant::now());
+    /// Return the existing access rather than rotating a token on repeated
+    /// bootstrap calls (including React StrictMode startup).
+    pub fn current(&self) -> Option<LoginResult> {
+        self.lock().as_ref().map(Self::result)
     }
 
-    pub fn set_at(&self, token: &str, session: AuthSession, now: Instant) {
-        *self.lock() = Some(ActiveEntry {
-            token: token.to_string(),
-            session,
-            times: SessionTimes::new(now),
-        });
+    pub fn open_local(&self) -> Result<LoginResult, AppError> {
+        let mut guard = self.lock();
+        if let Some(entry) = guard.as_ref() {
+            return Ok(Self::result(entry));
+        }
+        let mut bytes = [0u8; 32];
+        getrandom::getrandom(&mut bytes)
+            .map_err(|_| AppError::Io("Cannot create app access token".into()))?;
+        let entry = ActiveEntry {
+            token: bytes.iter().map(|b| format!("{b:02x}")).collect(),
+            session: AuthSession {
+                username: "local".into(),
+                role: UserRole::Admin,
+            },
+        };
+        let result = Self::result(&entry);
+        *guard = Some(entry);
+        Ok(result)
     }
 
-    /// Close the gate unconditionally (a new login that may not use the
-    /// app yet replaces whoever was signed in before).
+    fn result(entry: &ActiveEntry) -> LoginResult {
+        LoginResult {
+            token: entry.token.clone(),
+            session: entry.session.clone(),
+            must_change_password: false,
+        }
+    }
+
     pub fn clear(&self) {
         *self.lock() = None;
     }
 
-    /// Sign out — but only if `token` is the active one, so a stale
-    /// token from elsewhere can't end the current user's session.
-    pub fn clear_if(&self, token: &str) {
+    pub fn close(&self, token: &str) -> Result<(), AppError> {
         let mut guard = self.lock();
-        if guard.as_ref().is_some_and(|e| e.token == token) {
-            *guard = None;
+        if !guard.as_ref().is_some_and(|e| e.token == token) {
+            return Err(AppError::Unauthorized("App access ended".into()));
         }
+        *guard = None;
+        Ok(())
     }
 
-    /// The signed-in session, or `Unauthorized`. Expired sessions are
-    /// cleared; a live one has its idle timer refreshed.
-    /// True when someone is signed in and the session has not expired.
-    /// Unlike [`Self::require`] this does not refresh the idle timer, so
-    /// background work (the backup scheduler) never keeps a session alive.
     pub fn is_signed_in(&self) -> bool {
-        let now = Instant::now();
-        self.lock()
-            .as_ref()
-            .is_some_and(|e| !e.times.is_expired(now))
+        self.lock().is_some()
     }
 
     pub fn require(&self) -> Result<AuthSession, AppError> {
-        self.require_at(Instant::now())
+        self.lock()
+            .as_ref()
+            .map(|e| e.session.clone())
+            .ok_or_else(|| AppError::Unauthorized("App is locked".into()))
     }
 
-    pub fn require_at(&self, now: Instant) -> Result<AuthSession, AppError> {
-        let mut guard = self.lock();
-        match guard.as_mut() {
-            None => Err(AppError::Unauthorized("not signed in".into())),
-            Some(entry) if entry.times.is_expired(now) => {
-                *guard = None;
-                Err(AppError::Unauthorized(
-                    "session expired; sign in again".into(),
-                ))
-            }
-            Some(entry) => {
-                entry.times.touch(now);
-                Ok(entry.session.clone())
-            }
-        }
+    pub fn require_token(&self, token: &str) -> Result<AuthSession, AppError> {
+        self.lock()
+            .as_ref()
+            .filter(|e| e.token == token)
+            .map(|e| e.session.clone())
+            .ok_or_else(|| AppError::Unauthorized("App access ended".into()))
     }
 }
 
@@ -214,15 +173,6 @@ impl LoginThrottle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::UserRole;
-
-    fn sess(name: &str) -> AuthSession {
-        AuthSession {
-            username: name.into(),
-            role: UserRole::User,
-        }
-    }
-
     #[test]
     fn gate_rejects_when_no_one_is_signed_in() {
         let active = ActiveSession::default();
@@ -233,44 +183,28 @@ mod tests {
     #[test]
     fn gate_accepts_after_set_and_rejects_after_clear() {
         let active = ActiveSession::default();
-        active.set("tok", sess("alice"));
-        assert_eq!(require_session(&active).unwrap().username, "alice");
-        active.clear_if("other-token");
+        let login = active.open_local().unwrap();
+        assert_eq!(require_session(&active).unwrap().username, "local");
+        assert!(active.close("other-token").is_err());
         assert!(
             require_session(&active).is_ok(),
             "foreign token must not log out"
         );
-        active.clear_if("tok");
+        active.close(&login.token).unwrap();
         assert!(require_session(&active).is_err());
     }
 
     #[test]
-    fn gate_expires_after_idle_timeout() {
+    fn repeated_bootstrap_retains_token_but_lock_invalidates_it() {
         let active = ActiveSession::default();
-        let t0 = Instant::now();
-        active.set_at("tok", sess("alice"), t0);
-        // Activity within the idle window keeps it alive…
-        let t1 = t0 + IDLE_TIMEOUT - Duration::from_secs(60);
-        assert!(active.require_at(t1).is_ok());
-        let t2 = t1 + IDLE_TIMEOUT - Duration::from_secs(60);
-        assert!(active.require_at(t2).is_ok());
-        // …but a full idle period expires it, and it stays cleared.
-        let t3 = t2 + IDLE_TIMEOUT;
-        assert!(active.require_at(t3).is_err());
-        assert!(active.require_at(t2).is_err());
-    }
-
-    #[test]
-    fn gate_expires_at_absolute_timeout_even_when_active() {
-        let active = ActiveSession::default();
-        let t0 = Instant::now();
-        active.set_at("tok", sess("alice"), t0);
-        let mut t = t0;
-        while t < t0 + ABSOLUTE_TIMEOUT - IDLE_TIMEOUT {
-            t += IDLE_TIMEOUT / 2;
-            assert!(active.require_at(t).is_ok());
-        }
-        assert!(active.require_at(t0 + ABSOLUTE_TIMEOUT).is_err());
+        let first = active.open_local().unwrap();
+        assert_eq!(first, active.open_local().unwrap());
+        active.close(&first.token).unwrap();
+        assert!(active.require_token(&first.token).is_err());
+        let next = active.open_local().unwrap();
+        assert_ne!(first.token, next.token);
+        assert!(active.require_token(&first.token).is_err());
+        assert!(active.require_token(&next.token).is_ok());
     }
 
     #[test]

@@ -6,7 +6,7 @@ import {
   setFrontMatterField,
 } from "../../frontMatter";
 import { chatHeader, chatTitle, parseRoleHeading, roleLabel } from "../format";
-import { configuredProviders, isModelId } from "../models";
+import { addedProviders, configuredProviders, isModelId } from "../models";
 import { defaultAiConfig } from "../../types";
 
 describe("chatHeader (chatgpt-md getHeaderRole)", () => {
@@ -71,12 +71,33 @@ describe("front-matter fields", () => {
 });
 
 describe("models", () => {
-  it("lists only providers with a key, plus the local ones", () => {
+  it("lists models only for added providers with a saved key or local API", () => {
     const ai = defaultAiConfig();
-    expect(configuredProviders(ai)).toEqual(["ollama", "lmstudio"]);
+    expect(configuredProviders(ai)).toEqual([]);
+    ai.addedProviders = ["anthropic", "ollama"];
+    expect(configuredProviders(ai)).toEqual(["ollama"]);
     ai.providers.anthropic = { ...ai.providers.anthropic, hasApiKey: true };
-    expect(configuredProviders(ai)).toEqual(["anthropic", "ollama", "lmstudio"]);
+    expect(configuredProviders(ai)).toEqual(["anthropic", "ollama"]);
+    ai.addedProviders = ["ollama"];
+    expect(configuredProviders(ai)).toEqual(["ollama"]);
     expect(isModelId("openai@gpt-4o")).toBe(true);
     expect(isModelId("gpt-4o")).toBe(false);
+  });
+
+  it("retains effective legacy providers and respects an explicit empty list", () => {
+    const ai = defaultAiConfig();
+    delete ai.addedProviders;
+    ai.defaultModel = "ollama@llama3.2";
+    ai.providers.anthropic.hasApiKey = true;
+    expect(addedProviders(ai)).toEqual(["anthropic", "ollama"]);
+    ai.addedProviders = [];
+    expect(addedProviders(ai)).toEqual([]);
+  });
+
+  it("does not probe unconfigured local providers", () => {
+    const ai = defaultAiConfig();
+    expect(configuredProviders(undefined)).toEqual([]);
+    ai.addedProviders = ["ollama", "lmstudio"];
+    expect(configuredProviders(ai)).toEqual(["ollama", "lmstudio"]);
   });
 });

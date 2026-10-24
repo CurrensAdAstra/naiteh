@@ -28,8 +28,10 @@ use std::sync::Mutex as StdMutex;
 
 use base64::Engine;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 use crate::domain::AppError;
+use crate::services::credentials::{self, CredentialRef, CredentialStore, Transaction};
 use crate::services::fs as fsx;
 use crate::services::notes::{self, canonicalize_lenient};
 use crate::services::watcher::is_ignored_name;
@@ -62,9 +64,9 @@ pub struct DriveConfig {
     pub folder: String,
 }
 
-/// SFTP settings as stored on disk — **includes secrets**; never sent to
-/// the renderer (see [`StoredTarget::view`]).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Disk metadata plus deserialize-only legacy secrets. New JSON writes contain
+/// credential references; the renderer receives only [`StoredTarget::view`].
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredSftp {
     pub host: String,
@@ -74,10 +76,14 @@ pub struct StoredSftp {
     pub auth_method: String,
     #[serde(default)]
     pub key_path: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub password: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing)]
     pub passphrase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub password_ref: Option<CredentialRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub passphrase_ref: Option<CredentialRef>,
     pub remote_dir: String,
     /// Pinned `SHA256:<base64>` host-key fingerprint (TOFU); `None` until
     /// the user confirms it.
@@ -85,11 +91,33 @@ pub struct StoredSftp {
     pub host_key_fingerprint: Option<String>,
 }
 
+impl StoredSftp {
+    pub fn has_password(&self) -> bool {
+        self.password_ref.is_some() || self.password.as_deref().is_some_and(|p| !p.is_empty())
+    }
+
+    pub fn has_passphrase(&self) -> bool {
+        self.passphrase_ref.is_some() || self.passphrase.as_deref().is_some_and(|p| !p.is_empty())
+    }
+}
+
+impl std::fmt::Debug for StoredSftp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoredSftp")
+            .field("host", &self.host)
+            .field("port", &self.port)
+            .field("auth_method", &self.auth_method)
+            .field("has_password", &self.has_password())
+            .field("has_passphrase", &self.has_passphrase())
+            .finish_non_exhaustive()
+    }
+}
+
 fn default_interval() -> u32 {
     DEFAULT_INTERVAL_MINUTES
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredTarget {
     pub id: String,
@@ -112,6 +140,14 @@ pub struct StoredTarget {
     pub drive: Option<DriveConfig>,
     #[serde(default)]
     pub sftp: Option<StoredSftp>,
+}
+
+impl std::fmt::Debug for StoredTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StoredTarget")
+            .field("target", &self.view())
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -148,6 +184,13 @@ pub struct BackupTarget {
 
 impl StoredTarget {
     pub fn view(&self) -> BackupTarget {
+        let secrets: Vec<&str> = self
+            .sftp
+            .as_ref()
+            .into_iter()
+            .flat_map(|s| [s.password.as_deref(), s.passphrase.as_deref()])
+            .flatten()
+            .collect();
         BackupTarget {
             id: self.id.clone(),
             kind: self.kind.clone(),
@@ -156,7 +199,10 @@ impl StoredTarget {
             auto_backup: self.auto_backup,
             interval_minutes: self.interval_minutes,
             last_backup_at: self.last_backup_at,
-            last_error: self.last_error.clone(),
+            last_error: self
+                .last_error
+                .clone()
+                .map(|e| credentials::redact_text(e, &secrets)),
             drive: self.drive.clone(),
             sftp: self.sftp.as_ref().map(|s| SftpView {
                 host: s.host.clone(),
@@ -164,8 +210,8 @@ impl StoredTarget {
                 username: s.username.clone(),
                 auth_method: s.auth_method.clone(),
                 key_path: s.key_path.clone(),
-                has_password: s.password.as_deref().is_some_and(|p| !p.is_empty()),
-                has_passphrase: s.passphrase.as_deref().is_some_and(|p| !p.is_empty()),
+                has_password: s.has_password(),
+                has_passphrase: s.has_passphrase(),
                 remote_dir: s.remote_dir.clone(),
                 host_key_fingerprint: s.host_key_fingerprint.clone(),
             }),
@@ -201,11 +247,7 @@ pub fn targets_path(config_dir: &Path) -> PathBuf {
 }
 
 fn read_store(config_dir: &Path) -> Result<TargetsFile, AppError> {
-    match fsx::read_json::<TargetsFile>(&targets_path(config_dir)) {
-        Ok(f) => Ok(f),
-        Err(AppError::NotFound(_)) => Ok(TargetsFile::default()),
-        Err(e) => Err(e),
-    }
+    credentials::read_json(&targets_path(config_dir)).map(|(_, file)| file)
 }
 
 pub fn load_targets(config_dir: &Path) -> Result<Vec<StoredTarget>, AppError> {
@@ -224,11 +266,220 @@ pub fn modify_targets<T>(
     config_dir: &Path,
     f: impl FnOnce(&mut Vec<StoredTarget>) -> Result<T, AppError>,
 ) -> Result<T, AppError> {
+    credentials::with_store(|store| modify_targets_with_store(config_dir, store, &[], f))
+}
+
+fn modify_targets_with_store<T>(
+    config_dir: &Path,
+    store: &dyn CredentialStore,
+    touched: &[(&str, &str)],
+    f: impl FnOnce(&mut Vec<StoredTarget>) -> Result<T, AppError>,
+) -> Result<T, AppError> {
     let _g = STORE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
-    let mut file = read_store(config_dir)?;
+    let (mut raw, mut file): (_, TargetsFile) = credentials::read_json(&targets_path(config_dir))?;
+    let previous = raw.clone();
+    let before = file.targets.clone();
     let out = f(&mut file.targets)?;
-    fsx::write_json(&targets_path(config_dir), &file)?;
+    let mut transaction = Transaction::new(store);
+    let old_raw = previous.get("targets").and_then(Value::as_array);
+    let find_raw = |id: &str| {
+        old_raw.and_then(|list| {
+            list.iter()
+                .find(|t| t.get("id").and_then(Value::as_str) == Some(id))
+        })
+    };
+    for removed in before
+        .iter()
+        .filter(|old| !file.targets.iter().any(|t| t.id == old.id))
+    {
+        if let Some(mut removed) = find_raw(&removed.id).cloned() {
+            migrate_sftp(&mut removed, &mut transaction, None, true)?;
+        }
+    }
+    let mut next_targets = Vec::new();
+    for target in &mut file.targets {
+        let old = before.iter().find(|t| t.id == target.id);
+        let mut raw_target = find_raw(&target.id)
+            .cloned()
+            .unwrap_or(credentials::json(target)?);
+        if let Some(sftp) = &mut target.sftp {
+            if !raw_target.get("sftp").is_some_and(Value::is_object) {
+                raw_target["sftp"] = credentials::json(sftp)?;
+            }
+            let old_sftp = old.and_then(|t| t.sftp.as_ref());
+            for (legacy, reference, secret, new_ref, old_secret, old_ref) in [
+                (
+                    "password",
+                    "passwordRef",
+                    &mut sftp.password,
+                    &mut sftp.password_ref,
+                    old_sftp.and_then(|s| s.password.as_ref()),
+                    old_sftp.and_then(|s| s.password_ref.as_ref()),
+                ),
+                (
+                    "passphrase",
+                    "passphraseRef",
+                    &mut sftp.passphrase,
+                    &mut sftp.passphrase_ref,
+                    old_sftp.and_then(|s| s.passphrase.as_ref()),
+                    old_sftp.and_then(|s| s.passphrase_ref.as_ref()),
+                ),
+            ] {
+                if secret.as_ref() != old_secret
+                    || new_ref.as_ref() != old_ref
+                    || touched.contains(&(target.id.as_str(), legacy))
+                {
+                    migrate_sftp(&mut raw_target, &mut transaction, Some(legacy), true)?;
+                    if let Some(value) = secret.as_deref().filter(|s| !s.is_empty()) {
+                        *new_ref = Some(transaction.stage(value)?);
+                    }
+                    *secret = None;
+                    // A new target's serialized metadata already has an SFTP object.
+                    let object = raw_target["sftp"].as_object_mut().unwrap();
+                    object.remove(legacy);
+                    credentials::set_reference(object, reference, new_ref.as_ref())?;
+                }
+            }
+        } else if old.and_then(|t| t.sftp.as_ref()).is_some() {
+            migrate_sftp(&mut raw_target, &mut transaction, None, true)?;
+        }
+        if let Some(old) = old {
+            credentials::merge_changes(
+                &mut raw_target,
+                &credentials::json(old)?,
+                &credentials::json(target)?,
+            );
+        } else {
+            raw_target = credentials::json(target)?;
+        }
+        next_targets.push(raw_target);
+    }
+    raw["targets"] = Value::Array(next_targets);
+    transaction.finish(&previous, &raw, || {
+        fsx::write_json(&targets_path(config_dir), &raw)
+    })?;
     Ok(out)
+}
+
+fn migrate_sftp(
+    target: &mut Value,
+    transaction: &mut Transaction<'_>,
+    only: Option<&str>,
+    superseded: bool,
+) -> Result<usize, AppError> {
+    let Some(sftp) = target.get_mut("sftp").and_then(Value::as_object_mut) else {
+        return Ok(0);
+    };
+    let secrets: Vec<String> = ["password", "passphrase"]
+        .iter()
+        .filter_map(|field| sftp.get(*field).and_then(Value::as_str).map(str::to_string))
+        .collect();
+    let mut count = 0;
+    for (legacy, reference) in [("password", "passwordRef"), ("passphrase", "passphraseRef")] {
+        if only.is_none_or(|field| field == legacy) {
+            count +=
+                credentials::migrate_slot(transaction, sftp, legacy, reference, false, superseded)?;
+        }
+    }
+    if let Some(error) = target.get_mut("lastError") {
+        if let Some(message) = error.as_str() {
+            *error = Value::String(credentials::redact_text(
+                message.into(),
+                &secrets.iter().map(String::as_str).collect::<Vec<_>>(),
+            ));
+        }
+    }
+    Ok(count)
+}
+
+pub fn migrate_credentials(config_dir: &Path) -> Result<usize, AppError> {
+    credentials::with_store(|store| migrate_credentials_with_store(config_dir, store, None))
+}
+
+/// `only` is (target id, selected auth field); unrelated targets/auth methods
+/// never need a working keyring for an operation on another target.
+fn migrate_credentials_with_store(
+    config_dir: &Path,
+    store: &dyn CredentialStore,
+    only: Option<(&str, &str)>,
+) -> Result<usize, AppError> {
+    let _guard = STORE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let (mut raw, _): (_, TargetsFile) = credentials::read_json(&targets_path(config_dir))?;
+    let previous = raw.clone();
+    let mut transaction = Transaction::new(store);
+    let mut count = 0;
+    if let Some(targets) = raw.get_mut("targets").and_then(Value::as_array_mut) {
+        for target in targets {
+            if only.is_none_or(|(id, _)| target.get("id").and_then(Value::as_str) == Some(id)) {
+                count += migrate_sftp(
+                    target,
+                    &mut transaction,
+                    only.map(|(_, field)| field),
+                    false,
+                )?;
+            }
+        }
+    }
+    if raw != previous {
+        transaction.finish(&previous, &raw, || {
+            fsx::write_json(&targets_path(config_dir), &raw)
+        })?;
+    }
+    Ok(count)
+}
+
+/// Called only after host-key validation. Migration and lookup are scoped to the
+/// selected auth method. Passwords/passphrases are never trimmed.
+pub fn resolve_sftp_secret(
+    config_dir: &Path,
+    id: &str,
+    expected: &StoredSftp,
+) -> Result<Option<String>, AppError> {
+    credentials::with_store(|store| resolve_sftp_secret_with_store(config_dir, id, expected, store))
+}
+
+fn resolve_sftp_secret_with_store(
+    config_dir: &Path,
+    id: &str,
+    expected: &StoredSftp,
+    store: &dyn CredentialStore,
+) -> Result<Option<String>, AppError> {
+    let field = match expected.auth_method.as_str() {
+        "password" => "password",
+        "key" => "passphrase",
+        _ => return Err(AppError::Validation("Unknown SFTP auth method".into())),
+    };
+    migrate_credentials_with_store(config_dir, store, Some((id, field)))?;
+    let _guard = STORE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let target = read_store(config_dir)?
+        .targets
+        .into_iter()
+        .find(|t| t.id == id)
+        .ok_or_else(|| AppError::NotFound("Backup target was removed".into()))?;
+    let actual = target
+        .sftp
+        .ok_or_else(|| AppError::Validation("Not an SFTP target".into()))?;
+    if actual.host != expected.host
+        || actual.port != expected.port
+        || actual.username != expected.username
+        || actual.auth_method != expected.auth_method
+        || actual.key_path != expected.key_path
+        || actual.remote_dir != expected.remote_dir
+        || actual.host_key_fingerprint != expected.host_key_fingerprint
+    {
+        return Err(AppError::Conflict(
+            "SFTP settings changed; retry the operation".into(),
+        ));
+    }
+    let reference = if field == "password" {
+        actual.password_ref
+    } else {
+        actual.passphrase_ref
+    };
+    reference
+        .as_ref()
+        .map(|r| credentials::resolve(store, r))
+        .transpose()
 }
 
 /// Apply `f` to one target and persist; returns its new view.
@@ -244,6 +495,50 @@ pub fn modify_target(
             .ok_or_else(|| AppError::NotFound(format!("backup target {id}")))?;
         f(t)?;
         Ok(t.view())
+    })
+}
+
+/// Explicit secret updates must migrate even if the supplied value equals the
+/// legacy plaintext. `None` keeps a field; an empty string clears it.
+pub fn modify_target_credentials(
+    config_dir: &Path,
+    id: &str,
+    password: Option<String>,
+    passphrase: Option<String>,
+    f: impl FnOnce(&mut StoredTarget) -> Result<(), AppError>,
+) -> Result<BackupTarget, AppError> {
+    let mut touched = Vec::new();
+    if password.is_some() {
+        touched.push((id, "password"));
+    }
+    if passphrase.is_some() {
+        touched.push((id, "passphrase"));
+    }
+    credentials::with_store(|store| {
+        modify_targets_with_store(config_dir, store, &touched, |list| {
+            let target = list
+                .iter_mut()
+                .find(|t| t.id == id)
+                .ok_or_else(|| AppError::NotFound("Backup target not found".into()))?;
+            if password.is_some() || passphrase.is_some() {
+                // The old values will no longer be available to redact the returned view.
+                target.last_error = target.view().last_error;
+                let sftp = target
+                    .sftp
+                    .as_mut()
+                    .ok_or_else(|| AppError::Validation("Not an SFTP target".into()))?;
+                if let Some(password) = password {
+                    sftp.password = (!password.is_empty()).then_some(password);
+                    sftp.password_ref = None;
+                }
+                if let Some(passphrase) = passphrase {
+                    sftp.passphrase = (!passphrase.is_empty()).then_some(passphrase);
+                    sftp.passphrase_ref = None;
+                }
+            }
+            f(target)?;
+            Ok(target.view())
+        })
     })
 }
 
@@ -1036,10 +1331,10 @@ pub fn record_run_start(id: &str) {
     map.insert(id.to_string(), cur);
 }
 
-/// Scheduler rule: enabled + auto + runnable, the vault changed since the
-/// last run, and the last attempt is at least `intervalMinutes` old.
+/// Failed runs (including a locked credential store) remain retryable without
+/// another edit. The usual interval still bounds retries.
 pub fn is_due(t: &StoredTarget, now: i64, vault_changed: bool) -> bool {
-    if !(t.enabled && t.auto_backup && t.runnable() && vault_changed) {
+    if !(t.enabled && t.auto_backup && t.runnable() && (vault_changed || t.last_error.is_some())) {
         return false;
     }
     let last = t.last_backup_at.max(t.last_attempt_at);
@@ -1074,10 +1369,12 @@ pub fn try_begin(id: &str) -> Result<RunGuard, AppError> {
 
 /// Open a target's file tree (connects for SFTP; refuses an unconfirmed
 /// or changed host key before any credential is sent).
-pub fn open_target(t: &StoredTarget) -> Result<Box<dyn RemoteFs>, AppError> {
+pub fn open_target(config_dir: &Path, t: &StoredTarget) -> Result<Box<dyn RemoteFs>, AppError> {
     match (t.kind.as_str(), &t.drive, &t.sftp) {
         (KIND_DRIVE, Some(d), _) => Ok(Box::new(LocalDirFs::new(PathBuf::from(&d.folder)))),
-        (KIND_SFTP, _, Some(s)) => Ok(Box::new(crate::services::backup_sftp::connect(s)?)),
+        (KIND_SFTP, _, Some(s)) => Ok(Box::new(crate::services::backup_sftp::connect(
+            config_dir, &t.id, s,
+        )?)),
         _ => Err(AppError::Validation(format!(
             "backup target {} is misconfigured",
             t.id
@@ -1489,6 +1786,21 @@ mod tests {
         assert!(is_due(&t, now, true));
         t.last_attempt_at = Some(now - 60);
         assert!(!is_due(&t, now, true), "recent failed attempt");
+        t.last_error = Some("Secure credential store unavailable".into());
+        assert!(
+            !is_due(&t, now, false),
+            "failed runs still respect the interval"
+        );
+        t.last_attempt_at = Some(now - 30 * 60);
+        assert!(
+            is_due(&t, now, false),
+            "retry store failures even without another edit"
+        );
+        t.last_error = None;
+        assert!(
+            !is_due(&t, now, false),
+            "successful unchanged runs remain idle"
+        );
         t.last_attempt_at = None;
         t.auto_backup = false;
         assert!(!is_due(&t, now, true));
@@ -1517,6 +1829,8 @@ mod tests {
                 key_path: None,
                 password: Some("hunter2-secret".into()),
                 passphrase: Some("pp-secret".into()),
+                password_ref: None,
+                passphrase_ref: None,
                 remote_dir: "d".into(),
                 host_key_fingerprint: None,
             }),
@@ -1528,6 +1842,326 @@ mod tests {
         assert!(json.contains(r#""hasPassphrase":true"#));
         assert!(!json.contains("\"drive\""));
         assert!(!t.runnable(), "unconfirmed host key");
+        assert!(!format!("{t:?}").contains("hunter2-secret"));
+        assert!(!format!("{t:?}").contains("pp-secret"));
+    }
+
+    fn legacy_sftp_file(dir: &Path) -> Vec<u8> {
+        let mut target = credentials::json(&drive_target("/drive")).unwrap();
+        target["id"] = "sftp-test".into();
+        target["kind"] = KIND_SFTP.into();
+        target["drive"] = Value::Null;
+        target["sftp"] = serde_json::json!({
+            "host":"example.test", "port":22, "username":"u", "authMethod":"password",
+            "keyPath":"/private/key", "password":"  password-secret  ", "passphrase":"  passphrase-secret  ",
+            "remoteDir":"backup", "hostKeyFingerprint":"SHA256:pin"
+        });
+        fsx::write_json(&targets_path(dir), &serde_json::json!({"targets":[target]})).unwrap();
+        std::fs::read(targets_path(dir)).unwrap()
+    }
+
+    #[test]
+    fn sftp_migration_is_references_only_idempotent_and_preserves_whitespace() {
+        let dir = tempdir().unwrap();
+        let store = credentials::MemoryStore::default();
+        legacy_sftp_file(dir.path());
+        assert_eq!(
+            migrate_credentials_with_store(dir.path(), &store, None).unwrap(),
+            2
+        );
+        let target = find_target(dir.path(), "sftp-test").unwrap();
+        let sftp = target.sftp.as_ref().unwrap();
+        assert!(sftp.password.is_none() && sftp.passphrase.is_none());
+        assert!(target.view().sftp.unwrap().has_password);
+        assert_eq!(
+            resolve_sftp_secret_with_store(dir.path(), &target.id, sftp, &store)
+                .unwrap()
+                .as_deref(),
+            Some("  password-secret  ")
+        );
+        assert_eq!(
+            credentials::resolve(&store, sftp.passphrase_ref.as_ref().unwrap()).unwrap(),
+            "  passphrase-secret  "
+        );
+        let bytes = std::fs::read(targets_path(dir.path())).unwrap();
+        assert!(!String::from_utf8_lossy(&bytes).contains("password-secret"));
+        assert!(!String::from_utf8_lossy(&bytes).contains("passphrase-secret"));
+        assert_eq!(
+            migrate_credentials_with_store(dir.path(), &store, None).unwrap(),
+            0
+        );
+        assert_eq!(std::fs::read(targets_path(dir.path())).unwrap(), bytes);
+        assert_eq!(store.len(), 2);
+    }
+
+    #[test]
+    fn legacy_error_messages_are_redacted_in_views_and_migrated_json() {
+        let dir = tempdir().unwrap();
+        let store = credentials::MemoryStore::default();
+        legacy_sftp_file(dir.path());
+        let mut raw: Value = fsx::read_json(&targets_path(dir.path())).unwrap();
+        raw["targets"][0]["lastError"] =
+            "SSH rejected:   password-secret  ,   passphrase-secret  ".into();
+        fsx::write_json(&targets_path(dir.path()), &raw).unwrap();
+        let before = find_target(dir.path(), "sftp-test").unwrap();
+        assert!(!serde_json::to_string(&before.view())
+            .unwrap()
+            .contains("password-secret"));
+        assert!(!format!("{before:?}").contains("passphrase-secret"));
+        migrate_credentials_with_store(dir.path(), &store, None).unwrap();
+        let raw = std::fs::read_to_string(targets_path(dir.path())).unwrap();
+        assert!(!raw.contains("password-secret") && !raw.contains("passphrase-secret"));
+    }
+
+    #[test]
+    fn sftp_migration_failure_preserves_plaintext_and_cleans_partial_staging() {
+        let dir = tempdir().unwrap();
+        let store = credentials::MemoryStore::default();
+        let original = legacy_sftp_file(dir.path());
+        store.fail_after_writes(1);
+        assert!(migrate_credentials_with_store(dir.path(), &store, None).is_err());
+        assert_eq!(std::fs::read(targets_path(dir.path())).unwrap(), original);
+        assert_eq!(store.len(), 0);
+        store.fail_after_writes(usize::MAX);
+        assert_eq!(
+            migrate_credentials_with_store(dir.path(), &store, None).unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn failed_sftp_replacement_leaves_previous_reference_usable() {
+        let dir = tempdir().unwrap();
+        let store = credentials::MemoryStore::default();
+        legacy_sftp_file(dir.path());
+        migrate_credentials_with_store(dir.path(), &store, None).unwrap();
+        let previous = std::fs::read(targets_path(dir.path())).unwrap();
+        let old = find_target(dir.path(), "sftp-test")
+            .unwrap()
+            .sftp
+            .unwrap()
+            .password_ref
+            .unwrap();
+        store.fail_after_writes(0);
+        assert!(modify_targets_with_store(dir.path(), &store, &[], |list| {
+            list[0].sftp.as_mut().unwrap().password = Some("replacement-secret".into());
+            Ok(())
+        })
+        .is_err());
+        assert_eq!(std::fs::read(targets_path(dir.path())).unwrap(), previous);
+        assert_eq!(
+            credentials::resolve(&store, &old).unwrap(),
+            "  password-secret  "
+        );
+        assert_eq!(store.len(), 2);
+    }
+
+    #[test]
+    fn sftp_keep_set_clear_uses_exact_password_and_cleans_old_references() {
+        let dir = tempdir().unwrap();
+        legacy_sftp_file(dir.path());
+        let view = modify_target_credentials(
+            dir.path(),
+            "sftp-test",
+            Some("  new-password  ".into()),
+            Some("  new-passphrase  ".into()),
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert!(view.sftp.unwrap().has_password);
+        let stored = find_target(dir.path(), "sftp-test").unwrap().sftp.unwrap();
+        assert_eq!(
+            resolve_sftp_secret(dir.path(), "sftp-test", &stored)
+                .unwrap()
+                .as_deref(),
+            Some("  new-password  ")
+        );
+        modify_target_credentials(dir.path(), "sftp-test", None, None, |t| {
+            t.name = "Renamed".into();
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            find_target(dir.path(), "sftp-test").unwrap().sftp.unwrap(),
+            stored
+        );
+        let view = modify_target_credentials(
+            dir.path(),
+            "sftp-test",
+            Some(String::new()),
+            Some(String::new()),
+            |_| Ok(()),
+        )
+        .unwrap();
+        assert!(!view.sftp.as_ref().unwrap().has_password);
+        assert!(!view.sftp.as_ref().unwrap().has_passphrase);
+        credentials::with_store(|store| {
+            assert!(credentials::resolve(store, stored.password_ref.as_ref().unwrap()).is_err());
+            assert!(credentials::resolve(store, stored.passphrase_ref.as_ref().unwrap()).is_err());
+        });
+        let raw = std::fs::read_to_string(targets_path(dir.path())).unwrap();
+        assert!(!raw.contains("password-secret") && !raw.contains("new-password"));
+    }
+
+    #[test]
+    fn mixed_sftp_set_clear_recovers_missing_reference() {
+        for password_auth in [true, false] {
+            for clear in [false, true] {
+                let dir = tempdir().unwrap();
+                legacy_sftp_file(dir.path());
+                let mut original: Value = fsx::read_json(&targets_path(dir.path())).unwrap();
+                let sftp = &mut original["targets"][0]["sftp"];
+                let reference = if password_auth {
+                    "passwordRef"
+                } else {
+                    "passphraseRef"
+                };
+                sftp[reference] = "v1-00000000000000000000000000000000".into();
+                sftp["authMethod"] = if password_auth { "password" } else { "key" }.into();
+                fsx::write_json(&targets_path(dir.path()), &original).unwrap();
+                let before = std::fs::read(targets_path(dir.path())).unwrap();
+                let expected = find_target(dir.path(), "sftp-test").unwrap().sftp.unwrap();
+                assert!(resolve_sftp_secret(dir.path(), "sftp-test", &expected).is_err());
+                assert!(migrate_credentials(dir.path()).is_err());
+                assert_eq!(std::fs::read(targets_path(dir.path())).unwrap(), before);
+
+                let field = if password_auth {
+                    "password"
+                } else {
+                    "passphrase"
+                };
+                let store = credentials::MemoryStore::default();
+                store.fail_after_writes(0);
+                let error = modify_targets_with_store(
+                    dir.path(),
+                    &store,
+                    &[("sftp-test", field)],
+                    |targets| {
+                        let sftp = targets[0].sftp.as_mut().unwrap();
+                        if password_auth {
+                            sftp.password = (!clear).then(|| "  replacement  ".into());
+                            sftp.password_ref = None;
+                        } else {
+                            sftp.passphrase = (!clear).then(|| "  replacement  ".into());
+                            sftp.passphrase_ref = None;
+                        }
+                        Ok(())
+                    },
+                )
+                .unwrap_err();
+                assert!(matches!(error, AppError::Io(_)), "{error:?}");
+                assert_eq!(std::fs::read(targets_path(dir.path())).unwrap(), before);
+                assert_eq!(store.len(), 0);
+
+                let value = if clear {
+                    String::new()
+                } else {
+                    "  replacement  ".into()
+                };
+                modify_target_credentials(
+                    dir.path(),
+                    "sftp-test",
+                    password_auth.then(|| value.clone()),
+                    (!password_auth).then_some(value),
+                    |_| Ok(()),
+                )
+                .unwrap();
+                let stored = find_target(dir.path(), "sftp-test").unwrap().sftp.unwrap();
+                assert_eq!(
+                    resolve_sftp_secret(dir.path(), "sftp-test", &stored)
+                        .unwrap()
+                        .as_deref(),
+                    (!clear).then_some("  replacement  ")
+                );
+                let raw = std::fs::read_to_string(targets_path(dir.path())).unwrap();
+                assert!(!raw.contains(if password_auth {
+                    "password-secret"
+                } else {
+                    "passphrase-secret"
+                }));
+                assert!(!raw.contains("replacement"));
+            }
+        }
+    }
+
+    #[test]
+    fn secret_updates_redact_previous_credentials_before_returning_view() {
+        for clear in [false, true] {
+            let dir = tempdir().unwrap();
+            legacy_sftp_file(dir.path());
+            let mut raw: Value = fsx::read_json(&targets_path(dir.path())).unwrap();
+            raw["targets"][0]["lastError"] =
+                "SSH rejected:   password-secret  ,   passphrase-secret  ".into();
+            fsx::write_json(&targets_path(dir.path()), &raw).unwrap();
+            let view = modify_target_credentials(
+                dir.path(),
+                "sftp-test",
+                Some(if clear {
+                    String::new()
+                } else {
+                    "new-password".into()
+                }),
+                Some(if clear {
+                    String::new()
+                } else {
+                    "new-passphrase".into()
+                }),
+                |_| Ok(()),
+            )
+            .unwrap();
+            let serialized = serde_json::to_string(&view).unwrap();
+            assert!(!serialized.contains("password-secret"));
+            assert!(!serialized.contains("passphrase-secret"));
+            let stored = find_target(dir.path(), "sftp-test").unwrap();
+            assert_eq!(view.last_error, stored.last_error);
+            let raw = std::fs::read_to_string(targets_path(dir.path())).unwrap();
+            assert!(!raw.contains("password-secret"));
+            assert!(!raw.contains("passphrase-secret"));
+        }
+    }
+
+    #[test]
+    fn unrelated_target_changes_and_selected_auth_do_not_resolve_other_secrets() {
+        let dir = tempdir().unwrap();
+        let store = credentials::MemoryStore::default();
+        legacy_sftp_file(dir.path());
+        store.unavailable(true);
+        modify_targets_with_store(dir.path(), &store, &[], |targets| {
+            targets.insert(0, drive_target("/drive"));
+            Ok(())
+        })
+        .unwrap();
+        modify_targets_with_store(dir.path(), &store, &[], |targets| {
+            targets.remove(0);
+            targets[0].name = "Renamed".into();
+            Ok(())
+        })
+        .unwrap();
+        let sftp = find_target(dir.path(), "sftp-test").unwrap().sftp.unwrap();
+        assert_eq!(sftp.password.as_deref(), Some("  password-secret  "));
+        let previous = std::fs::read(targets_path(dir.path())).unwrap();
+        assert!(
+            modify_targets_with_store(dir.path(), &store, &[], |targets| {
+                let sftp = targets[0].sftp.as_mut().unwrap();
+                sftp.password = None;
+                sftp.password_ref = None;
+                Ok(())
+            })
+            .is_err()
+        );
+        assert_eq!(std::fs::read(targets_path(dir.path())).unwrap(), previous);
+        store.unavailable(false);
+        assert_eq!(
+            resolve_sftp_secret_with_store(dir.path(), "sftp-test", &sftp, &store)
+                .unwrap()
+                .as_deref(),
+            Some("  password-secret  ")
+        );
+        // Password auth did not migrate or look up the unused passphrase.
+        assert_eq!(store.len(), 1);
+        let stored = find_target(dir.path(), "sftp-test").unwrap().sftp.unwrap();
+        assert_eq!(stored.passphrase.as_deref(), Some("  passphrase-secret  "));
+        assert!(stored.passphrase_ref.is_none());
     }
 
     #[test]

@@ -218,19 +218,20 @@ fn vault_set_active_impl(
         )));
     }
     let root_str = canonical.to_string_lossy().to_string();
-    let mut cfg = config::load(config_dir)?;
-    cfg.active_vault = Some(root_str.clone());
-    let same_as_root = |p: &String| {
-        p == &root_str
-            || Path::new(p)
-                .canonicalize()
-                .map(|c| vault_path::simplify(&c) == canonical)
-                .unwrap_or(false)
-    };
-    if !cfg.known_vaults.iter().any(same_as_root) {
-        cfg.known_vaults.insert(0, root_str);
-    }
-    config::save(config_dir, &cfg)?;
+    config::modify(config_dir, |cfg| {
+        cfg.active_vault = Some(root_str.clone());
+        let same_as_root = |p: &String| {
+            p == &root_str
+                || Path::new(p)
+                    .canonicalize()
+                    .map(|c| vault_path::simplify(&c) == canonical)
+                    .unwrap_or(false)
+        };
+        if !cfg.known_vaults.iter().any(same_as_root) {
+            cfg.known_vaults.insert(0, root_str);
+        }
+        Ok(())
+    })?;
     Ok(vault_info_for(&canonical))
 }
 

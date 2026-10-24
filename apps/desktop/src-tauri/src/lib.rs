@@ -223,10 +223,8 @@ pub fn run() {
         // See services::index and vault/wiki/concurrency-safety.md
         // ("Tag index").
         .manage(services::index::TagIndex::default())
-        // Opaque bearer-token session map. See services::auth.
-        .manage(services::auth::SessionStore::default())
-        // Who is signed in to this instance — the session gate every
-        // non-auth command checks first. See services::session.
+        .manage(services::app_lock::AccessOperations::default())
+        // Local access gate checked first by every protected command.
         .manage(services::session::ActiveSession::default())
         // Per-username failed-login lockout. See services::session.
         .manage(services::session::LoginThrottle::default())
@@ -246,8 +244,8 @@ pub fn run() {
             commands::backup::start_scheduler(app.handle().clone());
             Ok(())
         })
-        // Every command except auth_login / auth_resume / auth_logout is
-        // gated: the other auth_* commands resolve their bearer token,
+        // Bootstrap, unlock and legacy conversion establish access;
+        // the other auth_* commands validate the active memory-only token,
         // everything else calls `require_session` first (enforced by
         // `tests::every_registered_command_is_gated`).
         .invoke_handler(tauri::generate_handler![
@@ -257,13 +255,12 @@ pub fn run() {
             commands::vault::vault_set_active,
             commands::vault::vault_list_known,
             commands::vault::vault_create_default,
-            commands::auth::auth_login,
-            commands::auth::auth_resume,
-            commands::auth::auth_logout,
-            commands::auth::auth_change_password,
-            commands::auth::auth_create_user,
-            commands::auth::auth_list_users,
-            commands::auth::auth_set_user_active,
+            commands::auth::auth_bootstrap,
+            commands::auth::auth_unlock,
+            commands::auth::auth_migrate,
+            commands::auth::auth_set_lock,
+            commands::auth::auth_lock,
+            commands::auth::auth_migrate_secrets,
             commands::auth::auth_list_audit_logs,
             commands::auth::auth_log_action,
             commands::journal::quick_create,
@@ -399,15 +396,14 @@ mod tests {
 
     /// Commands reachable before sign-in. They authenticate (or end) a
     /// session themselves; nothing else may be listed here.
-    const UNGATED: &[&str] = &["auth_login", "auth_resume", "auth_logout"];
+    const UNGATED: &[&str] = &["auth_bootstrap", "auth_unlock", "auth_migrate"];
 
     /// Auth commands gated by their bearer token instead of the active
     /// session: their body must resolve the token first.
     const TOKEN_GATED: &[&str] = &[
-        "auth_change_password",
-        "auth_create_user",
-        "auth_list_users",
-        "auth_set_user_active",
+        "auth_set_lock",
+        "auth_lock",
+        "auth_migrate_secrets",
         "auth_list_audit_logs",
         "auth_log_action",
     ];
@@ -480,8 +476,7 @@ mod tests {
             let first = first_statement(command_source(module), name);
             if TOKEN_GATED.contains(&name.as_str()) {
                 assert!(
-                    first.contains("sessions.resolve(&token)?;")
-                        || first.contains("sessions.require_admin(&token)?;"),
+                    first == "active.require_token(&token)?;",
                     "{module}::{name} must resolve its token first, starts with: {first}"
                 );
             } else {

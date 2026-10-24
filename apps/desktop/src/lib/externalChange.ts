@@ -25,6 +25,7 @@ import {
 } from "../state/editorStore";
 import { useUIStore } from "../state/uiStore";
 import { notifyVaultContentChanged } from "../state/vaultContentStore";
+import { useVaultStore } from "../state/vaultStore";
 
 /**
  * Files change underneath a running naiteh: the vault folder is backed up
@@ -64,8 +65,9 @@ function describe(open: OpenFile): string {
     : open.source.relPath;
 }
 
-function stillOpen(key: string): boolean {
-  return useEditorStore.getState().open?.key === key;
+function stillOpen(key: string, vaultRoot: string | null): boolean {
+  return useEditorStore.getState().open?.key === key &&
+    (useVaultStore.getState().active?.root ?? null) === vaultRoot;
 }
 
 /**
@@ -76,6 +78,7 @@ function stillOpen(key: string): boolean {
  * whereas a version read racing it could report a false one.
  */
 export async function checkOpenDocument(): Promise<void> {
+  const vaultRoot = useVaultStore.getState().active?.root ?? null;
   const open = useEditorStore.getState().open;
   if (open === null || hasSaveInFlight(open.key)) return;
   let diskVersion: string;
@@ -87,7 +90,7 @@ export async function checkOpenDocument(): Promise<void> {
   }
   const state = useEditorStore.getState();
   const current = state.open;
-  if (current === null || current.key !== open.key) return;
+  if (current === null || !stillOpen(open.key, vaultRoot)) return;
   if (hasSaveInFlight(current.key)) return;
   if (diskVersion === current.savedVersion) return;
   if (!isDirty(current)) {
@@ -126,6 +129,7 @@ function localContent(open: OpenFile): string {
  * A file that vanished meanwhile closes the document instead.
  */
 export async function loadDiskVersion(): Promise<void> {
+  const vaultRoot = useVaultStore.getState().active?.root ?? null;
   const conflict = currentConflict();
   if (conflict === null) return;
   const { open } = conflict;
@@ -133,7 +137,7 @@ export async function loadDiskVersion(): Promise<void> {
   try {
     doc = await readTarget(sourceAsTarget(open.source));
   } catch (e) {
-    if (isAppError(e) && e.kind === "NotFound" && stillOpen(open.key)) {
+    if (isAppError(e) && e.kind === "NotFound" && stillOpen(open.key, vaultRoot)) {
       await closeDocument({ discard: true });
       useUIStore
         .getState()
@@ -142,7 +146,7 @@ export async function loadDiskVersion(): Promise<void> {
     }
     throw e;
   }
-  if (!stillOpen(open.key)) return;
+  if (!stillOpen(open.key, vaultRoot)) return;
   const editor = useEditorStore.getState();
   releaseSave(open.key);
   editor.reloadOpen(open.key, doc.content, doc.version);
@@ -159,12 +163,13 @@ export async function keepMine(): Promise<void> {
   const conflict = currentConflict();
   if (conflict === null) return;
   const { open, change } = conflict;
+  const vaultRoot = useVaultStore.getState().active?.root ?? null;
   const content = localContent(open);
   const expected = change.diskVersion === "" ? null : change.diskVersion;
   try {
-    await saveNow(open.source, content, expected);
+    await saveNow(open.source, content, expected, vaultRoot);
   } catch (e) {
-    if (!stillOpen(open.key)) return;
+    if (!stillOpen(open.key, vaultRoot)) return;
     const editor = useEditorStore.getState();
     if (isStaleWrite(e)) {
       editor.setExternalChange({ key: open.key, diskVersion: e.message });
@@ -173,7 +178,7 @@ export async function keepMine(): Promise<void> {
     editor.setSaveError(open.key, formatAppError(e));
     return;
   }
-  if (!stillOpen(open.key)) return;
+  if (!stillOpen(open.key, vaultRoot)) return;
   releaseSave(open.key);
   useEditorStore.getState().setExternalChange(null);
 }
@@ -189,17 +194,20 @@ export async function saveMineAsCopy(): Promise<string | null> {
   const conflict = currentConflict();
   if (conflict === null) return null;
   const { open, change } = conflict;
+  const vaultRoot = useVaultStore.getState().active?.root ?? null;
   const content = localContent(open);
   const copyRelPath = localCopyRelPath(open.source.relPath);
-  await notesWrite(copyRelPath, content, null);
+  await notesWrite(copyRelPath, content, null, vaultRoot);
+  if ((useVaultStore.getState().active?.root ?? null) !== vaultRoot) return copyRelPath;
   notifyVaultContentChanged();
   useUIStore.getState().setNotice(`Your edits were saved as ${copyRelPath}`);
-  if (!stillOpen(open.key)) return copyRelPath;
+  if (!stillOpen(open.key, vaultRoot)) return copyRelPath;
   releaseSave(open.key);
   useEditorStore.getState().setExternalChange(null);
   if (change.diskVersion === "") {
     // Nothing left to show at the original path — continue in the copy.
     await closeDocument({ discard: true });
+    if ((useVaultStore.getState().active?.root ?? null) !== vaultRoot) return copyRelPath;
     await openDocument({ kind: "note", relPath: copyRelPath });
     return copyRelPath;
   }
@@ -207,14 +215,15 @@ export async function saveMineAsCopy(): Promise<string | null> {
   try {
     doc = await readTarget(sourceAsTarget(open.source));
   } catch (e) {
-    if (isAppError(e) && e.kind === "NotFound" && stillOpen(open.key)) {
+    if (isAppError(e) && e.kind === "NotFound" && stillOpen(open.key, vaultRoot)) {
       await closeDocument({ discard: true });
+      if ((useVaultStore.getState().active?.root ?? null) !== vaultRoot) return copyRelPath;
       await openDocument({ kind: "note", relPath: copyRelPath });
       return copyRelPath;
     }
     throw e;
   }
-  if (stillOpen(open.key)) {
+  if (stillOpen(open.key, vaultRoot)) {
     useEditorStore.getState().reloadOpen(open.key, doc.content, doc.version);
   }
   return copyRelPath;

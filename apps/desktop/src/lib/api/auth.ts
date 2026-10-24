@@ -1,95 +1,39 @@
-import type { AuditLogEntry, AuthUser, LoginResult, UserRole } from "../types";
-import { hasTauriRuntime, invoke } from "./invoke";
-import { notePasswordChangeRequired } from "./passwordChangeFlags";
+import type { AuditLogEntry, AuthAccess } from "../types";
+import { invoke } from "./invoke";
 
-/**
- * Authenticates and returns an opaque bearer token + session record.
- * The token must be passed to every subsequent auth IPC; the backend
- * resolves it against an in-memory session map. When `remember` is set,
- * the backend persists the session so `authResume` can restore it on the
- * next launch without a password.
- *
- * `mustChangePassword` on the result means the account has to set a new
- * password before it may use the app (see authStore).
- */
-export async function authLogin(
+export function authBootstrap(): Promise<AuthAccess> {
+  return invoke<AuthAccess>("auth_bootstrap");
+}
+
+export function authUnlock(password: string): Promise<AuthAccess> {
+  return invoke<AuthAccess>("auth_unlock", { password });
+}
+
+export function authMigrate(
   username: string,
   password: string,
-  remember: boolean,
-): Promise<LoginResult> {
-  const result = await invoke<LoginResult>("auth_login", {
-    username,
-    password,
-    remember,
-  });
-  notePasswordChangeRequired(result);
-  return result;
-}
-
-/**
- * Attempts to restore a remembered session on startup. Resolves to the
- * session when one is valid, or `null` when there's nothing to resume
- * (no remembered session, expired, or the account was disabled). Also
- * `null` outside the desktop runtime, where there's no backend to ask.
- */
-export async function authResume(): Promise<LoginResult | null> {
-  if (!hasTauriRuntime()) return null;
-  const result = await invoke<LoginResult | null>("auth_resume");
-  if (result !== null) notePasswordChangeRequired(result);
-  return result;
-}
-
-/** Revokes the token on the backend. Safe to call with stale tokens. */
-export function authLogout(token: string): Promise<void> {
-  return invoke<void>("auth_logout", { token });
-}
-
-/**
- * Change the signed-in user's own password. Backend rules: the new
- * password is at least 8 characters, differs from the current one, and
- * is not the username. Clears the session's must-change flag.
- */
-export function authChangePassword(
-  token: string,
-  currentPassword: string,
   newPassword: string,
-): Promise<void> {
-  return invoke<void>("auth_change_password", {
-    token,
-    currentPassword,
-    newPassword,
-  });
+): Promise<AuthAccess> {
+  return invoke<AuthAccess>("auth_migrate", { username, password, newPassword });
 }
 
-/** Admin only. Returns the full user list after creation. */
-export function authCreateUser(
+export function authSetLock(
   token: string,
-  username: string,
-  password: string,
-  role: UserRole,
-): Promise<AuthUser[]> {
-  return invoke<AuthUser[]>("auth_create_user", {
-    token,
-    username,
-    password,
-    role,
+  enabled: boolean,
+  currentPassword: string | null,
+  newPassword: string | null,
+): Promise<AuthAccess> {
+  return invoke<AuthAccess>("auth_set_lock", {
+    token, enabled, currentPassword, newPassword,
   });
 }
 
-export function authListUsers(token: string): Promise<AuthUser[]> {
-  return invoke<AuthUser[]>("auth_list_users", { token });
+export function authLock(token: string): Promise<void> {
+  return invoke<void>("auth_lock", { token });
 }
 
-export function authSetUserActive(
-  token: string,
-  username: string,
-  active: boolean,
-): Promise<AuthUser[]> {
-  return invoke<AuthUser[]>("auth_set_user_active", {
-    token,
-    username,
-    active,
-  });
+export function authMigrateSecrets(token: string): Promise<void> {
+  return invoke<void>("auth_migrate_secrets", { token });
 }
 
 export function authListAuditLogs(
@@ -99,11 +43,7 @@ export function authListAuditLogs(
   return invoke<AuditLogEntry[]>("auth_list_audit_logs", { token, limit });
 }
 
-/**
- * Append a work event to the audit log. The backend only accepts a fixed
- * allowlist of action names (login/logout, vault_switch, evernote_import,
- * note/journal events…) — never pass user-provided text as `action`.
- */
+/** Action names are backend-allowlisted; never use user input as an action. */
 export function authLogAction(
   token: string,
   action: string,

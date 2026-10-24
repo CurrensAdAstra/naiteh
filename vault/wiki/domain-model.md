@@ -2,7 +2,7 @@
 title: "Domain Model"
 tags: [naiteh-wiki, domain, types, ipc]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-10-12T12:00:00+09:00
+updated: 2026-10-17T12:00:00+09:00
 pinned: false
 ---
 
@@ -21,8 +21,9 @@ snake_case; they serialize camelCase via `#[serde(rename_all = "camelCase")]`).
 Two exceptions: the `AppError` error type (incl. `Unauthorized`, returned by the
 session gate and by credential / token failures, and `StaleWrite`, returned by
 a refused conflict-safe write) is documented in [ipc-api.md](ipc-api.md), and
-`UserRole` serializes as the bare PascalCase strings `"Admin"` / `"User"` (no
-renaming, no tag — see below).
+`UserRole` retains the bare PascalCase strings `"Admin"` / `"User"` (no
+renaming, no tag), but current access uses only the audit-only `local` / `Admin`
+session, not account authorization (see below).
 
 ## Journal
 
@@ -77,7 +78,14 @@ bytes land (a Drive mirror, the other PC). `notes_read` / `journal_open`
 return it, `notes_version` reads it cheaply, and `notes_write` /
 `journal_save` take it back as `expected_version` for an optimistic
 concurrency check: a mismatch is `AppError::StaleWrite(current_version)`
-(`""` when the file no longer exists) and nothing is written. See
+(`""` when the file no longer exists) and nothing is written.
+
+Both writers also require `expected_vault_root: String` (wire:
+`expectedVaultRoot`), captured from the originating vault before async work.
+A canonical mismatch with the backend active vault returns `Conflict` without
+writing; a missing root cannot save. After validation, the write stays bound to
+that captured canonical root even if the active setting changes later. This
+root check is required even when the content-version check is omitted. See
 [IPC API → Notes](ipc-api.md#notes) and [Concurrency &
 Safety](concurrency-safety.md).
 
@@ -255,6 +263,7 @@ pub struct ChatSendResult {        // ai_chat_send result
 // event "ai:chat-chunk" payload: { requestId: String, delta: String }
 
 pub struct AiConfigView {          // ai in AppConfigView (no keys)
+    pub added_providers: Vec<String>, // ordered Settings registrations
     pub default_model: String,     // "openai@gpt-4.1-mini"
     pub temperature: f64,
     pub max_tokens: u32,
@@ -269,10 +278,14 @@ pub struct ProviderView { pub has_api_key: bool, pub base_url: String }
 ```
 
 On disk, `AiConfig` has the same scalars and
-`providers: { <id>: { apiKey?, baseUrl } }`. Keys are stored in plaintext
-under the app-config directory (OS user permissions are the trust boundary;
-v1 does not use the system keychain) and are write-only from the
-renderer's point of view.
+`providers: { <id>: { apiKeyRef?, baseUrl } }`. `apiKeyRef` is an opaque
+reference into OS credential storage (`keyring` 3.6.3: macOS Keychain, Windows
+Credential Manager, persistent Linux Secret Service over session D-Bus).
+Legacy `apiKey` is accepted for safe migration, not returned to the renderer
+or used as a plaintext fallback. `hasApiKey` reports a configured reference
+or non-blank legacy key, without checking the store. Requests resolve only the
+selected provider's credentials. See [App Config](app-config.md#credential-storage)
+for atomic migration, failure handling and the native-runtime validation caveat.
 
 ## Config types
 
@@ -290,28 +303,46 @@ interfaces **are** these view shapes (`ai.providers.<id>.hasApiKey`, no `apiKey`
 
 ```rust
 pub enum UserRole { Admin, User }
-pub struct AuthUser   { pub username: String, pub role: UserRole, pub active: bool }
-pub struct AuthSession { pub username: String, pub role: UserRole }
-pub struct LoginResult {     // returned by auth_login and auth_resume
+pub struct AuthSession { pub username: String, pub role: UserRole } // current: "local" / Admin
+pub struct LoginResult {     // nested in AuthAccess when backend access is ready
     pub token: String,
     pub session: AuthSession,
-    pub must_change_password: bool,  // wire: mustChangePassword — seeded default still in use
+    pub must_change_password: bool,  // wire: mustChangePassword; always false for local access
+}
+pub struct AuthAccess {      // auth_bootstrap / auth_unlock / auth_migrate / auth_set_lock
+    pub lock_enabled: bool,
+    pub migration_required: bool,
+    pub login: Option<LoginResult>, // wire: LoginResult | null
 }
 
 pub struct AuditLogEntry {
     pub timestamp: String,       // RFC 3339 UTC
-    pub username: String,        // attempted or authenticated username
-    pub action: String,          // login_success, login_failure, note_open, ...
-    pub detail: Option<String>,  // rel path, target account, failure reason
+    pub username: String,        // "local" for current work; legacy names remain in history
+    pub action: String,          // backend access events and allowlisted work events
+    pub detail: Option<String>,  // rel path or other event detail
 }
 ```
 
-The local account store lives in the app-config directory. Passwords are
-Argon2id-hashed and never exposed to the frontend; only `AuthUser` records cross
-the IPC boundary. Each stored account also carries `mustChangePassword` (see
-[IPC API → Auth & Audit](ipc-api.md#auth--audit)). `UserRole` serializes as
-`"Admin"` / `"User"` (also the `role` argument of `auth_create_user`). The audit log is append-only JSONL at
-`<app-config-dir>/audit-log.jsonl`, rotated to `audit-log.1.jsonl` at 5 MiB.
+`AuthAccess` serializes as `{ lockEnabled, migrationRequired, login }`. A
+non-null `login` means the backend has opened this instance's `ActiveSession`;
+a blocked lock or required conversion has `login: null`. Fresh installs need
+no app login. Tokens and sessions are memory-only with no idle/absolute expiry,
+remember UI or persistence; an enabled lock closes on manual lock or app
+restart. `AuthSession { username: "local", role: "Admin" }` is an internal
+audit attribution shape, not an account role, user isolation or an admin route.
+Account-management IPC/UI has been removed.
+
+The optional password-only lock stores an Argon2id hash in app-config
+`app-lock.json`. Existing `auth.json` without that file requires explicit
+legacy username/password validation plus a new 8–1024-character lock password
+different from the old password; conversion enables the lock. Legacy hashes
+and audit history remain but do not determine later access. Legacy
+`remembered-session.json` is deleted without retaining its token. See
+[IPC API → Auth & Audit](ipc-api.md#auth--audit).
+
+The audit log is append-only JSONL at `<app-config-dir>/audit-log.jsonl`,
+rotated to `audit-log.1.jsonl` at 5 MiB. Audit reads and work-event logging
+validate the active token, not an account role.
 
 ## Calendar subscriptions
 

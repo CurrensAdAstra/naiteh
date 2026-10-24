@@ -19,6 +19,7 @@ vi.mock("../../lib/chatMd/chatFlow", () => ({
 
 import { listen } from "@tauri-apps/api/event";
 import { newChat, sendChat, stopChat } from "../../lib/chatMd/chatFlow";
+import { useAuthStore } from "../../state/authStore";
 import { useUIStore, type ViewMode } from "../../state/uiStore";
 import { useMenuEvents } from "../useMenuEvents";
 
@@ -36,6 +37,10 @@ function fire(event: string, payload: unknown = undefined) {
 describe("useMenuEvents", () => {
   beforeEach(() => {
     handlers.clear();
+    vi.mocked(sendChat).mockClear();
+    vi.mocked(newChat).mockClear();
+    vi.mocked(stopChat).mockClear();
+    useAuthStore.setState({ token: "token", session: { username: "local", role: "Admin" }, busy: null });
     (listen as unknown as Mock).mockClear();
     useUIStore.setState({
       viewMode: "journal",
@@ -138,5 +143,16 @@ describe("useMenuEvents", () => {
     expect(useUIStore.getState().settingsOpen).toBe(false);
     fire("menu:settings");
     expect(useUIStore.getState().settingsOpen).toBe(true);
+  });
+
+  it.each(["locked", "locking"])("ignores every menu mutation while %s", (state) => {
+    render(<Harness />);
+    if (state === "locked") useAuthStore.setState({ token: null, session: null });
+    else useAuthStore.setState({ busy: "lock" });
+    for (const event of handlers.keys()) fire(event, "notes");
+    expect(useUIStore.getState()).toMatchObject({ viewMode: "journal", settingsOpen: false, pendingAction: null, commandPaletteOpen: false, modelPickerOpen: false });
+    expect(sendChat).not.toHaveBeenCalled();
+    expect(newChat).not.toHaveBeenCalled();
+    expect(stopChat).not.toHaveBeenCalled();
   });
 });

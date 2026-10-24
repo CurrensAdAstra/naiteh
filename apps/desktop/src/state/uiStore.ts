@@ -99,7 +99,7 @@ interface UIState {
   requestEvernoteImport: () => void;
   /** Open the settings modal on its Backup section. */
   requestBackupSettings: () => void;
-  /** Navigate to Notes and queue a new-note / new-folder prompt there. */
+  /** Navigate to Notes and queue a new-note / new-folder dialog there. */
   requestNewNote: () => void;
   requestNewFolder: () => void;
   clearPendingAction: () => void;

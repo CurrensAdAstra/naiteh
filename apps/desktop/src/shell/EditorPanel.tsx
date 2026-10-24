@@ -36,7 +36,6 @@ import { markdownKeymap } from "../lib/markdownKeymap";
 import { formatAppError, isAppError } from "../lib/types";
 import {
   flushPendingSave,
-  onSaved,
   scheduleSave,
 } from "../state/autosave";
 import {
@@ -46,7 +45,6 @@ import {
   isDirty,
   replaceWholeDocument,
   useEditorStore,
-  type OpenSource,
 } from "../state/editorStore";
 import { useAuthStore } from "../state/authStore";
 import { selectEditorConfig, useSettingsStore } from "../state/settingsStore";
@@ -54,10 +52,6 @@ import { useUIStore } from "../state/uiStore";
 import { MarkdownViewer } from "./MarkdownViewer";
 import { TagsBar } from "./TagsBar";
 import styles from "./EditorPanel.module.css";
-
-function auditDetail(source: OpenSource): string {
-  return source.kind === "note" ? source.relPath : source.date;
-}
 
 export function EditorPanel() {
   const open = useEditorStore((s) => s.open);
@@ -74,7 +68,7 @@ export function EditorPanel() {
   const editorMode = useUIStore((s) => s.editorMode);
   const setEditorMode = useUIStore((s) => s.setEditorMode);
   const viewing = editorMode === "view";
-  const logAction = useAuthStore((s) => s.logAction);
+  const locking = useAuthStore((s) => s.busy === "lock");
   const chatErrorState = useUIStore((s) => s.chatError);
   const setChatError = useUIStore((s) => s.setChatError);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
@@ -89,18 +83,6 @@ export function EditorPanel() {
       ? chatErrorState.message
       : null;
   const dirty = open !== null && isDirty(open);
-
-  // Audit-log every successful write (autosave, flush, Cmd+S).
-  useEffect(
-    () =>
-      onSaved((source) => {
-        void logAction(
-          source.kind === "note" ? "note_save" : "journal_save",
-          auditDetail(source),
-        ).catch(() => {});
-      }),
-    [logAction],
-  );
 
   // Build / rebuild the CodeMirror view whenever a different file is
   // opened, or the open file's text was replaced from outside the editor
@@ -124,7 +106,7 @@ export function EditorPanel() {
     // task edits and AI replacements keep flowing through one document;
     // read-only there so a stray key can't type into it.
     const initialReadOnly: Extension =
-      useUIStore.getState().editorMode === "view"
+      useUIStore.getState().editorMode === "view" || useAuthStore.getState().busy === "lock"
         ? EditorState.readOnly.of(true)
         : [];
     const state = EditorState.create({
@@ -186,14 +168,14 @@ export function EditorPanel() {
     if (view === null || compartment === null) return;
     view.dispatch({
       effects: compartment.reconfigure(
-        viewing ? EditorState.readOnly.of(true) : [],
+        viewing || locking ? EditorState.readOnly.of(true) : [],
       ),
     });
-    if (!viewing) {
+    if (!viewing && !locking) {
       view.requestMeasure();
       view.focus();
     }
-  }, [viewing, editorKey, revision]);
+  }, [viewing, locking, editorKey, revision]);
 
   // Debounced autosave when the editor content drifts from disk. The
   // pending save lives in state/autosave (not in this effect), so it is

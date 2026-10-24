@@ -1,11 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
 
-import { useAdminData } from "../auth/useAdminData";
-import { useAuthStore } from "../../state/authStore";
 import { useUIStore } from "../../state/uiStore";
-import { AccountSection } from "./sections/AccountSection";
-import { AccountsSection } from "./sections/AccountsSection";
+import { SecuritySection } from "./sections/SecuritySection";
 import { AiSection } from "./sections/AiSection";
 import { AppearanceSection } from "./sections/AppearanceSection";
 import { AuditSection } from "./sections/AuditSection";
@@ -25,27 +22,24 @@ type SectionId =
   | "clipping"
   | "ai"
   | "import"
-  | "account"
-  | "accounts"
+  | "security"
   | "audit";
 
 interface NavEntry {
   id: SectionId;
   label: string;
-  group: "options" | "administration";
 }
 
 const NAV: readonly NavEntry[] = [
-  { id: "general", label: "Vault", group: "options" },
-  { id: "backup", label: "Backup", group: "options" },
-  { id: "appearance", label: "Appearance", group: "options" },
-  { id: "editor", label: "Editor", group: "options" },
-  { id: "clipping", label: "Web Clipping", group: "options" },
-  { id: "ai", label: "AI", group: "options" },
-  { id: "import", label: "Import from Evernote", group: "options" },
-  { id: "account", label: "Account", group: "options" },
-  { id: "accounts", label: "Accounts", group: "administration" },
-  { id: "audit", label: "Audit Log", group: "administration" },
+  { id: "general", label: "Vault" },
+  { id: "backup", label: "Backup" },
+  { id: "appearance", label: "Appearance" },
+  { id: "editor", label: "Editor" },
+  { id: "clipping", label: "Web Clipping" },
+  { id: "ai", label: "AI" },
+  { id: "import", label: "Import from Evernote" },
+  { id: "security", label: "Security" },
+  { id: "audit", label: "Local Activity" },
 ];
 
 const TITLE_ID = "settings-title";
@@ -57,12 +51,8 @@ const TITLE_ID = "settings-title";
  * in-flight Evernote import survive switching sections.
  */
 export function SettingsModal() {
-  const session = useAuthStore((s) => s.session);
-  const token = useAuthStore((s) => s.token);
   const setSettingsOpen = useUIStore((s) => s.setSettingsOpen);
-  const isAdmin = session?.role === "Admin";
   const [activeSection, setActiveSection] = useState<SectionId>("general");
-  const admin = useAdminData(isAdmin ? token : null);
 
   const close = useCallback(() => setSettingsOpen(false), [setSettingsOpen]);
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -82,8 +72,6 @@ export function SettingsModal() {
     }
   }, [pendingAction, clearPendingAction]);
 
-  const visibleNav = NAV.filter((n) => n.group !== "administration" || isAdmin);
-
   const sections: Record<SectionId, ReactNode> = {
     general: <VaultSection />,
     backup: <BackupSection />,
@@ -92,15 +80,12 @@ export function SettingsModal() {
     clipping: <ClippingSection />,
     ai: <AiSection />,
     import: <ImportSection />,
-    account: <AccountSection />,
-    accounts: isAdmin ? <AccountsSection admin={admin} /> : null,
-    audit: isAdmin ? <AuditSection admin={admin} /> : null,
+    security: <SecuritySection />,
+    audit: <AuditSection />,
   };
 
-  function renderNavGroup(group: NavEntry["group"]) {
-    return visibleNav
-      .filter((n) => n.group === group)
-      .map((n) => (
+  function renderNav() {
+    return NAV.map((n) => (
         <button
           key={n.id}
           type="button"
@@ -139,13 +124,7 @@ export function SettingsModal() {
             Settings
           </h1>
           <div className={styles.navGroupLabel}>Options</div>
-          {renderNavGroup("options")}
-          {isAdmin && (
-            <>
-              <div className={styles.navGroupLabel}>Administration</div>
-              {renderNavGroup("administration")}
-            </>
-          )}
+          {renderNav()}
         </nav>
 
         <div className={styles.content}>
@@ -159,7 +138,7 @@ export function SettingsModal() {
             <X size={18} strokeWidth={2} aria-hidden="true" />
           </button>
           <div className={styles.scroll}>
-            {visibleNav.map((n) => (
+            {NAV.map((n) => (
               <section
                 key={n.id}
                 id={`settings-panel-${n.id}`}

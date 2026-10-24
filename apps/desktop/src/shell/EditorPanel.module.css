@@ -18,6 +18,7 @@
 
 .toolbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   padding: 4px 12px;
@@ -27,11 +28,22 @@
   color: var(--color-text-secondary);
 }
 
+.toolbar > button {
+  flex-shrink: 0;
+}
+
 .path {
-  flex: 1;
+  flex: 1 1 120px;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.statusDirty,
+.statusSaved {
+  flex-shrink: 0;
+  white-space: nowrap;
 }
 
 .statusDirty {
@@ -175,14 +187,18 @@
 .modeToggle {
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: 4px;
+  min-width: 68px;
   height: 22px;
   padding: 0 7px;
   border: 1px solid var(--color-border-strong);
   border-radius: 3px;
   color: var(--color-text-secondary);
   font-size: var(--font-size-ui);
-  line-height: 1;
+  /* A forced line-height of 1 lifts the label above center in WebKitGTK. */
+  line-height: normal;
+  white-space: nowrap;
 }
 
 .modeToggle:hover {

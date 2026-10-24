@@ -10,6 +10,7 @@ import {
   type ViewMode,
 } from "../../state/uiStore";
 import { useVaultStore } from "../../state/vaultStore";
+import { useAuthStore } from "../../state/authStore";
 import { AppShell } from "../AppShell";
 import appShellSource from "../AppShell.tsx?raw";
 
@@ -64,6 +65,7 @@ vi.mock("../../lib/api/sync", () => ({
 }));
 
 function resetStores() {
+  useAuthStore.setState({ busy: null, error: null });
   useUIStore.setState({
     viewMode: "journal",
     listPanelWidth: LIST_PANEL_DEFAULT,
@@ -126,6 +128,19 @@ describe("AppShell", () => {
     await waitForShellRefresh();
 
     expect(screen.getByTestId("status-bar")).toHaveTextContent("vault");
+  });
+
+  it("quiesces shell interactions without hiding the editor before backend lock acknowledgement", async () => {
+    render(<AppShell />);
+    await waitForShellRefresh();
+    await screen.findByTestId("editor-panel", {}, LAZY_EDITOR_WAIT);
+    act(() => useAuthStore.setState({ busy: "lock" }));
+    expect(screen.getByTestId("app-shell")).toHaveAttribute("inert");
+    expect(screen.getByTestId("app-shell")).toHaveAttribute("aria-busy", "true");
+    expect(screen.getByTestId("editor-panel")).toBeInTheDocument();
+    act(() => useAuthStore.setState({ busy: null, error: "Not locked: disk full" }));
+    expect(screen.getByTestId("app-shell")).not.toHaveAttribute("inert");
+    expect(screen.getByRole("alert")).toHaveTextContent("Not locked: disk full");
   });
 
   it("only calendar mode shows the day timeline pane next to the editor", async () => {

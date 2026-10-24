@@ -409,3 +409,22 @@
   font-weight: 600;
   color: var(--color-text-primary);
 }
+
+@media (max-width: 600px) {
+  .overlay {
+    padding: 8px;
+  }
+
+  .modal {
+    grid-template-columns: 140px minmax(0, 1fr);
+  }
+
+  .scroll {
+    padding: 48px 16px 24px;
+  }
+
+  .item {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+}

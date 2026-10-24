@@ -49,7 +49,7 @@ interface PendingSave {
   key: string;
   source: OpenSource;
   content: string;
-  /** Vault the edit belongs to; the write is dropped if it changed. */
+  /** Vault the edit belongs to; a mismatch parks the draft, never discards it. */
   vaultRoot: string | null;
   /**
    * Version the editor believed was on disk when the edit was scheduled.
@@ -70,9 +70,10 @@ const listeners = new Set<SaveListener>();
 /** Keys whose writes are held because the file changed on disk. */
 const held = new Set<string>();
 /** Keys with a write currently awaiting the backend. */
-const inFlight = new Set<string>();
+const inFlight = new Map<string, string | null>();
 let chain: Promise<void> = Promise.resolve();
 let suspendCount = 0;
+let accessPaused = false;
 
 function currentVaultRoot(): string | null {
   return useVaultStore.getState().active?.root ?? null;
@@ -89,7 +90,7 @@ function asExpected(version: string | null): string | null {
 
 function expectedVersionFor(entry: PendingSave): string | null {
   const open = useEditorStore.getState().open;
-  if (open !== null && open.key === entry.key) {
+  if (open !== null && open.key === entry.key && entry.vaultRoot === currentVaultRoot()) {
     return asExpected(open.savedVersion);
   }
   return asExpected(entry.expectedVersion);
@@ -100,12 +101,13 @@ async function persist(
   source: OpenSource,
   content: string,
   expectedVersion: string | null,
+  vaultRoot: string | null,
 ): Promise<string> {
   if (source.kind === "note") {
-    const result = await notesWrite(source.relPath, content, expectedVersion);
+    const result = await notesWrite(source.relPath, content, expectedVersion, vaultRoot);
     return result.version;
   }
-  const result = await journalSave(source.date, content, expectedVersion);
+  const result = await journalSave(source.date, content, expectedVersion, vaultRoot);
   return result.version;
 }
 
@@ -118,6 +120,7 @@ function clearTimer(entry: PendingSave): void {
 
 function arm(entry: PendingSave, delay: number): void {
   clearTimer(entry);
+  if (accessPaused) return;
   entry.timer = setTimeout(() => {
     entry.timer = null;
     // While suspended (rename/delete in progress) or held (conflict with
@@ -170,18 +173,20 @@ export function saveNow(
   source: OpenSource,
   content: string,
   expectedVersion: string | null,
+  vaultRoot: string | null = currentVaultRoot(),
 ): Promise<string> {
   const key = keyFor(source);
   let version = "";
   return enqueue(async () => {
-    inFlight.add(key);
+    if (accessPaused) throw new Error("Unlock the app before saving. Your edits remain in memory.");
+    inFlight.set(key, vaultRoot);
     try {
-      version = await persist(source, content, expectedVersion);
+      version = await persist(source, content, expectedVersion, vaultRoot);
     } finally {
       inFlight.delete(key);
     }
     retryDelay.delete(key);
-    useEditorStore.getState().markSaved(key, content, version);
+    if (vaultRoot === currentVaultRoot()) useEditorStore.getState().markSaved(key, content, version);
     useEditorStore.getState().setSaveError(key, null);
     notifyListeners(source, content);
   }).then(() => version);
@@ -210,7 +215,15 @@ function park(entry: PendingSave): void {
 
 /** Resolves `false` when the text did not reach disk (retry scheduled). */
 async function write(entry: PendingSave): Promise<boolean> {
-  if (entry.vaultRoot !== currentVaultRoot()) return true;
+  if (accessPaused) {
+    park(entry);
+    return false;
+  }
+  if (entry.vaultRoot !== currentVaultRoot()) {
+    park(entry);
+    useEditorStore.getState().setSaveError(entry.key, "The draft belongs to another vault. Return to its vault before saving.");
+    return false;
+  }
   if (held.has(entry.key)) {
     // The document is in conflict. While it is open the edits stay in the
     // editor (and parked here) for the user to resolve; once it is gone
@@ -223,9 +236,9 @@ async function write(entry: PendingSave): Promise<boolean> {
   }
   const expected = expectedVersionFor(entry);
   let version: string;
-  inFlight.add(entry.key);
+  inFlight.set(entry.key, entry.vaultRoot);
   try {
-    version = await persist(entry.source, entry.content, expected);
+    version = await persist(entry.source, entry.content, expected, entry.vaultRoot);
   } catch (e) {
     if (isStaleWrite(e)) {
       return onStaleWrite(entry, e.message);
@@ -241,7 +254,9 @@ async function write(entry: PendingSave): Promise<boolean> {
     inFlight.delete(entry.key);
   }
   retryDelay.delete(entry.key);
-  useEditorStore.getState().markSaved(entry.key, entry.content, version);
+  if (entry.vaultRoot === currentVaultRoot()) {
+    useEditorStore.getState().markSaved(entry.key, entry.content, version);
+  }
   useEditorStore.getState().setSaveError(entry.key, null);
   notifyListeners(entry.source, entry.content);
   return true;
@@ -286,10 +301,19 @@ function sourceRelPath(source: OpenSource): string {
  * Resolves `true` only when the copy landed; the text is never dropped.
  */
 async function preserveAsCopy(entry: PendingSave): Promise<boolean> {
-  if (entry.vaultRoot !== currentVaultRoot()) return true;
+  if (accessPaused) {
+    park(entry);
+    return false;
+  }
+  if (entry.vaultRoot !== currentVaultRoot()) {
+    park(entry);
+    useEditorStore.getState().setSaveError(entry.key, "The draft belongs to another vault. Return to its vault before preserving a copy.");
+    return false;
+  }
   const copyRelPath = localCopyRelPath(sourceRelPath(entry.source));
+  inFlight.set(entry.key, entry.vaultRoot);
   try {
-    await notesWrite(copyRelPath, entry.content, null);
+    await notesWrite(copyRelPath, entry.content, null, entry.vaultRoot);
   } catch (e) {
     const message = formatAppError(e);
     console.error("autosave: couldn't keep a copy of local edits:", message);
@@ -303,6 +327,8 @@ async function preserveAsCopy(entry: PendingSave): Promise<boolean> {
     }
     useEditorStore.getState().setSaveError(entry.key, message, true);
     return false;
+  } finally {
+    inFlight.delete(entry.key);
   }
   retryDelay.delete(entry.key);
   useEditorStore.getState().setSaveError(entry.key, null);
@@ -331,12 +357,13 @@ export function scheduleSave(
     key,
     source,
     content,
-    vaultRoot: currentVaultRoot(),
+    vaultRoot: existing !== undefined ? existing.vaultRoot : currentVaultRoot(),
     expectedVersion:
       open !== null && open.key === key
         ? open.savedVersion
         : (existing?.expectedVersion ?? null),
     timer: null,
+    copyRetry: existing?.copyRetry === true,
   };
   pending.set(key, entry);
   arm(entry, delay);
@@ -387,9 +414,10 @@ export async function flushPendingSave(
         key: open.key,
         source: open.source,
         content: open.content,
-        vaultRoot: currentVaultRoot(),
+        vaultRoot: existing !== undefined ? existing.vaultRoot : currentVaultRoot(),
         expectedVersion: open.savedVersion,
         timer: null,
+        copyRetry: existing?.copyRetry === true,
       });
     }
   }
@@ -412,6 +440,7 @@ export async function flushPendingSave(
         );
       } else {
         pending.set(entry.key, entry);
+        if (entry.copyRetry === true) arm(entry, AUTOSAVE_DELAY_MS);
       }
       continue;
     }
@@ -439,6 +468,13 @@ export async function flushPendingSave(
         }
       });
     }
+  }
+  // Include failures from writes already in flight at the initial snapshot.
+  // Normal flushes still leave unresolved conflicts for the editor to resolve.
+  for (const key of pending.keys()) {
+    if (opts.leaving !== true && held.has(key)) continue;
+    if (!failedKeys.includes(key)) failedKeys.push(key);
+    if (held.has(key)) preserved = false;
   }
   return { failedKeys, preserved };
 }
@@ -469,7 +505,15 @@ export function discardPendingSave(key?: string): void {
 /** True when a save is queued (or the open document is dirty). */
 export function hasPendingSave(): boolean {
   const open = useEditorStore.getState().open;
-  return pending.size > 0 || (open !== null && isDirty(open));
+  return pending.size > 0 || inFlight.size > 0 || (open !== null && isDirty(open));
+}
+
+/** Origin of retained drafts, before any workspace refresh can replace the active vault. */
+export function pendingSaveVaultRoot(): string | null {
+  const entry = pending.values().next().value;
+  if (entry !== undefined) return entry.vaultRoot;
+  const writing = inFlight.values().next();
+  return writing.done ? currentVaultRoot() : writing.value;
 }
 
 /**
@@ -529,6 +573,15 @@ export function suspendAutosave(): () => void {
   };
 }
 
+/** Access loss pauses all new writes, including explicit flushes, not the drafts. */
+export function setAutosaveAccessPaused(paused: boolean): void {
+  accessPaused = paused;
+  for (const entry of pending.values()) {
+    if (paused) clearTimer(entry);
+    else if (!held.has(entry.key) || entry.copyRetry === true) arm(entry, AUTOSAVE_DELAY_MS);
+  }
+}
+
 /** Notified after every successful write (used for audit logging). */
 export function onSaved(listener: SaveListener): () => void {
   listeners.add(listener);
@@ -546,5 +599,6 @@ export function resetAutosaveForTests(): void {
   held.clear();
   inFlight.clear();
   suspendCount = 0;
+  accessPaused = false;
   chain = Promise.resolve();
 }

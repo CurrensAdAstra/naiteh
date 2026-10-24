@@ -202,6 +202,8 @@ pub async fn backup_target_add_sftp(
             key_path,
             password,
             passphrase,
+            password_ref: None,
+            passphrase_ref: None,
             remote_dir,
             host_key_fingerprint: None,
         });
@@ -233,7 +235,7 @@ pub async fn backup_target_confirm_host_key(
             .ok_or_else(|| AppError::Validation("not an SFTP target".into()))?;
         // The server must still present the confirmed key, and the
         // credentials must work, before the target is enabled.
-        backup_sftp::connect_pinned(&cfg, Some(&fingerprint))?;
+        backup_sftp::connect_pinned(&dir, &id, &cfg, Some(&fingerprint))?;
         backup::modify_target(&dir, &id, |t| {
             if let Some(s) = t.sftp.as_mut() {
                 s.host_key_fingerprint = Some(fingerprint);
@@ -278,7 +280,7 @@ pub async fn backup_target_update(
         let remote_dir = remote_dir
             .map(|r| backup::normalize_remote_dir(&r, &vault_root))
             .transpose()?;
-        backup::modify_target(&dir, &id, |t| {
+        backup::modify_target_credentials(&dir, &id, password, passphrase, |t| {
             if let Some(n) = name {
                 t.name = n;
             }
@@ -295,11 +297,7 @@ pub async fn backup_target_update(
                     .ok_or_else(|| AppError::Validation("not a Drive target".into()))?;
                 d.folder = f.to_string_lossy().into_owned();
             }
-            if remote_dir.is_some()
-                || password.is_some()
-                || passphrase.is_some()
-                || key_path.is_some()
-            {
+            if remote_dir.is_some() || key_path.is_some() {
                 let s = t
                     .sftp
                     .as_mut()
@@ -307,13 +305,7 @@ pub async fn backup_target_update(
                 if let Some(r) = remote_dir {
                     s.remote_dir = r;
                 }
-                // "" clears a secret / key path.
-                if let Some(p) = password {
-                    s.password = non_empty(Some(p));
-                }
-                if let Some(p) = passphrase {
-                    s.passphrase = non_empty(Some(p));
-                }
+                // "" clears a key path; secret keep/set/clear is handled above.
                 if let Some(k) = key_path {
                     s.key_path = non_empty(Some(k));
                 }
@@ -363,7 +355,7 @@ pub async fn backup_test(
     let dir = config_dir()?;
     fsx::run_blocking(move || {
         let t = backup::find_target(&dir, &id)?;
-        let remote = backup::open_target(&t)?;
+        let remote = backup::open_target(&dir, &t)?;
         backup::probe(remote.as_ref(), &calendar::new_source_id()?)
     })
     .await
@@ -386,9 +378,10 @@ async fn run_one(
     );
     let started = std::time::Instant::now();
     let id = target.id.clone();
+    let credential_dir = dir.clone();
     let outcome = fsx::run_blocking(move || {
         let _guard = guard;
-        let remote = backup::open_target(&target)?;
+        let remote = backup::open_target(&credential_dir, &target)?;
         let mut last_emit = std::time::Instant::now() - Duration::from_secs(1);
         let mut progress = |done: usize, total: usize, rel: &str| {
             if done == total || last_emit.elapsed() >= Duration::from_millis(100) {
@@ -550,7 +543,7 @@ pub async fn backup_compare(
         }];
         let mut listings: Vec<(String, Listing)> = vec![(LOCAL_SOURCE.into(), local)];
         for t in backup::load_targets(&dir)? {
-            let scanned = backup::open_target(&t).and_then(|r| {
+            let scanned = backup::open_target(&dir, &t).and_then(|r| {
                 // Drive is a local folder: always hash the real files.
                 backup::scan_remote(r.as_ref(), t.kind == KIND_DRIVE || deep)
             });
@@ -603,7 +596,7 @@ fn read_source(
         };
     }
     let t = backup::find_target(config_dir, source_id)?;
-    let remote = backup::open_target(&t)?;
+    let remote = backup::open_target(config_dir, &t)?;
     let bytes = remote.read(&rel)?.ok_or(AppError::NotFound(rel))?;
     Ok((bytes, t.name))
 }

@@ -3,6 +3,7 @@ import { useEffect } from "react";
 import { listen } from "@tauri-apps/api/event";
 
 import { newChat, sendChat, stopChat } from "../lib/chatMd/chatFlow";
+import { useAuthStore } from "../state/authStore";
 import { useUIStore, type ViewMode } from "../state/uiStore";
 
 // A Record keyed by ViewMode (rather than an array) makes the compiler
@@ -45,20 +46,26 @@ function isViewMode(value: unknown): value is ViewMode {
 export function useMenuEvents(): void {
   useEffect(() => {
     const ui = () => useUIStore.getState();
+    function whenAccessible<T>(handler: (event: T) => void): (event: T) => void {
+      return (event) => {
+        const { token, session, busy } = useAuthStore.getState();
+        if (token !== null && session !== null && busy === null) handler(event);
+      };
+    }
     const subscriptions = [
-      listen<unknown>("menu:view", (e) => {
+      listen<unknown>("menu:view", whenAccessible((e) => {
         if (isViewMode(e.payload)) ui().setViewMode(e.payload);
-      }),
-      listen("menu:command-palette", () => ui().setCommandPaletteOpen(true)),
-      listen("menu:ai-chat-send", () => void sendChat()),
-      listen("menu:ai-new-chat", () => void newChat()),
-      listen("menu:ai-select-model", () => ui().setModelPickerOpen(true)),
-      listen("menu:ai-stop", () => stopChat()),
-      listen("menu:toggle-edit", () => ui().toggleEditorMode()),
-      listen("menu:settings", () => ui().setSettingsOpen(true)),
-      listen("menu:new-note", () => ui().requestNewNote()),
-      listen("menu:new-folder", () => ui().requestNewFolder()),
-      listen("menu:import-evernote", () => ui().requestEvernoteImport()),
+      })),
+      listen("menu:command-palette", whenAccessible(() => ui().setCommandPaletteOpen(true))),
+      listen("menu:ai-chat-send", whenAccessible(() => void sendChat())),
+      listen("menu:ai-new-chat", whenAccessible(() => void newChat())),
+      listen("menu:ai-select-model", whenAccessible(() => ui().setModelPickerOpen(true))),
+      listen("menu:ai-stop", whenAccessible(() => stopChat())),
+      listen("menu:toggle-edit", whenAccessible(() => ui().toggleEditorMode())),
+      listen("menu:settings", whenAccessible(() => ui().setSettingsOpen(true))),
+      listen("menu:new-note", whenAccessible(() => ui().requestNewNote())),
+      listen("menu:new-folder", whenAccessible(() => ui().requestNewFolder())),
+      listen("menu:import-evernote", whenAccessible(() => ui().requestEvernoteImport())),
     ];
     return () => {
       for (const sub of subscriptions) void sub.then((un) => un());

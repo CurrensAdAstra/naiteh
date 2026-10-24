@@ -53,6 +53,7 @@ import {
   type FolderNode,
   type TreeRow,
 } from "./buildTree";
+import { CreateItemDialog, type CreateItemTarget } from "./CreateItemDialog";
 import styles from "./NotesListPanel.module.css";
 
 const INDENT_PX = 12;
@@ -86,7 +87,7 @@ export function NotesListPanel() {
   const [notes, setNotes] = useState<NoteMeta[]>([]);
   const [dirs, setDirs] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [creating, setCreating] = useState(false);
+  const [createTarget, setCreateTarget] = useState<CreateItemTarget | null>(null);
   const logAction = useAuthStore((s) => s.logAction);
   const openRelPath = useEditorStore((s) =>
     s.open !== null && s.open.source.kind === "note"
@@ -131,23 +132,33 @@ export function NotesListPanel() {
     }
   }, []);
 
-  const handleNewNote = useCallback(async () => {
-    const title = window.prompt("New note title:");
-    if (title === null) return;
-    setCreating(true);
-    try {
-      const meta = await notesCreate("notes", title);
+  const handleNewNote = useCallback(() => {
+    setCreateTarget((current) => current ?? { kind: "note", parentPath: "notes" });
+  }, []);
+
+  const handleNewFolder = useCallback((parentPath: string) => {
+    setCreateTarget((current) => current ?? { kind: "folder", parentPath });
+  }, []);
+
+  async function handleCreate(name: string) {
+    if (createTarget === null) return;
+    if (createTarget.kind === "note") {
+      const meta = await notesCreate(createTarget.parentPath, name);
+      setCreateTarget(null);
       void logAction("note_create", meta.relPath).catch(() => {});
       announceChange();
       await refresh();
       // A brand-new note opens in the editor, ready to type.
       await handleOpen(meta, { edit: true });
-    } catch (e) {
-      setError(formatAppError(e));
-    } finally {
-      setCreating(false);
+    } else {
+      const path = `${createTarget.parentPath}/${name}`;
+      await notesCreateDir(path);
+      setCreateTarget(null);
+      void logAction("notes_create_dir", path).catch(() => {});
+      announceChange();
+      await refresh();
     }
-  }, [announceChange, handleOpen, logAction, refresh]);
+  }
 
   /**
    * Run a file-moving operation without racing autosave: flush pending
@@ -238,23 +249,6 @@ export function NotesListPanel() {
     if (trimmed === "" || trimmed.includes("/")) return null;
     return trimmed;
   }
-
-  const handleNewFolder = useCallback(
-    async (parentPath: string) => {
-      const name = folderNameFrom("New folder name:");
-      if (name === null) return;
-      try {
-        await notesCreateDir(`${parentPath}/${name}`);
-        void logAction("notes_create_dir", `${parentPath}/${name}`).catch(
-          () => {},
-        );
-        await refresh();
-      } catch (e) {
-        setError(formatAppError(e));
-      }
-    },
-    [logAction, refresh],
-  );
 
   const handleRenameFolder = useCallback(
     async (folder: FolderNode) => {
@@ -358,7 +352,7 @@ export function NotesListPanel() {
           <button
             type="button"
             className={styles.newButton}
-            onClick={() => void handleNewFolder("notes")}
+            onClick={() => handleNewFolder("notes")}
             data-testid="notes-new-folder"
           >
             + Folder
@@ -366,8 +360,7 @@ export function NotesListPanel() {
           <button
             type="button"
             className={styles.newButton}
-            onClick={() => void handleNewNote()}
-            disabled={creating}
+            onClick={handleNewNote}
           >
             + New note
           </button>
@@ -390,6 +383,13 @@ export function NotesListPanel() {
           />
         )}
       </div>
+      {createTarget !== null && (
+        <CreateItemDialog
+          target={createTarget}
+          onCreate={handleCreate}
+          onClose={() => setCreateTarget(null)}
+        />
+      )}
     </div>
   );
 }

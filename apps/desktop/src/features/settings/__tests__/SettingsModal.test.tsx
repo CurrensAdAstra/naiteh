@@ -1,9 +1,10 @@
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   DEFAULT_AI_SETTINGS,
+  DEFAULT_BASE_URLS,
   defaultAiConfig,
   EDITOR_FONT_DEFAULT,
   type AppConfig,
@@ -33,12 +34,10 @@ vi.mock("../../../lib/api/ai", () => ({
 }));
 vi.mock("../../../lib/api/auth", () => ({
   authListAuditLogs: vi.fn(),
-  authListUsers: vi.fn(),
-  authSetUserActive: vi.fn(),
-  authCreateUser: vi.fn(),
-  authChangePassword: vi.fn(),
+  authSetLock: vi.fn(),
+  authMigrateSecrets: vi.fn(),
   authLogAction: vi.fn().mockResolvedValue(undefined),
-  authLogout: vi.fn().mockResolvedValue(undefined),
+  authLock: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("../../../lib/api/evernote", () => ({
   evernoteImport: vi.fn(),
@@ -53,13 +52,7 @@ vi.mock("../../../lib/api/journal", () => ({
   journalSave: vi.fn(),
 }));
 
-import {
-  authChangePassword,
-  authCreateUser,
-  authListAuditLogs,
-  authListUsers,
-  authSetUserActive,
-} from "../../../lib/api/auth";
+import { authListAuditLogs } from "../../../lib/api/auth";
 import {
   evernoteImport,
   listenEvernoteImportProgress,
@@ -87,11 +80,7 @@ const mockedPick = vi.mocked(vaultPickFolder);
 const mockedInit = vi.mocked(vaultInit);
 const mockedSetActive = vi.mocked(vaultSetActive);
 const mockedSetEditor = vi.mocked(appConfigSetEditor);
-const mockedAuthListUsers = vi.mocked(authListUsers);
 const mockedAuthListAuditLogs = vi.mocked(authListAuditLogs);
-const mockedAuthSetUserActive = vi.mocked(authSetUserActive);
-const mockedAuthCreateUser = vi.mocked(authCreateUser);
-const mockedAuthChangePassword = vi.mocked(authChangePassword);
 const mockedEvernoteImport = vi.mocked(evernoteImport);
 const mockedListenProgress = vi.mocked(listenEvernoteImportProgress);
 const mockedNotesWrite = vi.mocked(notesWrite);
@@ -115,6 +104,7 @@ function config(
     ai: (() => {
       const ai = defaultAiConfig();
       ai.providers.openai = { ...ai.providers.openai, hasApiKey };
+      ai.addedProviders = hasApiKey ? ["openai"] : [];
       return ai;
     })(),
     appearance: { palette: "default", uiFont: "", editorFont: "" },
@@ -153,19 +143,11 @@ type Section =
   | "editor"
   | "ai"
   | "import"
-  | "account"
-  | "accounts"
+  | "security"
   | "audit";
 
 async function gotoSection(user: ReturnType<typeof userEvent.setup>, id: Section) {
   await user.click(await screen.findByTestId(`settings-nav-${id}`));
-}
-
-function signInAsAdmin() {
-  useAuthStore.setState({
-    token: "deadbeef",
-    session: { username: "admin", role: "Admin" },
-  });
 }
 
 describe("SettingsModal", () => {
@@ -177,27 +159,43 @@ describe("SettingsModal", () => {
     mockedInit.mockReset();
     mockedSetActive.mockReset();
     mockedSetEditor.mockReset();
-    mockedAuthListUsers.mockReset();
     mockedAuthListAuditLogs.mockReset();
-    mockedAuthSetUserActive.mockReset();
-    mockedAuthCreateUser.mockReset();
-    mockedAuthChangePassword.mockReset();
     mockedNotesWrite.mockReset();
     useVaultStore.setState({ active: vault("/v", "v") });
     useAuthStore.setState({
       token: null,
       session: null,
-      pendingPasswordChange: null,
+      lockEnabled: false,
+      migrationRequired: false,
+      ready: true,
+      busy: null,
+      error: null,
     });
     useSettingsStore.setState({ config: config(), loading: false });
     useEditorStore.setState({ open: null, saveError: null });
     useUIStore.setState({ pendingAction: null, settingsOpen: true });
-    mockedAuthListUsers.mockResolvedValue([]);
     mockedAuthListAuditLogs.mockResolvedValue([]);
     mockedSetAi.mockReset();
-    mockedSetAi.mockResolvedValue(config());
+    mockedSetAi.mockImplementation(async (settings) => {
+      const next = structuredClone(useSettingsStore.getState().config ?? config());
+      if (settings.addedProviders !== undefined) {
+        for (const id of next.ai.addedProviders ?? []) {
+          if (!settings.addedProviders.includes(id)) {
+            next.ai.providers[id] = { hasApiKey: false, baseUrl: DEFAULT_BASE_URLS[id] };
+          }
+        }
+      }
+      next.ai = { ...next.ai, ...settings };
+      return next;
+    });
     mockedSetAiProvider.mockReset();
-    mockedSetAiProvider.mockResolvedValue(config());
+    mockedSetAiProvider.mockImplementation(async (update) => {
+      const next = structuredClone(useSettingsStore.getState().config ?? config());
+      const provider = next.ai.providers[update.provider];
+      provider.baseUrl = update.baseUrl ?? provider.baseUrl;
+      provider.hasApiKey = update.clearApiKey ? false : update.apiKey !== null || provider.hasApiKey;
+      return next;
+    });
     mockedListModels.mockReset();
     mockedListModels.mockResolvedValue([]);
     mockedEvernoteImport.mockReset();
@@ -485,53 +483,87 @@ describe("SettingsModal", () => {
   });
 
   describe("AI", () => {
-    it("explains the chat note format and credits chatgpt-md", async () => {
+    async function addProvider(user: ReturnType<typeof userEvent.setup>, id: string) {
+      await user.click(screen.getByTestId("ai-add-provider"));
+      await user.selectOptions(screen.getByTestId("ai-provider-choice"), id);
+      await user.click(screen.getByTestId("ai-add-provider-confirm"));
+      await screen.findByTestId(`ai-provider-save-${id}`);
+    }
+
+    it("starts with provider management and keeps connection, model and advanced controls out of the way", async () => {
       const user = userEvent.setup();
       render(<SettingsModal />);
       await gotoSection(user, "ai");
-      expect(await screen.findByText(/Based on chatgpt-md \(MIT\)/)).toBeInTheDocument();
+      expect(screen.getByText(/No providers added yet/)).toBeVisible();
       for (const id of ["openai", "anthropic", "gemini", "openrouter", "zai", "ollama", "lmstudio"]) {
-        expect(screen.getByTestId(`ai-provider-${id}`)).toBeInTheDocument();
+        expect(screen.queryByTestId(`ai-provider-${id}`)).toBeNull();
       }
-      // Local providers take no key.
-      expect(screen.queryByTestId("ai-key-input-ollama")).toBeNull();
+      expect(screen.queryByTestId("ai-key-input-openai")).toBeNull();
+      expect(screen.queryByTestId("ai-default-model-input")).toBeNull();
+      expect(screen.getByTestId("ai-temperature-input")).not.toBeVisible();
+      expect(mockedListModels).not.toHaveBeenCalled();
     });
 
-    it("a provider API key is sent once and never kept in state", async () => {
-      mockedSetAiProvider.mockResolvedValue(config(EDITOR_FONT_DEFAULT, true, true));
+    it("adds one provider before showing API or web authentication and prevents premature model selection", async () => {
       const user = userEvent.setup();
       render(<SettingsModal />);
       await gotoSection(user, "ai");
+      await addProvider(user, "openai");
+      expect(mockedSetAi).toHaveBeenCalledWith({ ...DEFAULT_AI_SETTINGS, addedProviders: ["openai"] });
+      expect(screen.getByRole("radio", { name: /API key/ })).toBeChecked();
+      expect(screen.getByRole("radio", { name: /Web sign-in/ })).toBeDisabled();
+      expect(screen.getByText("Browser authentication is not connected yet.")).toBeVisible();
+      expect(screen.getByTestId("ai-provider-save-openai")).toBeDisabled();
+      expect(screen.getByRole("button", { name: "3 Model" })).toBeDisabled();
+      expect(screen.queryByTestId("ai-default-model-input")).toBeNull();
+      expect(mockedListModels).not.toHaveBeenCalled();
+    });
 
+    it("keeps keyboard focus out of collapsed advanced settings", async () => {
+      const user = userEvent.setup();
+      render(<SettingsModal />);
+      await gotoSection(user, "ai");
+      act(() => screen.getByTestId("settings-nav-general").focus());
+      await user.tab({ shift: true });
+      expect(screen.getByText("Advanced chat settings")).toHaveFocus();
+      await user.tab();
+      expect(screen.getByTestId("settings-nav-general")).toHaveFocus();
+    });
+
+    it("sends the API key once, clears the input during saving, then lists only this provider's models", async () => {
+      let resolve!: (value: AppConfig) => void;
+      mockedSetAiProvider.mockReturnValueOnce(new Promise((done) => { resolve = done; }));
+      mockedListModels.mockResolvedValue(["openai@gpt-4.1-mini", "openai@gpt-4.1"]);
+      const user = userEvent.setup();
+      render(<SettingsModal />);
+      await gotoSection(user, "ai");
+      await addProvider(user, "openai");
       const keyInput = screen.getByTestId("ai-key-input-openai");
       expect(keyInput).toHaveAttribute("type", "password");
       await user.type(keyInput, "sk-secret-123");
       await user.click(screen.getByTestId("ai-provider-save-openai"));
-
-      await waitFor(() =>
-        expect(mockedSetAiProvider).toHaveBeenCalledWith({
-          provider: "openai",
-          baseUrl: null,
-          apiKey: "sk-secret-123",
-          clearApiKey: false,
-        }),
-      );
-      expect(await screen.findByTestId("ai-key-status-openai")).toHaveTextContent(
-        "Key saved",
-      );
+      expect(keyInput).toHaveValue("");
+      expect(keyInput).toBeDisabled();
+      expect(mockedSetAiProvider).toHaveBeenCalledTimes(1);
+      expect(mockedSetAiProvider).toHaveBeenCalledWith({ provider: "openai", baseUrl: null, apiKey: "sk-secret-123", clearApiKey: false });
       expect(screen.queryByDisplayValue("sk-secret-123")).toBeNull();
       expect(JSON.stringify(useSettingsStore.getState())).not.toContain("sk-secret");
-
+      await act(async () => resolve(config(EDITOR_FONT_DEFAULT, true, true)));
+      expect(await screen.findByLabelText("Available models")).toBeVisible();
+      expect(mockedListModels).toHaveBeenCalledTimes(1);
+      expect(mockedListModels).toHaveBeenCalledWith("openai");
+      await user.click(screen.getByRole("button", { name: "Back to connection" }));
+      expect(screen.getByTestId("ai-key-status-openai")).toHaveTextContent("Key saved");
       await user.click(screen.getByTestId("ai-replace-key-openai"));
       expect(screen.getByTestId("ai-key-input-openai")).toHaveValue("");
     });
 
-    it("'Remove' asks the backend to clear the key", async () => {
+    it("can remove a saved key while retaining the provider", async () => {
       useSettingsStore.setState({ config: config(EDITOR_FONT_DEFAULT, true, true) });
-      mockedSetAiProvider.mockResolvedValue(config());
       const user = userEvent.setup();
       render(<SettingsModal />);
       await gotoSection(user, "ai");
+      await user.click(screen.getByRole("button", { name: /^OpenAI API key saved/ }));
       await user.click(screen.getByTestId("ai-remove-key-openai"));
       await waitFor(() =>
         expect(mockedSetAiProvider).toHaveBeenCalledWith({
@@ -542,13 +574,89 @@ describe("SettingsModal", () => {
         }),
       );
       expect(await screen.findByTestId("ai-key-input-openai")).toHaveValue("");
+      expect(screen.getByTestId("ai-provider-openai")).toBeVisible();
+      expect(screen.getByTestId("ai-provider-save-openai")).toBeDisabled();
     });
 
-    it("saves the chat defaults", async () => {
-      mockedSetAi.mockResolvedValue(config());
+    it("removes a provider and its key, retaining other registrations across reopening settings", async () => {
+      const current = config(EDITOR_FONT_DEFAULT, true, true);
+      current.ai.addedProviders = ["openai", "ollama"];
+      useSettingsStore.setState({ config: current });
+      const user = userEvent.setup();
+      const { unmount } = render(<SettingsModal />);
+      await gotoSection(user, "ai");
+      await user.click(screen.getByTestId("ai-remove-provider-openai"));
+      await waitFor(() => expect(screen.queryByTestId("ai-provider-openai")).toBeNull());
+      expect(mockedSetAi).toHaveBeenCalledWith({ ...DEFAULT_AI_SETTINGS, addedProviders: ["ollama"] });
+      expect(useSettingsStore.getState().config?.ai.providers.openai.hasApiKey).toBe(false);
+      unmount();
+      render(<SettingsModal />);
+      await gotoSection(user, "ai");
+      expect(screen.queryByTestId("ai-provider-openai")).toBeNull();
+      expect(screen.getByTestId("ai-provider-ollama")).toBeVisible();
+    });
+
+    it("keeps the provider when saving a removal fails", async () => {
+      useSettingsStore.setState({ config: config(EDITOR_FONT_DEFAULT, true, true) });
+      mockedSetAi.mockRejectedValueOnce({ kind: "Io", message: "Could not save config" });
       const user = userEvent.setup();
       render(<SettingsModal />);
       await gotoSection(user, "ai");
+      await user.click(screen.getByTestId("ai-remove-provider-openai"));
+      expect(await screen.findByTestId("ai-settings-error")).toHaveTextContent("Could not save config");
+      expect(screen.getByTestId("ai-provider-openai")).toBeVisible();
+      expect(useSettingsStore.getState().config?.ai.providers.openai.hasApiKey).toBe(true);
+    });
+
+    it("offers only providers that have not been added and can cancel adding", async () => {
+      useSettingsStore.setState({ config: config(EDITOR_FONT_DEFAULT, true, true) });
+      const user = userEvent.setup();
+      render(<SettingsModal />);
+      await gotoSection(user, "ai");
+      await user.click(screen.getByTestId("ai-add-provider"));
+      expect(screen.queryByRole("option", { name: "OpenAI" })).toBeNull();
+      await user.click(screen.getByRole("button", { name: "Cancel" }));
+      expect(screen.queryByTestId("ai-provider-choice")).toBeNull();
+      expect(mockedSetAi).not.toHaveBeenCalled();
+    });
+
+    it("configures a local API before selecting and saving that provider's model", async () => {
+      mockedListModels.mockResolvedValue(["ollama@llama3.2", "ollama@qwen3"]);
+      const user = userEvent.setup();
+      render(<SettingsModal />);
+      await gotoSection(user, "ai");
+      await addProvider(user, "ollama");
+      expect(screen.getByRole("radio", { name: /Local API/ })).toBeChecked();
+      expect(screen.queryByTestId("ai-key-input-ollama")).toBeNull();
+      expect(mockedListModels).not.toHaveBeenCalled();
+      await user.click(screen.getByTestId("ai-provider-save-ollama"));
+      await user.selectOptions(await screen.findByLabelText("Available models"), "qwen3");
+      expect(mockedListModels).toHaveBeenCalledTimes(1);
+      expect(mockedListModels).toHaveBeenCalledWith("ollama");
+      await user.click(screen.getByTestId("ai-save-model"));
+      await waitFor(() => expect(useSettingsStore.getState().config?.ai.defaultModel).toBe("ollama@qwen3"));
+      expect(mockedSetAi).toHaveBeenLastCalledWith({ ...DEFAULT_AI_SETTINGS, defaultModel: "ollama@qwen3" });
+      expect(useSettingsStore.getState().config?.ai.addedProviders).toEqual(["ollama"]);
+    });
+
+    it("allows a manual model ID when listing models fails", async () => {
+      mockedListModels.mockRejectedValue({ kind: "Network", message: "Server is offline" });
+      const user = userEvent.setup();
+      render(<SettingsModal />);
+      await gotoSection(user, "ai");
+      await addProvider(user, "ollama");
+      await user.click(screen.getByTestId("ai-provider-save-ollama"));
+      expect(await screen.findByRole("alert")).toHaveTextContent("Server is offline");
+      await user.type(screen.getByTestId("ai-default-model-input"), "custom-local-model");
+      await user.click(screen.getByTestId("ai-save-model"));
+      await waitFor(() => expect(useSettingsStore.getState().config?.ai.defaultModel).toBe("ollama@custom-local-model"));
+    });
+
+    it("saves advanced defaults separately from provider registration", async () => {
+      const user = userEvent.setup();
+      render(<SettingsModal />);
+      await gotoSection(user, "ai");
+      await user.click(screen.getByText("Advanced chat settings"));
       const chats = screen.getByTestId("ai-chats-folder-input");
       await user.clear(chats);
       await user.type(chats, "notes/ai");
@@ -563,35 +671,18 @@ describe("SettingsModal", () => {
       );
     });
 
-    it("rejects a default model without a provider prefix", async () => {
+    it("rejects a model belonging to a different provider", async () => {
       const user = userEvent.setup();
       render(<SettingsModal />);
       await gotoSection(user, "ai");
+      await addProvider(user, "ollama");
+      await user.click(screen.getByTestId("ai-provider-save-ollama"));
       const model = screen.getByTestId("ai-default-model-input");
-      await user.clear(model);
-      await user.type(model, "gpt-4o");
-      await user.click(screen.getByTestId("ai-save"));
-      expect(await screen.findByTestId("ai-settings-error")).toHaveTextContent(
-        /provider@model/,
-      );
+      await user.type(model, "openai@gpt-4.1");
+      mockedSetAi.mockClear();
+      await user.click(screen.getByTestId("ai-save-model"));
+      expect(await screen.findByTestId("ai-settings-error")).toHaveTextContent(/model ID for Ollama/);
       expect(mockedSetAi).not.toHaveBeenCalled();
-    });
-
-    it("'Choose…' lists models of configured providers", async () => {
-      mockedListModels.mockImplementation(async (provider) =>
-        provider === "ollama" ? ["ollama@llama3.2"] : [],
-      );
-      const user = userEvent.setup();
-      render(<SettingsModal />);
-      await gotoSection(user, "ai");
-      await user.click(screen.getByTestId("ai-choose-model"));
-      await user.click(await screen.findByTestId("model-option-ollama@llama3.2"));
-      expect(mockedListModels).toHaveBeenCalledWith("ollama");
-      expect(mockedListModels).toHaveBeenCalledWith("lmstudio");
-      expect(mockedListModels).not.toHaveBeenCalledWith("openai");
-      expect(screen.getByTestId("ai-default-model-input")).toHaveValue(
-        "ollama@llama3.2",
-      );
     });
   });
 
@@ -724,188 +815,28 @@ describe("SettingsModal", () => {
     });
   });
 
-  describe("account (any user)", () => {
-    beforeEach(() => {
-      useAuthStore.setState({
-        token: "usertoken",
-        session: { username: "mgkyung", role: "User" },
-      });
-    });
-
-    it("non-admins see Account but no administration sections", async () => {
+  describe("security and local activity", () => {
+    it("replaces account and administration navigation without displaying a username", async () => {
+      useAuthStore.setState({ token: "local-token", session: { username: "local", role: "Admin" } });
       render(<SettingsModal />);
       await screen.findByTestId("vault-row-/v");
-      expect(screen.getByTestId("settings-nav-account")).toBeInTheDocument();
+      expect(screen.getByTestId("settings-nav-security")).toBeInTheDocument();
+      expect(screen.getByTestId("settings-nav-audit")).toHaveTextContent("Local Activity");
+      expect(screen.queryByTestId("settings-nav-account")).toBeNull();
       expect(screen.queryByTestId("settings-nav-accounts")).toBeNull();
-      expect(screen.queryByTestId("settings-nav-audit")).toBeNull();
+      expect(screen.queryByText("Administration")).toBeNull();
+      expect(screen.queryByText("local")).toBeNull();
     });
 
-    it("changes the password", async () => {
-      mockedAuthChangePassword.mockResolvedValue(undefined);
+    it("shows historical work events without an identity display", async () => {
+      useAuthStore.setState({ token: "local-token", session: { username: "local", role: "Admin" } });
+      mockedAuthListAuditLogs.mockResolvedValue([{ timestamp: "2026-05-15T01:00:00Z", username: "legacy-account", action: "note_open", detail: "notes/a.md" }]);
       const user = userEvent.setup();
       render(<SettingsModal />);
-      await gotoSection(user, "account");
-
-      await user.type(screen.getByLabelText("Current password"), "old-password");
-      await user.type(screen.getByLabelText("New password"), "new-password-1");
-      await user.type(screen.getByLabelText("Confirm new password"), "new-password-1");
-      await user.click(screen.getByTestId("settings-change-password-submit"));
-
-      await waitFor(() =>
-        expect(mockedAuthChangePassword).toHaveBeenCalledWith(
-          "usertoken",
-          "old-password",
-          "new-password-1",
-        ),
-      );
-      expect(
-        await screen.findByTestId("settings-change-password-success"),
-      ).toHaveTextContent(/password changed/i);
-      expect(screen.getByLabelText("Current password")).toHaveValue("");
-    });
-
-    it("validates before sending and shows backend errors", async () => {
-      mockedAuthChangePassword.mockRejectedValue({
-        kind: "Unauthorized",
-        message: "current password is incorrect",
-      });
-      const user = userEvent.setup();
-      render(<SettingsModal />);
-      await gotoSection(user, "account");
-
-      await user.type(screen.getByLabelText("Current password"), "old-password");
-      await user.type(screen.getByLabelText("New password"), "new-password-1");
-      await user.type(screen.getByLabelText("Confirm new password"), "new-password-2");
-      await user.click(screen.getByTestId("settings-change-password-submit"));
-      expect(
-        await screen.findByTestId("settings-change-password-error"),
-      ).toHaveTextContent(/don't match/i);
-      expect(mockedAuthChangePassword).not.toHaveBeenCalled();
-
-      await user.clear(screen.getByLabelText("Confirm new password"));
-      await user.type(screen.getByLabelText("Confirm new password"), "new-password-1");
-      await user.click(screen.getByTestId("settings-change-password-submit"));
-      expect(
-        await screen.findByText(/current password is incorrect/i),
-      ).toBeInTheDocument();
-      // A wrong password is a form error, not a sign-out.
-      expect(useAuthStore.getState().session).not.toBeNull();
-    });
-  });
-
-  describe("administration", () => {
-    it("shows admin account management and audit logs", async () => {
-      mockedAuthListUsers.mockResolvedValue([
-        { username: "admin", role: "Admin", active: true },
-        { username: "mgkyung", role: "User", active: true },
-      ]);
-      mockedAuthListAuditLogs.mockResolvedValue([
-        {
-          timestamp: "2026-05-15T01:00:00Z",
-          username: "admin",
-          action: "login_success",
-          detail: null,
-        },
-      ]);
-      signInAsAdmin();
-
-      const user = userEvent.setup();
-      render(<SettingsModal />);
-      await gotoSection(user, "accounts");
-      expect(await screen.findByTestId("settings-accounts")).toHaveTextContent(
-        "mgkyung",
-      );
       await gotoSection(user, "audit");
-      expect(await screen.findByTestId("settings-audit")).toHaveTextContent(
-        "login_success",
-      );
-    });
-
-    it("admin can disable a standard account", async () => {
-      mockedAuthListUsers.mockResolvedValue([
-        { username: "admin", role: "Admin", active: true },
-        { username: "mgkyung", role: "User", active: true },
-      ]);
-      mockedAuthSetUserActive.mockResolvedValue([
-        { username: "admin", role: "Admin", active: true },
-        { username: "mgkyung", role: "User", active: false },
-      ]);
-      signInAsAdmin();
-
-      const user = userEvent.setup();
-      render(<SettingsModal />);
-      await gotoSection(user, "accounts");
-      await user.click(await screen.findByTestId("account-toggle-mgkyung"));
-      await waitFor(() =>
-        expect(mockedAuthSetUserActive).toHaveBeenCalledWith(
-          "deadbeef",
-          "mgkyung",
-          false,
-        ),
-      );
-      expect(screen.getByTestId("account-toggle-admin")).toBeDisabled();
-    });
-
-    it("creates a user and shows the updated list", async () => {
-      mockedAuthListUsers.mockResolvedValue([
-        { username: "admin", role: "Admin", active: true },
-      ]);
-      mockedAuthCreateUser.mockResolvedValue([
-        { username: "admin", role: "Admin", active: true },
-        { username: "bob.smith", role: "Admin", active: true },
-      ]);
-      signInAsAdmin();
-
-      const user = userEvent.setup();
-      render(<SettingsModal />);
-      await gotoSection(user, "accounts");
-      const form = await screen.findByTestId("settings-create-user-form");
-
-      await user.type(within(form).getByLabelText("Username"), "bob.smith");
-      await user.type(within(form).getByLabelText("Password"), "password-123");
-      await user.type(within(form).getByLabelText("Confirm password"), "password-123");
-      await user.selectOptions(within(form).getByLabelText("Role"), "Admin");
-      await user.click(within(form).getByTestId("settings-create-user-submit"));
-
-      await waitFor(() =>
-        expect(mockedAuthCreateUser).toHaveBeenCalledWith(
-          "deadbeef",
-          "bob.smith",
-          "password-123",
-          "Admin",
-        ),
-      );
-      expect(await screen.findByTestId("account-toggle-bob.smith")).toBeInTheDocument();
-      expect(screen.getByTestId("settings-create-user-success")).toHaveTextContent(
-        "bob.smith",
-      );
-      expect(within(form).getByLabelText("Username")).toHaveValue("");
-    });
-
-    it("validates new users client-side and shows backend errors", async () => {
-      mockedAuthCreateUser.mockRejectedValue({
-        kind: "Conflict",
-        message: "user already exists",
-      });
-      signInAsAdmin();
-      const user = userEvent.setup();
-      render(<SettingsModal />);
-      await gotoSection(user, "accounts");
-      const form = await screen.findByTestId("settings-create-user-form");
-
-      await user.type(within(form).getByLabelText("Username"), "bad name");
-      await user.type(within(form).getByLabelText("Password"), "password-123");
-      await user.type(within(form).getByLabelText("Confirm password"), "password-123");
-      await user.click(within(form).getByTestId("settings-create-user-submit"));
-      expect(
-        await within(form).findByTestId("settings-create-user-error"),
-      ).toHaveTextContent(/only contain letters/i);
-      expect(mockedAuthCreateUser).not.toHaveBeenCalled();
-
-      await user.clear(within(form).getByLabelText("Username"));
-      await user.type(within(form).getByLabelText("Username"), "carol");
-      await user.click(within(form).getByTestId("settings-create-user-submit"));
-      expect(await within(form).findByText(/user already exists/i)).toBeInTheDocument();
+      expect(await screen.findByText("note_open")).toBeVisible();
+      expect(screen.queryByText("legacy-account")).toBeNull();
+      expect(mockedAuthListAuditLogs).toHaveBeenCalledWith("local-token");
     });
   });
 

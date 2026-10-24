@@ -2,7 +2,7 @@
 title: "Vault & Data"
 tags: [naiteh-wiki, vault, storage]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-10-10T18:00:00+09:00
+updated: 2026-10-17T12:00:00+09:00
 pinned: false
 ---
 
@@ -63,8 +63,9 @@ target's `.naiteh-backup/manifest.json`; new and changed files are uploaded
 deleted. Conflict sidecars are user data and are copied. The manifest records
 which vault it mirrors; a run from a different vault is refused. Runs are
 manual or automatic (per target `autoBackup`, every `intervalMinutes` ≥ 5,
-only while someone is signed in and only when the vault changed since the last
-run).
+only while app access is unlocked and when the vault changed since the last
+run or that run failed). Failures, including unavailable OS credential storage,
+retry after the interval without requiring another edit.
 
 **Compare** lists, per file, the local vault, each Drive copy (hashed from the
 real files) and each SFTP copy (from its manifest, or downloaded and hashed in
@@ -72,9 +73,11 @@ real files) and each SFTP copy (from its manifest, or downloaded and hashed in
 source and **restored** from a backup as a side-by-side copy or by overwriting
 the local file (version-checked). See [IPC API](ipc-api.md#backup-targets).
 
-- **Not in the vault, so not backed up:** app config, accounts, the remembered
-  session, the AI key, hooks, backup-target settings (the app-config dir; see
-  [App Config](app-config.md)).
+- **Not in the vault, so not backed up:** app config, app-lock configuration,
+  legacy account hashes, hooks and backup-target settings. API/SFTP secrets
+  live in the OS credential store; config JSON holds references after migration.
+  App-access tokens are memory-only and old remembered-session files are removed.
+  See [App Config](app-config.md).
 - Syncing the vault folder itself with Drive for desktop (*My Computer* →
   *Sync with Google Drive*, or a vault inside *My Drive*) still works, but use
   **one method per copy**: don't also aim a Drive backup target at that same

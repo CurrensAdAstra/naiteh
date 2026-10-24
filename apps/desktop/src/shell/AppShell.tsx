@@ -5,6 +5,7 @@ import { ChatModelPickerHost } from "../features/chat/ChatModelPickerHost";
 import { CompareModal } from "../features/backup/CompareModal";
 import { SettingsModal } from "../features/settings/SettingsModal";
 import { useBackupStore } from "../state/backupStore";
+import { useAuthStore } from "../state/authStore";
 import { useUIStore } from "../state/uiStore";
 import { ActivityBar } from "./ActivityBar";
 import { CommandPalette } from "./CommandPalette";
@@ -37,6 +38,8 @@ export function AppShell() {
   const listPanelWidth = useUIStore((s) => s.listPanelWidth);
   const settingsOpen = useUIStore((s) => s.settingsOpen);
   const compareOpen = useBackupStore((s) => s.compareOpen);
+  const locking = useAuthStore((s) => s.busy === "lock");
+  const accessError = useAuthStore((s) => s.error);
   // Per-vault sync refresh + last-opened restore/persist coordination.
   useWorkspaceLifecycle();
 
@@ -52,7 +55,8 @@ export function AppShell() {
   };
 
   return (
-    <div className={styles.shell} style={shellStyle} data-testid="app-shell">
+    <div className={styles.shell} style={shellStyle} data-testid="app-shell" aria-busy={locking} {...(locking ? { inert: "" } : {})}>
+      {accessError !== null && !settingsOpen && <div className={styles.accessError} role="alert">{accessError}</div>}
       <div className={styles.activity}>
         <ActivityBar />
       </div>

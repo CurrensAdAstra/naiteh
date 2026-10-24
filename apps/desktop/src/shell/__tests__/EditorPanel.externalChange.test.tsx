@@ -37,6 +37,7 @@ import {
 import { isDirty, useEditorStore } from "../../state/editorStore";
 import { useUIStore } from "../../state/uiStore";
 import { useVaultContentStore } from "../../state/vaultContentStore";
+import { useVaultStore } from "../../state/vaultStore";
 import { EditorPanel } from "../EditorPanel";
 
 const mockedWrite = vi.mocked(notesWrite);
@@ -98,6 +99,7 @@ describe("EditorPanel changed-on-disk conflict", () => {
     });
     useUIStore.setState({ editorMode: "edit", notice: null });
     useVaultContentStore.setState({ version: 0 });
+    useVaultStore.setState({ active: { root: "/A", name: "A", initialized: true } });
   });
 
   afterEach(() => {
@@ -112,7 +114,7 @@ describe("EditorPanel changed-on-disk conflict", () => {
     await act(async () => {
       await flushPendingSave();
     });
-    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "base local", "v1");
+    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "base local", "v1", "/A");
     const banner = screen.getByTestId("editor-external-change");
     expect(banner).toHaveAttribute("role", "alert");
     expect(banner).toHaveTextContent(/changed outside naiteh/);
@@ -159,7 +161,7 @@ describe("EditorPanel changed-on-disk conflict", () => {
     await act(async () => {
       await flushPendingSave();
     });
-    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "from drive!", "v2");
+    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "from drive!", "v2", "/A");
   });
 
   it("Keep mine overwrites the disk version conditionally and clears the conflict", async () => {
@@ -171,7 +173,7 @@ describe("EditorPanel changed-on-disk conflict", () => {
       expect(screen.queryByTestId("editor-external-change")).not.toBeInTheDocument(),
     );
     expect(mockedWrite).toHaveBeenCalledTimes(1);
-    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "base local", "v2");
+    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "base local", "v2", "/A");
     const open = useEditorStore.getState().open!;
     expect(open.savedContent).toBe("base local");
     expect(open.savedVersion).toBe("v3");
@@ -203,7 +205,7 @@ describe("EditorPanel changed-on-disk conflict", () => {
     await waitFor(() =>
       expect(screen.queryByTestId("editor-external-change")).not.toBeInTheDocument(),
     );
-    expect(mockedWrite).toHaveBeenLastCalledWith("notes/a.md", "base local", "v4");
+    expect(mockedWrite).toHaveBeenLastCalledWith("notes/a.md", "base local", "v4", "/A");
     expect(useEditorStore.getState().open?.savedVersion).toBe("v3");
   });
 
@@ -217,10 +219,11 @@ describe("EditorPanel changed-on-disk conflict", () => {
       expect(view().state.doc.toString()).toBe("from drive"),
     );
     expect(mockedWrite).toHaveBeenCalledTimes(1);
-    const [copyPath, copyContent, expected] = mockedWrite.mock.calls[0]!;
+    const [copyPath, copyContent, expected, root] = mockedWrite.mock.calls[0]!;
     expect(copyPath).toMatch(COPY_RE);
     expect(copyContent).toBe("base local");
     expect(expected).toBeNull();
+    expect(root).toBe("/A");
     const open = useEditorStore.getState().open!;
     expect(open.key).toBe(KEY);
     expect(open.savedVersion).toBe("v2");
@@ -247,7 +250,7 @@ describe("EditorPanel changed-on-disk conflict", () => {
     await waitFor(() =>
       expect(screen.queryByTestId("editor-external-change")).not.toBeInTheDocument(),
     );
-    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "base local", null);
+    expect(mockedWrite).toHaveBeenCalledWith("notes/a.md", "base local", null, "/A");
     expect(useEditorStore.getState().open?.savedVersion).toBe("v3");
   });
 
@@ -286,5 +289,20 @@ describe("EditorPanel changed-on-disk conflict", () => {
     expect(screen.getByTestId("editor-external-change")).toBeInTheDocument();
     expect(isSaveHeld(KEY)).toBe(true);
     expect(view().state.doc.toString()).toBe("base local");
+  });
+
+  it("binds a conflict copy to A and ignores its late disk read after switching to B", async () => {
+    let finishRead!: (doc: { content: string; version: string }) => void;
+    mockedRead.mockReturnValue(new Promise((resolve) => { finishRead = resolve; }));
+    openInConflict();
+    await act(async () => screen.getByTestId("external-change-copy").click());
+    await waitFor(() => expect(mockedRead).toHaveBeenCalled());
+    expect(mockedWrite).toHaveBeenCalledWith(expect.stringMatching(COPY_RE), "base local", null, "/A");
+    act(() => {
+      useVaultStore.setState({ active: { root: "/B", name: "B", initialized: true } });
+      useEditorStore.getState().openNote("notes/a.md", "B note", "b-version");
+    });
+    await act(async () => finishRead({ content: "A disk text", version: "a-version" }));
+    expect(useEditorStore.getState().open).toMatchObject({ content: "B note", savedVersion: "b-version" });
   });
 });

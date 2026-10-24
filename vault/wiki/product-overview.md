@@ -2,7 +2,7 @@
 title: "Product Overview"
 tags: [naiteh-wiki, product, stack]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-10-12T12:00:00+09:00
+updated: 2026-10-17T12:00:00+09:00
 pinned: false
 ---
 
@@ -38,24 +38,28 @@ pinned: false
    notes as context — and streams the reply into the note; *New Chat*
    (Cmd+Shift+J), *Select Model…* and *Stop Streaming* complete the set,
    plus title inference. Providers: OpenAI, Anthropic, Gemini, OpenRouter,
-   Z.ai (API keys stored in app config, never sent to the renderer) and
-   local Ollama / LM Studio (no key; nothing leaves the machine). A note's
-   `url:` key may only restate the base URL set in Settings → AI, so a
-   note can't redirect a key or its content to another host. No
-   network call ever fires without an explicit command. naiteh stays
-   local-first everywhere else — AI chat is the one feature that knowingly
-   leaves the local trust boundary.
-7. **Local user access control** — the app opens on a login screen before any
-   vault content is shown, and the backend enforces it: every non-auth command
-   refuses to run until someone is signed in (session gate). A single `admin`
-   account (password `admin`) is seeded only on the very first run, and the app
-   forces a password change right after that first login. Account management
-   is real: any user can change their own password; an admin can create
-   accounts (Admin or User role) and enable / disable them. Login mints an
-   opaque session token (12 h idle / 7-day expiry); the frontend passes that
-   token, never a plain username, to the auth IPCs. Repeated wrong passwords
-   lock a username for 5 minutes. The AI API key is write-only from the UI —
-   the renderer only learns whether one is set.
+   Z.ai (API keys in OS credential storage, only references in app config;
+   keys are never returned to the renderer) and Ollama / LM Studio (no key;
+   calls stay local with a loopback base URL). A note's `url:` key may only
+   restate the base URL set in Settings → AI, so a note can't redirect a key
+   or its content to another host. No
+   AI network call ever fires without an explicit command. Only the selected
+   provider's credentials are resolved for a request.
+7. **Single-user access with optional app lock**: fresh installs open without
+   an app login. Settings → Security can enable a password-only lock, backed
+   by an Argon2id hash in app-config `app-lock.json`. Every non-auth IPC is
+   still gated by the backend's `ActiveSession`, even with the lock disabled.
+   Sessions and tokens are memory-only, with no expiry timer, remember UI or
+   token persistence; an enabled lock requires unlocking after manual lock or
+   app restart. Existing `auth.json` without `app-lock.json` requires an
+   explicit one-time legacy username/password check and a new 8–1024-character
+   app-lock password different from the old password. Conversion enables the
+   lock; it never silently disables access control or selects an arbitrary
+   account. Old account hashes and audit history are retained but no longer
+   determine access, and `remembered-session.json` is deleted without retaining its
+   token. There is no admin route or account-management UI. The internal
+   `local` / `Admin` session is for audit attribution, not an account role or
+   vault isolation. See [IPC API](ipc-api.md#auth--audit).
 8. **Appearance & web clipping** — built-in color palettes plus custom
    interface / editor fonts, and configurable conversion of HTML pasted from
    the web into Markdown (see [App Config](app-config.md#appearance)).
@@ -65,6 +69,27 @@ pinned: false
    other notes open them, web links open in the system browser, vault images
    are shown (remote images are not fetched), and task checkboxes can be
    ticked. New notes open straight in edit mode.
+
+## Security Boundary
+
+The optional app lock controls access through this app, **not file encryption**.
+Notes, attachments and backup/sync content remain plaintext. Use a private OS
+account, screen locking, appropriate vault/app-config permissions and full-disk
+encryption for offline disk access or device loss. Disk encryption does not
+protect remote copies or against same-user malware in an unlocked OS session.
+Private Git repositories and SFTP do not provide end-to-end content encryption;
+protect destination access separately.
+
+AI API keys and SFTP passwords/private-key passphrases use OS credential storage.
+Store failures are visible, with no plaintext fallback; ordinary metadata reads,
+unrelated settings and vault operations do not require that store. Legacy
+plaintext is removed only after a secure write and metadata commit, and may
+remain in historical backups. Calendar secret feed URLs are outside this
+migration's scope. Whole-vault/backup-content encryption remains deferred unless
+a concrete content-protection requirement justifies it. See
+[App Config](app-config.md#credential-storage) and
+[Concurrency & Safety](concurrency-safety.md#validation-status) for migration
+details and pending runtime validation.
 
 ## Non-goals (v1)
 
@@ -82,8 +107,8 @@ pinned: false
   embedding-based search, etc. v1 AI chat is strictly user-initiated.
 - Model hosting or a separate chat app/window. Conversations live in
   ordinary notes (chatgpt-md format); there is no conversation database.
-- Cloud identity, SSO, or multi-tenant server authorization. v1 auth is local
-  app access control backed by the OS app-config directory.
+- Cloud identity, SSO, multi-user account management or multi-tenant server
+  authorization. The optional app lock is single-user app access control.
 
 ## Tech Stack
 

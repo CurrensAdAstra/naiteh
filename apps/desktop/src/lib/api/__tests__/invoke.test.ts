@@ -54,11 +54,18 @@ describe("lib/api/invoke", () => {
     expect(handler).toHaveBeenCalledTimes(1);
   });
 
-  it("never treats auth_* refusals as a lost session", async () => {
+  it("does not treat a wrong password as a lost session", async () => {
     mockedTauriInvoke.mockRejectedValue({ kind: "Unauthorized", message: "bad password" });
-    await expect(invoke("auth_login")).rejects.toBeDefined();
+    await expect(invoke("auth_unlock")).rejects.toBeDefined();
     await settle();
     expect(handler).not.toHaveBeenCalled();
+  });
+
+  it.each(["auth_log_action", "auth_list_audit_logs", "auth_migrate_secrets", "auth_lock"])("treats an invalid session token on %s as lost access", async (command) => {
+    mockedTauriInvoke.mockRejectedValue({ kind: "Unauthorized", message: "invalid session token" });
+    await expect(invoke(command)).rejects.toBeDefined();
+    await settle();
+    expect(handler).toHaveBeenCalledWith(command);
   });
 
   it("ignores other error kinds", async () => {

@@ -1,4 +1,5 @@
 import { invoke } from "./invoke";
+import { useVaultStore } from "../../state/vaultStore";
 
 import type {
   DayMeta,
@@ -29,16 +30,20 @@ export function journalOpen(date: string): Promise<JournalOpenResult> {
  * Save an entry. `expectedVersion` follows the `notes_write` rule
  * (`StaleWrite` when the on-disk version differs); pass `null` for an
  * entry that doesn't exist yet or to overwrite unconditionally.
+ * Pass the originating `expectedVaultRoot` explicitly across async work;
+ * the backend rejects a request for a different active vault.
  */
 export function journalSave(
   date: string,
   content: string,
   expectedVersion: string | null,
+  expectedVaultRoot: string | null = useVaultStore.getState().active?.root ?? null,
 ): Promise<JournalSaveResult> {
   return invoke<JournalSaveResult>("journal_save", {
     date,
     content,
     expectedVersion,
+    expectedVaultRoot,
   });
 }
 

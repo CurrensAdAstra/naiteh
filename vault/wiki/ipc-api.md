@@ -2,7 +2,7 @@
 title: "IPC API (Tauri Commands)"
 tags: [naiteh-wiki, ipc, api, commands]
 created: 2026-06-28T00:00:00+09:00
-updated: 2026-10-12T12:00:00+09:00
+updated: 2026-10-17T12:00:00+09:00
 pinned: false
 ---
 
@@ -19,7 +19,7 @@ pub enum AppError {
     AlreadyInitialized(String), // vault init re-run on an existing vault
     Conflict(String),           // dirty-tree pull, sync conflict, etc.
     ConfigCorrupt(String),
-    Unauthorized(String),       // not signed in, bad/expired token, bad credentials, lockout
+    Unauthorized(String),       // no active access, invalid token, bad credentials, lockout
     Validation(String),         // semantic input check (empty field, …)
     Network(String),            // transport didn't reach the remote
     Upstream(String),           // remote replied with error / bad body
@@ -44,42 +44,54 @@ reconcile instead of overwriting.
 
 ## Session gate
 
-Signing in is enforced by the backend, not just by hiding UI. A Tauri-managed
-`ActiveSession` (`services/session.rs`) records who is signed in to this app
-instance: `auth_login` and `auth_resume` set it, `auth_logout` clears it (only
-when called with the active token). **Every command except the auth commands
-calls `require_session` first** and fails with
-`Unauthorized("not signed in")` — or `Unauthorized("session expired; sign in
-again")` — when there is no live session. Gated commands take **no token
-parameter**; the frontend calls them exactly as before.
+App access is enforced by the backend, not just by hiding UI. A Tauri-managed
+`ActiveSession` (`services/session.rs`) gates this single-user app instance.
+**Every non-auth command calls `require_session` first** and returns
+`Unauthorized` without active access, whether the optional app lock is enabled
+or disabled. Gated non-auth commands take **no token parameter**.
 
 | Group | Commands | Gate |
 |---|---|---|
-| Exempt (pre-login) | `auth_login`, `auth_resume`, `auth_logout` | none — they create / end the session |
-| Token-gated | `auth_change_password`, `auth_create_user`, `auth_list_users`, `auth_set_user_active`, `auth_list_audit_logs`, `auth_log_action` | the `token` argument (admin role where noted) |
-| Session-gated | **every other command** (vault, journal, quick capture, timeline, notes, tags, search, sync, app config, AI, attachments, evernote, workspace) | `ActiveSession` |
+| Pre-access | `auth_bootstrap`, `auth_unlock`, `auth_migrate` | bootstrap or password/legacy validation |
+| Token-gated | `auth_set_lock`, `auth_lock`, `auth_migrate_secrets`, `auth_list_audit_logs`, `auth_log_action` | the active `token` argument, not an account role |
+| Session-gated | **every other command**, including vault, app config, AI, calendar and backup | `ActiveSession` |
 
-No non-auth command is exempt: the frontend calls nothing but `auth_resume` /
-`auth_login` before sign-in (theme, vault and settings load after it). A unit
-test (`lib.rs` `every_registered_command_is_gated`) parses the registered
-command list and fails if any command's first statement isn't the gate.
+The frontend first calls `auth_bootstrap`. It issues no vault/settings IPC and
+renders no workspace until backend access is ready (`AuthAccess.login` is
+non-null). Fresh installs bootstrap without an app login; enabled locks require
+password unlock and legacy installs require explicit conversion. Startup errors
+are visible and retryable; failure never implies a disabled lock or opens the
+shell. No non-auth command is exempt.
 
-Sessions (the active session and every bearer token) expire after **12 h idle**
-or **7 days** from sign-in, whichever comes first; expired tokens are pruned.
+Sessions and bearer tokens are **memory-only, without idle or absolute expiry**.
+An enabled lock is reapplied by manual lock or app restart, not a timer. There
+is no remember UI, token persistence or session-resume IPC.
 
 **Frontend handling.** Every `src/lib/api/*` wrapper calls the backend through
-one `invoke` (`src/lib/api/invoke.ts`). When a **non-`auth_*`** command fails
-with `Unauthorized` (app restarted without a remembered session, session
-expired, token revoked, account disabled), it calls the registered handler,
-which flushes pending autosaves, signs the user out, and shows "Your session
-ended. Sign in again to continue." on the login screen. For `auth_*` commands
-`Unauthorized` is an ordinary form error (wrong password, not an admin).
+one `invoke` (`src/lib/api/invoke.ts`). Its access-loss handler runs on
+`Unauthorized` from **every non-auth command** and exactly these auth commands:
+`auth_lock`, `auth_list_audit_logs`, `auth_log_action`, `auth_migrate_secrets`.
+It hides the workspace immediately, pauses autosave access, and preserves
+editor drafts and pending save/retry entries in memory. `auth_unlock`,
+`auth_migrate` and `auth_set_lock` are excluded so invalid passwords remain form
+errors; bootstrap errors remain visible/retryable and fail closed.
 
-`mustChangePassword` is enforced by the gate as well as the UI: when
-`auth_login` / `auth_resume` return `mustChangePassword: true`, the backend
-issues the token (so `auth_change_password` works) but does **not** open the
-active session, so every gated command stays `Unauthorized`. A successful
-`auth_change_password` opens it. The frontend withholds the shell until then.
+After access is restored, draft recovery checks `vault_current` against the
+retained originating root and the local active vault **before flushing**. A
+mismatch or read/save error leaves drafts paused and the workspace withheld,
+even with backend access unlocked. **Retry draft recovery** rechecks recovery;
+**Return to draft vault** explicitly restores the original vault through
+`vault_set_active`, without discarding the queue or resetting the editor, then
+rechecks access and the root. Workspace loading rechecks before replacing the
+local active vault. The notice warns that edits are not confirmed saved and
+the window must stay open.
+
+Manual lock first flushes saves/preserves held edits as copies. A failed flush
+refuses locking; otherwise the frontend awaits `auth_lock` acknowledgement
+before clearing local access. These guarantees do not make in-memory drafts
+durable across app exit. The App-root close guard remains mounted across
+locked/loading/error/recovery/shell states and prevents closing when unsaved or
+in-flight writes cannot safely flush. See [Concurrency & Safety](concurrency-safety.md).
 
 ## Vault
 
@@ -109,15 +121,15 @@ naiteh vault (`.naiteh/`, or `notes/` + `journal/`). The stored / returned
 ```rust
 journal_month_meta(year: u16, month: u8) -> Result<Vec<DayMeta>, AppError>
 journal_open(date: String) -> Result<JournalOpenResult, AppError>   // { path, content, exists, version }
-journal_save(date: String, content: String, expected_version: Option<String>)
+journal_save(date: String, content: String, expected_version: Option<String>, expected_vault_root: String)
     -> Result<JournalSaveResult, AppError>                          // { path, mtime, version }
 ```
 
 `journal_open` returns the **version** of the entry on disk (`""` when
-`exists` is false). `journal_save` has the same `expected_version` /
-`StaleWrite` semantics as `notes_write` below; passing `journal_open`'s
-`version` back always works, because `""` is also the current version of a
-missing entry. Wire argument: `expectedVersion`.
+`exists` is false). `journal_save` has the same content-version and required
+originating-vault checks as `notes_write` below. Pass the read `version` as
+`expectedVersion` (`""` matches a still-missing entry) and the captured
+originating root as the required `expectedVaultRoot`.
 
 ## Quick capture
 
@@ -164,7 +176,7 @@ later day) it shows as an all-day chip. These markers are local only: no
 notes_list(rel_dir: Option<String>) -> Result<Vec<NoteMeta>, AppError>
 notes_read(rel_path: String) -> Result<NoteDocument, AppError>      // { content, version }
 notes_version(rel_path: String) -> Result<String, AppError>         // current version; NotFound if missing
-notes_write(rel_path: String, content: String, expected_version: Option<String>)
+notes_write(rel_path: String, content: String, expected_version: Option<String>, expected_vault_root: String)
     -> Result<NoteWriteResult, AppError>                            // { meta: NoteMeta, version }
 notes_create(rel_dir: String, title: String) -> Result<NoteMeta, AppError>
 notes_delete(rel_path: String) -> Result<(), AppError>
@@ -195,6 +207,15 @@ nothing is silently "fixed up".
   that reads each file. Empty folders come from `notes_list_dirs`, a pure
   directory walk.
 
+- **Originating-vault check (both writers).** `notes_write` and `journal_save`
+  require `expected_vault_root: String` (wire: `expectedVaultRoot`), captured
+  from the originating vault before any async work. Omitted/null roots cannot
+  invoke these writers; an empty root is `Validation`. The backend compares
+  the supplied root with its current active root after canonicalization; a
+  mismatch or unavailable originating root is `Conflict`, with no file written.
+  Once validated, that captured canonical root is used for locking and writing
+  even if the shared active-vault setting changes later. There is no fallback
+  to whichever vault is active at write time.
 - **Versions / conflict-safe writes.** A `version` is the lowercase hex
   SHA-256 of the file's bytes on disk (`services/notes.rs` `file_version`).
   `notes_read` returns the version of what it read; `notes_write` with
@@ -202,7 +223,8 @@ nothing is silently "fixed up".
   (compared under the per-vault lock) and otherwise returns
   `StaleWrite(current)` without touching the file — `current` being the
   on-disk version, or `""` if the file was deleted underneath.
-  `expected_version: None` writes unconditionally (new file, legacy caller).
+  `expected_version: None` skips only the content-version check (e.g. a new
+  file/copy); the originating-vault check is still required.
   On success the result carries the version of the bytes just written (what
   the next save should expect). `notes_version` is the cheap freshness probe
   (e.g. on window focus) that avoids transferring content; it is read-only and
@@ -382,6 +404,8 @@ Errors:
   unparseable reply.
 - `Cancelled` — stopped by `ai_chat_stop`. Text streamed before the stop
   was already delivered through events.
+- `Io` / `NotFound`: OS credential storage is unavailable or a referenced key
+  is missing. Errors are visible; no legacy-plaintext fallback is used.
 
 **`ai_chat_stop`** aborts the request with that id (drops the HTTP
 connection). A no-op for an unknown or finished id.
@@ -396,6 +420,10 @@ dropped. Empty → `Upstream`; content with no text → `Validation`.
 **`ai_list_models`** returns the provider's model ids sorted, already
 prefixed `provider@` (e.g. `ollama@llama3.2`). Needs the provider's key
 when it requires one (same `Validation` message as above).
+
+AI commands resolve only the selected provider's credentials, migrating its
+legacy key on use when necessary. An unused provider's credentials do not block
+a request; keyless providers do not require credential storage for requests.
 
 ### Providers
 
@@ -446,14 +474,25 @@ app_config_set_clipping(clipping: ClippingConfig) -> Result<AppConfigView, AppEr
 ```
 
 `AiSettingsInput` (wire `{ settings: { … } }`, camelCase):
-`{ defaultModel, temperature, maxTokens, stream, headingLevel,
+`{ addedProviders?, defaultModel, temperature, maxTokens, stream, headingLevel,
 inferTitleLanguage, chatsFolder, agentsFolder }`. Validation (`Validation`
 / `InvalidPath`, nothing saved): `defaultModel` must parse (a bare model is
 stored as `openai@<model>`); `temperature` 0–2; `maxTokens` 1–1 000 000;
 `headingLevel` 1–6; `inferTitleLanguage` 1–50 chars after trimming;
 folders must be vault-relative normal form (trailing `/` dropped).
-`app_config_set_ai` never touches `providers`; `app_config_set_ai_provider`
-touches only that provider.
+`addedProviders`, when supplied, replaces the ordered Settings provider list
+(known ids only; trimmed and deduplicated). Providers removed from the old list
+have their key/reference cleared and their endpoint reset atomically with this
+update. Omission preserves the list and provider credentials, so ordinary model
+and advanced-settings saves leave provider registrations alone.
+`app_config_set_ai_provider` touches only that provider's endpoint/key.
+
+Config reads and unrelated settings/vault operations do not require OS
+credential storage or discard unmigrated values. Secret updates use secure
+storage and an atomic metadata commit; `hasApiKey` is a configured-presence
+boolean, not a readback or store-availability check. The manual retry is
+`auth_migrate_secrets(token)` below, not an app-config command. See
+[App Config](app-config.md#credential-storage).
 
 Other wire arguments are camelCase (`baseUrl`, `apiKey`, `clearApiKey`,
 `uiFont`, `editorFont`; `clipping` is the camelCase `ClippingConfig`
@@ -480,87 +519,70 @@ uses the Settings base URL).
 ## Auth & Audit
 
 ```rust
-auth_login(username: String, password: String, remember: bool) -> Result<LoginResult, AppError>   // async
-auth_resume() -> Result<Option<LoginResult>, AppError>
-auth_logout(token: String)
-auth_change_password(token: String, current_password: String, new_password: String) -> Result<(), AppError>  // async
-auth_create_user(token: String, username: String, password: String, role: UserRole) -> Result<Vec<AuthUser>, AppError>  // async, admin
-auth_list_users(token: String) -> Result<Vec<AuthUser>, AppError>                                  // admin
-auth_set_user_active(token: String, username: String, active: bool) -> Result<Vec<AuthUser>, AppError>  // admin
-auth_list_audit_logs(token: String, limit: u32) -> Result<Vec<AuditLogEntry>, AppError>             // admin
+auth_bootstrap() -> Result<AuthAccess, AppError>
+auth_unlock(password: String) -> Result<AuthAccess, AppError>
+auth_migrate(username: String, password: String, new_password: String) -> Result<AuthAccess, AppError>
+auth_set_lock(token: String, enabled: bool, current_password: Option<String>, new_password: Option<String>)
+    -> Result<AuthAccess, AppError>
+auth_lock(token: String) -> Result<(), AppError>
+auth_migrate_secrets(token: String) -> Result<(), AppError>
+auth_list_audit_logs(token: String, limit: u32) -> Result<Vec<AuditLogEntry>, AppError>
 auth_log_action(token: String, action: String, detail: Option<String>) -> Result<(), AppError>
 ```
 
-`auth_login` / `auth_resume` return
-`{ "token": "…64 hex…", "session": { "username": "admin", "role": "Admin" }, "mustChangePassword": true }`.
-The token is a 256-bit hex string the frontend keeps in memory and passes to the
-auth IPCs. The backend resolves it via an in-process session map
-(`services::auth::SessionStore`) — no path lets the frontend impersonate a user
-by passing a name string. Account management and audit reads require an
-**admin** token; `auth_change_password` and `auth_log_action` accept any live
-token. The Argon2-running commands (`auth_login`, `auth_change_password`,
-`auth_create_user`) are `async` and hash on the blocking pool.
+`AuthAccess` is `{ lockEnabled: boolean, migrationRequired: boolean,
+login: LoginResult | null }`. When access is ready, it contains
+`login: { token, session: { username: "local", role: "Admin" },
+mustChangePassword: false }`. `local` / `Admin` is internal audit attribution,
+not an account role or vault isolation boundary. The opaque token is kept only
+in memory; there is no expiry timer, persistence or remember checkbox. There is
+no admin route or account-management UI.
 
-**`mustChangePassword`** is true while the account still has the seeded default
-password (the first-run `admin`/`admin`, or — for older `auth.json` files without
-the flag — any account whose password equals its username, detected and
-persisted on login, and on `auth_resume` via one Argon2 check so a remembered
-session can't skip it). Until it is changed the session gate stays closed (see
-"Session gate"), and the UI forces the change before continuing.
+**`auth_bootstrap`** determines access before any vault IPC. A fresh install
+needs no app login and seeds no account; with the lock disabled it establishes
+backend access and returns a non-null `login`. A blocked lock or required legacy
+conversion returns `login: null`. Errors remain visible/retryable and fail
+closed, rather than being interpreted as a disabled lock.
 
-**Login hardening.** Unknown usernames still run one Argon2 verification (against
-a fixed dummy hash), so response time doesn't reveal which names exist. The
-password is checked before the disabled flag: a wrong password on a disabled
-account gets the same `Unauthorized("invalid username or password")` as any
-other credential failure; only the correct password reveals
-`"account is disabled"`. After **5** failed attempts for a username (counted per
-canonical name, existing or not) it is locked for **5 minutes**:
-`Unauthorized("too many failed sign-in attempts; try again in N seconds")`. A
-success resets the counter. All in-memory (cleared on restart). If `auth.json`
-exists but contains **no active admin**, every login fails with
-`ConfigCorrupt` ("…no active administrator account…") — the default admin is
-never re-seeded into an existing file.
+**`auth_unlock`** validates only the app-lock password and returns ready access.
+The optional lock stores an Argon2id hash in app-config `app-lock.json`, not
+plaintext. New lock passwords are 8–1024 characters.
 
-**`auth_change_password`** — the signed-in user changes their own password.
-Verifies `current_password` (Argon2; wrong → `Unauthorized("current password is
-incorrect")`). Policy for `new_password` (→ `Validation`): at least 8 characters
-(max 1024), different from the current password, not equal to the username
-(case-insensitive). On success: re-hash with Argon2id, clear
-`mustChangePassword`, revoke that user's other in-memory tokens (the calling
-token stays valid), delete their remembered session, and open the session gate
-for the calling token. Audited as
-`password_changed`.
+**`auth_migrate`** is the explicit one-time conversion when `auth.json` exists
+but `app-lock.json` does not (wire: `{ username, password, newPassword }`). It
+validates the supplied legacy username and password, then requires a **new**
+8–1024-character app-lock password different from that old password. Conversion
+enables the app lock and opens access; it never silently disables the lock or
+chooses an arbitrary legacy account.
+Legacy account hashes and audit history remain but are ignored for subsequent
+access. Legacy `remembered-session.json` is deleted; no old token is retained
+or moved to credential storage.
 
-**`auth_create_user`** (admin) — username 1–32 chars of `[A-Za-z0-9._-]`
-(→ `Validation`), unique case-insensitively (→ `Conflict`); password policy as
-above (not equal to the new username). New accounts are active with
-`mustChangePassword: false`. Returns the full user list. Audited as
-`user_created` (detail `"<name> (<Role>)"`).
+**`auth_set_lock`** changes optional lock settings with the active token and
+returns `AuthAccess`. Wire arguments are `{ token, enabled, currentPassword,
+newPassword }`; both password arguments are nullable. Password changes and
+legacy conversion use the app-lock flow, not an account-management command.
 
-**`auth_set_user_active`** refuses (→ `Conflict`) to disable the acting admin's
-own account or the last active admin. Disabling an account revokes its tokens
-and its remembered session.
+**`auth_lock`** validates the active token and closes backend access. It returns
+void on success; the frontend must await acknowledgement after a successful
+save/preservation flush before clearing local access. Manual lock and app
+restart are the only normal relock triggers; there is no session timer.
 
-**`auth_log_action`** accepts only these client-originated actions (anything
-else → `Validation`): `logout`, `note_open`, `note_save`, `note_create`,
-`note_rename`, `note_delete`, `notes_create_dir`, `notes_rename_dir`,
-`notes_delete_dir`, `journal_open`, `journal_save`, `quick_note_create`,
-`vault_switch`, `evernote_import`. `detail` is truncated to 512 characters.
-Backend-written actions (`login_success`, `login_failure`, `session_resume`,
-`user_enabled`, `user_disabled`, `user_created`, `password_changed`) cannot be
-forged from the renderer.
+**`auth_migrate_secrets`** validates the active token and retries safe,
+idempotent migration of AI API keys and SFTP passwords/private-key passphrases
+to OS credential storage. It returns void, not keys or a migration report.
+Ordinary reads/unrelated operations do not depend on this migration succeeding.
+Store errors are visible with no plaintext fallback. Calendar secret feed URLs
+are not in scope. See [App Config](app-config.md#credential-storage).
 
-**Remember me.** When `auth_login` is called with `remember: true`, the backend
-persists `{ token, username, expiresAt }` to `remembered-session.json` in the
-app-config dir (30-day TTL). On startup the frontend calls `auth_resume`, which
-re-installs that token into the `SessionStore`, marks the active session (unless
-`mustChangePassword`), and
-returns the `LoginResult` (incl. `mustChangePassword`) — skipping the login
-screen — but only after re-checking the account is still present and active (a
-role change or deactivation between runs is honoured; a stale record is
-pruned). `remember: false`, `auth_logout`, a password change, and disabling the
-account all delete the file. The file sits in the same trust boundary as `auth.json` and the AI key:
-only the local OS user can read it.
+**Audit commands** are retained: `auth_list_audit_logs` and `auth_log_action`
+both validate the active token, without account-role checks. Renderer action
+names are allowlisted; backend access events cannot be forged through
+`auth_log_action`. The audit history remains available after legacy conversion.
+
+Removed IPCs: `auth_login`, `auth_resume`, `auth_logout`,
+`auth_change_password`, `auth_create_user`, `auth_list_users` and
+`auth_set_user_active`. They have no compatibility aliases.
 
 ## Attachments
 
@@ -706,10 +728,12 @@ backup_restore_file(source_id, rel_path, mode: "copy" | "overwrite", expected_ve
   `..`). Password auth needs `password`; key auth needs an existing `keyPath`.
   `Network` when the server can't be reached.
 - **`backup_target_confirm_host_key`** (trust on first use): reconnects and,
-  only if the server still presents exactly `fingerprint`, authenticates
+  only if the server still presents exactly `fingerprint`, resolves credentials
+  from OS storage (migrating legacy values if needed) and authenticates
   (`Unauthorized` on bad credentials), creates the remote dir, then pins the
   key and enables the target. Every later connection refuses a different key
-  with `Validation("Host key changed: …")` before authenticating.
+  with `Validation("Host key changed: …")` before resolving credentials or
+  authenticating. Store failures are visible, with no plaintext fallback.
 - **`backup_target_update`**: `""` clears `password` / `passphrase` /
   `keyPath`; `enabled: true` is refused for an unconfirmed SFTP target;
   `folder` / `remoteDir` are validated like on add; `intervalMinutes < 5` →
@@ -914,7 +938,7 @@ to store actions (not direct IPC):
 
 `ViewMode` is one of journal/notes/calendar/search/tags/sync. Settings
 is **not** a view — it is a full-screen modal opened by `menu:settings`,
-the Activity Bar gear, the status-bar user name, or the palette.
+the Activity Bar gear, the status-bar settings control, or the palette.
 
 ## Concurrency note
 
@@ -927,5 +951,7 @@ command": `evernote_import` takes the lock per note, and the sync commands hold
 it only for their local phases (never across the network). The vault watcher
 never takes the lock; `notes_write` / `journal_save` perform their
 `expected_version` check and the write under it, so the compare-and-write is
-atomic with respect to every other app write. See
+atomic with respect to every other app write. Both writers also require
+`expectedVaultRoot` and keep the validated canonical root for the write,
+rather than re-reading a later active-vault setting. See
 [Concurrency & Safety](concurrency-safety.md).
